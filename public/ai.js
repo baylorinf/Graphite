@@ -15,6 +15,7 @@ export function initAI(host) {
   H = host;
   // For plugins (the chat panel): window.myobsidianAI
   window.myobsidianAI = { FEATURES, options, choice, setChoice, label, parts, request, ccListening, openSettings: () => H.openSettings('ai'), onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  Object.assign(window.myobsidianAI, { AGENT_FEATURES, agent, isApi: v => !!PROVIDERS[v] });
 }
 
 export const FEATURES = ['check', 'quiz', 'chat', 'plan', 'exam', 'format', 'connect'];
@@ -51,7 +52,7 @@ function raw() {
     const rev = H?.store.get('review', {}) || {};
     use = { check: def, quiz: rev.aiQuestions === false ? 'off' : def, chat: CC, plan: def, exam: def, format: def };
   }
-  return { keys, models, lists: { ...(s.lists || {}) }, baseUrl: s.baseUrl || '', use };
+  return { keys, models, lists: { ...(s.lists || {}) }, baseUrl: s.baseUrl || '', use, agent: { ...(s.agent || {}) } };
 }
 function save(patch) {
   const next = { ...raw(), ...patch };
@@ -184,4 +185,47 @@ export async function testProvider(p) {
   if (!cur || (r.models?.length && !r.models.includes(cur))) models[p] = pickModel(p, r.models || []) || cur || PROVIDERS[p].suggest[0] || '';
   save({ lists, models });
   return r;
+}
+
+/* ---------- the agent: jobs on your files, with an API model ----------
+   Find new course files, file the Claude Inbox captures and update the Claude Brain used to need the Claude Code
+   window. With an API model chosen for them, Graphite's server does them itself (agent.js): the model looks
+   around with read-only tools and proposes a plan; nothing is copied or written until the user confirms it.
+   It may read only the vault and the course folders listed here (minus the left-out folder names). */
+export const AGENT_FEATURES = ['import', 'inbox'];
+export function agentConf() {
+  const a = raw().agent || {};
+  return { roots: Array.isArray(a.roots) ? a.roots : ['D:\Task\DYS'], skip: Array.isArray(a.skip) ? a.skip : ['UPC'], extras: !!a.extras };
+}
+export const setAgentConf = patch => save({ agent: { ...agentConf(), ...patch } });
+// agent('import', 'import', { phase: 'plan' }, { onProgress }) → { planId, items, ignore, questions, … }
+// agent('import', 'import', { phase: 'apply', planId, accept: [0, 2] }) → { done, failed, edited, summary }
+// Jobs: 'import' (feature import), 'inbox' and 'brain' (feature inbox).
+export async function agent(feature, job, payload = {}, { onProgress, signal, provider } = {}) {
+  const v = provider || choice(feature);
+  if (!PROVIDERS[v]) throw new Error(t('agent.needsApi'));
+  if (!hasProvider(v)) throw new Error(t('ai.noKeyFor', { provider: PROVIDERS[v].label }));
+  const res = await fetch('/api/agent', {
+    signal, method: 'POST',
+    headers: { 'X-Vault': '1', 'Content-Type': 'application/json', 'X-AI-Key': keyOf(v) },
+    body: JSON.stringify({ job, provider: v, model: modelOf(v), baseUrl: v === 'custom' ? baseUrl() : undefined, lang: getLang(), ...agentConf(), ...payload }),
+  });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  // One JSON object per line: progress steps, then the result or an error.
+  const reader = res.body.getReader(), dec = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    buf += dec.decode(value || new Uint8Array(), { stream: !done });
+    let i;
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
+      if (!line) continue;
+      const o = JSON.parse(line);
+      if (o.progress) { try { onProgress?.(o.progress); } catch { /* display only */ } }
+      else if (o.error) throw new Error(o.error);
+      else if (o.result) return o.result;
+    }
+    if (done) throw new Error(t('agent.cutOff'));
+  }
 }

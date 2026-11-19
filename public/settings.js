@@ -159,6 +159,32 @@ function renderAI() {
   cc.textContent = '…';
   AI.ccListening().then(on => { cc.textContent = on ? t('ai.ccOn') : t('ai.ccOffNote'); cc.classList.toggle('mod-warning', !on); });
 
+  // 1b. Jobs on your files (find new course files, file captures): Claude Code, or Graphite's own agent with an
+  // API model, which may read only the folders listed here and always asks before copying or writing.
+  content.createEl('h3', { cls: 'settings-sub', text: t('agent.jobs') });
+  content.createEl('p', { cls: 'setting-note', text: t('agent.jobsDesc') });
+  for (const f of AI.AGENT_FEATURES) {
+    new PM.Setting(content).setName(t('ai.job.' + f)).setDesc(t('ai.job.' + f + 'Desc')).addDropdown(d => {
+      for (const o of AI.options(f)) {
+        d.addOption(o.value, o.label);
+        if (!o.ready) d.selectEl.lastElementChild.disabled = true;
+      }
+      d.setValue(AI.choice(f)).onChange(v => AI.setChoice(f, v));
+      enhanceAISelect(d.selectEl, f);
+    });
+  }
+  const lines = s => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  new PM.Setting(content).setName(t('agent.roots')).setDesc(t('agent.rootsDesc')).addTextArea(ta => {
+    ta.setValue(AI.agentConf().roots.join('\n')).onChange(v => AI.setAgentConf({ roots: lines(v) }));
+    ta.inputEl.rows = 3; ta.inputEl.dataset.agent = 'roots';
+  });
+  new PM.Setting(content).setName(t('agent.skip')).setDesc(t('agent.skipDesc')).addText(tx => {
+    tx.setValue(AI.agentConf().skip.join(', ')).onChange(v => AI.setAgentConf({ skip: v.split(',').map(x => x.trim()).filter(Boolean) }));
+    tx.inputEl.dataset.agent = 'skip';
+  });
+  new PM.Setting(content).setName(t('agent.extras')).setDesc(t('agent.extrasDesc'))
+    .addToggle(tg => tg.setValue(AI.agentConf().extras).onChange(v => AI.setAgentConf({ extras: v })));
+
   // 2. API keys, one box per provider (open when it has a key)
   content.createEl('h3', { cls: 'settings-sub', text: t('ai.keys') });
   content.createEl('p', { cls: 'setting-note', text: t('ai.keysDesc') });

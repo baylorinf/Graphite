@@ -174,19 +174,24 @@ function tidyResult(task, out) {
   return out;
 }
 
-async function compatTask(provider, key, body) {
+// One request to an OpenAI-compatible provider, with readable errors. Shared by AI jobs and the agent (agent.js).
+// GRAPHITE_TEST_AI_BASE (tests only) sends every provider's requests to a fake local server instead.
+function compatCaller(provider, key, body) {
   const P = COMPAT[provider];
   let base = P.base;
   if (provider === 'custom') {
     base = String(body.baseUrl || '').trim().replace(/\/+$/, '');
     if (!/^https?:\/\/\S+$/i.test(base)) throw new HttpError(400, 'Enter the API base URL for your custom provider (e.g. https://example.com/v1)');
   }
+  if (process.env.GRAPHITE_TEST_AI_BASE) base = process.env.GRAPHITE_TEST_AI_BASE;
   const name = P.name;
   const call = async (pathname, init = {}) => {
     let r;
     try {
-      r = await fetch(base + pathname, { ...init, headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(240000) });
+      const limit = AbortSignal.timeout(240000);
+      r = await fetch(base + pathname, { ...init, headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), 'Content-Type': 'application/json' }, signal: init.signal ? AbortSignal.any([init.signal, limit]) : limit });
     } catch (e) {
+      if (init.signal?.aborted) throw new HttpError(499, 'Stopped');
       if (e.name === 'TimeoutError') throw new HttpError(504, `${name} took longer than 4 minutes to answer; try again, or pick a faster model`);
       throw new HttpError(502, `Could not reach ${name} (check your internet connection${provider === 'custom' ? ' and the base URL' : ''})`);
     }
@@ -204,6 +209,11 @@ async function compatTask(provider, key, body) {
     }
     return data;
   };
+  return { P, name, call };
+}
+
+async function compatTask(provider, key, body) {
+  const { P, name, call } = compatCaller(provider, key, body);
   if (body.task === 'test') {
     let models = [];
     try {
@@ -246,11 +256,29 @@ async function compatTask(provider, key, body) {
 }
 
 let AnthropicSDK = null;
-async function anthropicTask(key, body) {
+const anthropicSDK = () => { AnthropicSDK ||= require('@anthropic-ai/sdk'); return AnthropicSDK.default || AnthropicSDK; };
+function anthropicClient(key) {
   if (!key) throw new HttpError(400, 'No API key');
-  AnthropicSDK ||= require('@anthropic-ai/sdk');
-  const Anthropic = AnthropicSDK.default || AnthropicSDK;
-  const client = new Anthropic({ apiKey: key, timeout: 240000, maxRetries: 1 });
+  const Anthropic = anthropicSDK();
+  return new Anthropic({ apiKey: key, timeout: 240000, maxRetries: 1 });
+}
+// Anthropic SDK errors as readable messages (used by the agent; anthropicTask has its own copy for JSON jobs).
+function anthropicError(e, model) {
+  const Anthropic = anthropicSDK();
+  if (e instanceof HttpError) return e;
+  if (e instanceof Anthropic.APIUserAbortError) return new HttpError(499, 'Stopped');
+  if (e instanceof Anthropic.AuthenticationError) return new HttpError(401, 'The Anthropic API key was not accepted');
+  if (e instanceof Anthropic.PermissionDeniedError) return new HttpError(403, 'This API key may not use that model');
+  if (e instanceof Anthropic.NotFoundError) return new HttpError(404, `Model not available for this key (${model})`);
+  if (e instanceof Anthropic.RateLimitError) return new HttpError(429, 'Too many requests or no credit left; try again later');
+  if (e instanceof Anthropic.APIConnectionTimeoutError) return new HttpError(504, 'Claude took longer than 4 minutes to answer; try again, or pick a faster model');
+  if (e instanceof Anthropic.APIConnectionError) return new HttpError(502, 'Could not reach Anthropic (check your internet connection)');
+  if (e instanceof Anthropic.APIError) return new HttpError(502, `Anthropic error ${e.status ?? ''}: ${e.message}`);
+  return e;
+}
+async function anthropicTask(key, body) {
+  const client = anthropicClient(key);
+  const Anthropic = anthropicSDK();
   const model = String(body.model || '').trim() || ANTHROPIC_DEFAULT;
   try {
     if (body.task === 'test') {
@@ -597,6 +625,8 @@ async function api(req, res, u) {
   // Which cloud service (if any) the vault lives in, and which ones exist on this PC.
   if (route === 'sync-info' && m === 'GET') return send(res, 200, await syncInfo());
   if (route === 'ai' && m === 'POST') return send(res, 200, await aiTask(req));
+  // The agent harness (agent.js): import files, file inbox captures, update the Claude Brain with an API model.
+  if (route === 'agent' && m === 'POST') return agent.handle(req, res);
   if (route === 'office-pdf' && m === 'POST') return send(res, 200, await officePdf(q.get('path'), q.get('save') === '1'));
 
   // Open a vault folder in the system file manager.
@@ -681,6 +711,11 @@ async function serveFile(res, abs, req) {
     fs.createReadStream(abs).pipe(res);
   } catch { send(res, 404, 'Not found', 'text/plain'); }
 }
+
+const agent = require('./agent')({
+  HttpError, hash, inVault, toRel, exists, uniquePath, atomicWrite, withFileLock, officeToPdf, readBody, LANG_NAMES, COMPAT, ANTHROPIC_DEFAULT,
+  parseJsonReply, compatCaller, anthropicClient, anthropicError, vault: () => VAULT,
+});
 
 // Live updates: tell open browser tabs when files change on disk (e.g. edited in another program).
 const clients = new Set();
