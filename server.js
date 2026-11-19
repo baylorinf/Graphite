@@ -59,7 +59,11 @@ const AI_SCHEMAS = {
     },
   },
   plan: { type: 'object', additionalProperties: false, required: ['title', 'markdown'], properties: { title: { type: 'string' }, markdown: { type: 'string' } } },
-  exam: { type: 'object', additionalProperties: false, required: ['title', 'markdown'], properties: { title: { type: 'string' }, markdown: { type: 'string' } } },
+  exam: { type: 'object', additionalProperties: false, required: ['title', 'markdown', 'problems'], properties: { title: { type: 'string' }, markdown: { type: 'string' },
+    problems: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['no', 'page', 'topic', 'question', 'myAnswer', 'mistake'],
+      properties: { no: { type: 'string' }, page: { type: 'integer' }, topic: { type: 'string' }, question: { type: 'string' }, myAnswer: { type: 'string' }, mistake: { type: 'string' } } } } } },
+  connect: { type: 'object', additionalProperties: false, required: ['related'], properties: { related: { type: 'array', items: {
+    type: 'object', additionalProperties: false, required: ['title', 'why'], properties: { title: { type: 'string' }, why: { type: 'string' } } } } } },
   format: { type: 'object', additionalProperties: false, required: ['markdown', 'changes'], properties: { markdown: { type: 'string' }, changes: { type: 'array', items: { type: 'string' } } } },
   questions: {
     type: 'object', additionalProperties: false, required: ['questions'],
@@ -98,7 +102,13 @@ The input is the paper's text, possibly with the student's answers and marks, th
 - Then give concrete suggestions and a short study plan with "- [ ] task" items, weakest topics first.
 - Write in ${ui}. Keep maths in $...$ / $...$.
 markdown: the whole note: YAML frontmatter (tags: [Exam analysis], created: YYYY.MM.DD), "## Summary", "## Problems" (a list or a table of at most 4 columns), "## Mistakes and why" (if there are answers), "## Suggestions", "## Plan".
-title: a short note title such as "<paper name> analysis".`,
+title: a short note title such as "<paper name> analysis".
+- The input may be only part of the paper (a page range, or one batch of a long paper): analyse only what is given; don't guess about other pages.
+problems: one entry per problem, in order: no (its number as printed, e.g. "3" or "2(b)"), page (the page it is on, from the "--- page N ---" markers; 0 if unknown), topic, question (the problem itself, shortened if long, maths in $...$), myAnswer (the student's answer if visible, else ""), mistake (what went wrong if it lost marks, else ""). Write topic and mistake in ${ui}.`,
+  connect: ui => `You link one of a university student's notes to their other notes that really matter for it.
+The input is the note and a list of their other notes (title, folder, headings).
+- Pick 2 to 6 notes that share a concept, give a definition or theorem this note relies on, or continue its topic. Never pick a note only because it is in the same course. Pick none if nothing really fits.
+related: the chosen notes, each with title (copied exactly from the list) and why (one short phrase in ${ui}).`,
   format: ui => `You reformat one Markdown note so that its format matches the user's other notes (examples given), without changing its content.
 - Copy the examples' conventions: frontmatter fields, heading levels and style, numbering, the source line (e.g. "来源：" with slide links), the "相关 Related:" line, list style, maths style ($...$), bilingual titles if they use them.
 - Keep every piece of content, every link and the user's wording and language. Do not add new facts or remove anything. Fix only obvious typos and broken maths.
@@ -116,7 +126,8 @@ const AI_EXAMPLES = {
   check: { summary: 'One sentence about the note.', issues: [{ type: 'spelling', quote: 'exact words from the note', suggestion: 'corrected words', explanation: 'Why it was wrong.' }] },
   questions: { questions: [{ question: 'A question about the note?', answer: 'A short answer.' }] },
   plan: { title: 'Linear Algebra midterm revision plan', markdown: '---\ntags: [Revision plan]\ncreated: 2026.11.20\n---\n...' },
-  exam: { title: 'Mock midterm analysis', markdown: '---\ntags: [Exam analysis]\ncreated: 2026.11.20\n---\n## Summary\n...' },
+  exam: { title: 'Mock midterm analysis', markdown: '---\ntags: [Exam analysis]\ncreated: 2026.11.20\n---\n## Summary\n...', problems: [{ no: '1', page: 1, topic: 'Eigenvalues', question: 'Find the eigenvalues of A.', myAnswer: 'lambda = 2', mistake: 'Missed the repeated root.' }] },
+  connect: { related: [{ title: 'Exact note title from the list', why: 'uses its definition of X' }] },
   format: { markdown: 'the whole reformatted note', changes: ['Added frontmatter', 'Numbered the key points'] },
 };
 // OpenAI-compatible providers. `extra` holds optional fields (e.g. turning off slow "thinking"); if a provider
@@ -153,7 +164,12 @@ function parseJsonReply(text) {
 function tidyResult(task, out) {
   if (task === 'check') { out.summary = String(out.summary || ''); out.issues = Array.isArray(out.issues) ? out.issues : []; }
   else if (task === 'questions') out.questions = Array.isArray(out.questions) ? out.questions : [];
-  else if (task === 'plan' || task === 'exam') { out.title = String(out.title || ''); out.markdown = String(out.markdown || ''); if (!out.markdown) throw new SyntaxError('empty'); }
+  else if (task === 'plan' || task === 'exam') {
+    out.title = String(out.title || ''); out.markdown = String(out.markdown || ''); if (!out.markdown) throw new SyntaxError('empty');
+    if (task === 'exam') out.problems = (Array.isArray(out.problems) ? out.problems : []).filter(x => x && typeof x === 'object').map(x => ({
+      no: String(x.no ?? ''), page: Number.isFinite(+x.page) ? Math.max(0, Math.round(+x.page)) : 0, topic: String(x.topic || ''), question: String(x.question || ''), myAnswer: String(x.myAnswer || ''), mistake: String(x.mistake || '') }));
+  }
+  else if (task === 'connect') out.related = (Array.isArray(out.related) ? out.related : []).filter(x => x && x.title).map(x => ({ title: String(x.title), why: String(x.why || '') }));
   else if (task === 'format') { out.markdown = String(out.markdown || ''); out.changes = Array.isArray(out.changes) ? out.changes.map(String) : []; if (!out.markdown) throw new SyntaxError('empty'); }
   return out;
 }
@@ -420,12 +436,21 @@ async function atomicWrite(abs, body) {
   await fsp.mkdir(path.dirname(abs), { recursive: true });
   const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.${process.pid}.${Date.now()}.tmp`);
   await fsp.writeFile(tmp, body);
-  try { await fsp.rename(tmp, abs); }
-  catch (e) {
-    // Windows can refuse to replace a file another program has open (antivirus, cloud sync): write in place.
-    if (e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY') { try { await fsp.copyFile(tmp, abs); } finally { await fsp.unlink(tmp).catch(() => {}); } return; }
-    await fsp.unlink(tmp).catch(() => {});
-    throw e;
+  // Windows can refuse to replace a file another program has open for a moment (antivirus, cloud sync):
+  // try the rename again for a while. Never fall back to writing over the original in place: a write that
+  // fails half way (disk full) would leave half a file. If it can't be replaced, the original stays whole
+  // and the save is reported as failed, so the app keeps the text and tries again.
+  for (let i = 0; ; i++) {
+    try { await fsp.rename(tmp, abs); return; }
+    catch (e) {
+      const busy = e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY';
+      if (!busy || i >= 7) {
+        await fsp.unlink(tmp).catch(() => {});
+        if (busy) throw new HttpError(503, 'The file is in use by another program; it was not changed. Try again.');
+        throw e;
+      }
+      await new Promise(r => setTimeout(r, 40 * 2 ** Math.min(i, 4)));
+    }
   }
 }
 
@@ -619,9 +644,12 @@ async function syncInfo() {
   for (const d of 'GHIJKLMNOPQRSTUVWXYZ') add('Google Drive', `${d}:\\My Drive`);
   const v = VAULT.toLowerCase();
   let hit = roots.find(r => v === r.root.toLowerCase() || v.startsWith(r.root.toLowerCase() + path.sep));
+  // A folder that is only *named* like a cloud folder (but isn't one this PC's cloud app is set up to sync)
+  // is not treated as synced; it's reported separately so the app can say so.
+  let nameOnly = null;
   if (!hit) {
     const m = VAULT.match(/[\\/](OneDrive[^\\/]*|Dropbox|Google Drive|My Drive|iCloud ?Drive)([\\/]|$)/i);
-    if (m) hit = { provider: /onedrive/i.test(m[1]) ? 'OneDrive' : /dropbox/i.test(m[1]) ? 'Dropbox' : /icloud/i.test(m[1]) ? 'iCloud Drive' : 'Google Drive', root: null };
+    if (m) nameOnly = /onedrive/i.test(m[1]) ? 'OneDrive' : /dropbox/i.test(m[1]) ? 'Dropbox' : /icloud/i.test(m[1]) ? 'iCloud Drive' : 'Google Drive';
   }
   if (!hit) { // Syncthing marks synced folders with .stfolder
     for (let d = VAULT; ; d = path.dirname(d)) {
@@ -629,7 +657,9 @@ async function syncInfo() {
       if (path.dirname(d) === d) break;
     }
   }
-  return { vault: VAULT, provider: hit?.provider || null, root: hit?.root || null, available: roots };
+  // "configured": inside the folder a cloud app is set up to sync. Graphite can't see whether uploads finished,
+  // so it never claims they did (uploaded stays unknown).
+  return { vault: VAULT, provider: hit?.provider || null, root: hit?.root || null, configured: !!hit?.root, nameOnly, available: roots };
 }
 
 async function serveFile(res, abs, req) {
