@@ -1677,6 +1677,45 @@ document.addEventListener('keydown', e => {
   if (done) { e.preventDefault(); e.stopPropagation(); }
 }, true);
 
+// Pages shown inside the app (the 🎓 study tabs, embedded web pages) get keyboard focus when you click in them,
+// and their key presses never reach this window. So Graphite's own shortcuts (tabs, reopen closed tab,
+// switcher, palette, back/forward…) are caught inside every same-origin frame and replayed here. Keys the page
+// itself needs (copy, paste, select all, find, typing) stay with the page.
+function isAppShortcut(e) {
+  const mod = e.ctrlKey || e.metaKey, k = (e.key || '').toLowerCase();
+  if (e.key === 'F1') return true;
+  if (mod && !e.altKey) {
+    if (['Tab', 'PageUp', 'PageDown'].includes(e.key)) return true;
+    if (!e.shiftKey) return /^[1-9]$/.test(e.key) || ['t', 'w', 'o', 'p', 'n', 'g', ','].includes(k);
+    return ['t', 'f', 'k', 'e', 'y'].includes(k);
+  }
+  if (e.altKey && !mod) return ['r', 'd', 'n'].includes(k) || e.key === 'ArrowLeft' || e.key === 'ArrowRight';
+  return false;
+}
+function bridgeFrameKeys(frame) {
+  const hook = () => {
+    let win;
+    try { win = frame.contentWindow; if (!win || !win.document || win.__graphiteKeys) return; } catch { return; } // sandboxed / other origin
+    win.__graphiteKeys = true;
+    win.addEventListener('keydown', e => {
+      if (!isAppShortcut(e)) return;
+      const copy = new KeyboardEvent('keydown', { key: e.key, code: e.code, ctrlKey: e.ctrlKey, metaKey: e.metaKey, shiftKey: e.shiftKey, altKey: e.altKey, bubbles: true, cancelable: true });
+      document.dispatchEvent(copy);
+      if (copy.defaultPrevented) { e.preventDefault(); e.stopPropagation(); }
+    }, true);
+  };
+  frame.addEventListener('load', hook);
+  hook();
+}
+new MutationObserver(muts => {
+  for (const m of muts) for (const n of m.addedNodes) {
+    if (n.nodeType !== 1) continue;
+    if (n.tagName === 'IFRAME') bridgeFrameKeys(n);
+    else n.querySelectorAll?.('iframe').forEach(bridgeFrameKeys);
+  }
+}).observe(document.documentElement, { childList: true, subtree: true });
+document.querySelectorAll('iframe').forEach(bridgeFrameKeys);
+
 document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
   if (!$('#modal').classList.contains('hidden') || document.querySelector('.plugin-modal') || settingsOpen()) return;
