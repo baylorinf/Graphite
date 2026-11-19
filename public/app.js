@@ -6,6 +6,8 @@ import * as PM from '/plugins.js';
 import { hash, merge3, isConflictCopy } from '/sync.js';
 import { applyAppearance } from '/appearance.js';
 import * as RV from '/review.js';
+import * as STUDY from '/study.js'; // mistake book, cards from PDFs, plan days
+import { PLUG, fillVars } from '/i18n-plugins.js';
 import * as CK from '/check.js';
 import * as AI from '/ai.js';
 import * as SA from '/studyai.js';
@@ -13,6 +15,8 @@ import { ICON, TAB_ICON, SEL_ICON } from '/icons.js'; // Lucide icons + the Grap
 import { G, initGraph, buildGraph, drawGraph, readGraphColors, fitGraph, stopGraph } from '/graph.js';
 import { initSettings, openSettings, closeSettings, settingsOpen, refreshSettings } from '/settings.js';
 import { mountPdf } from '/pdfview.js';
+// The bundled plugins write English and ask the app for the text in your language.
+window.graphiteT = (s, v) => fillVars((PLUG[getLang()] || {})[s] ?? s, v);
 
 /* =====================================================================
    Helpers
@@ -241,14 +245,17 @@ async function mergeIntoEditor(f, base, theirs) {
   const m = merge3(base, mine, theirs);
   if (m.ok) {
     if (m.text !== mine) { setEditorText(m.text, false); syncNotice(t('sync.merged', { name })); }
+    setDraft(f.path, m.text); rebaseDraft(f.path, theirs);
   } else {
     try {
       const copy = await saveConflictCopy(f.path, theirs);
       syncNotice(t('sync.conflict', { name }), copy);
+      setDraft(f.path, mine); rebaseDraft(f.path, theirs);
     } catch (e) {
       // The other version isn't safely on disk yet: keep treating the disk as changed, so the next save
       // is refused by the server and tries the copy again instead of overwriting it.
       f.disk = base;
+      setDraft(f.path, mine);
       syncNotice(e.message);
     }
   }
@@ -258,15 +265,15 @@ async function mergeIntoEditor(f, base, theirs) {
 
 // Save a note, telling the server which version we started from. If the file changed on disk in the
 // meantime, merge; if the changes clash, keep ours and save theirs as a "(conflict …)" copy.
-async function putNote(path, text, f = S.files.get(path)) {
+async function putNote(path, text, base = draftBase(path)) {
   const put = (body, baseText) => fetch(`/api/file?path=${encodeURIComponent(path)}`, {
     method: 'PUT', body, headers: { 'X-Vault': '1', ...(baseText != null ? { 'X-Base-Hash': hash(baseText) } : {}) },
   });
   const fail = async res => { throw new Error((await res.json().catch(() => ({}))).error || res.statusText); };
-  let res = await put(text, f?.disk);
+  let res = await put(text, base);
   if (res.status === 409) {
     const theirs = (await res.json()).content;
-    const final = await resolveConflict(path, f?.disk ?? '', text, theirs);
+    const final = await resolveConflict(path, base ?? '', text, theirs);
     res = await put(final, theirs);
     if (!res.ok) await fail(res);
     return { ...(await res.json()), content: final };
@@ -479,7 +486,7 @@ function renderProps(fm) {
   return `<div class="properties">${rows}</div>`;
 }
 
-const CALLOUT_ICON = { note: '✎', info: 'ℹ', todo: '☐', tip: '🔥', hint: '🔥', important: '🔥', success: '✔', check: '✔', done: '✔', question: '?', help: '?', faq: '?', warning: '⚠', caution: '⚠', attention: '⚠', failure: '✘', fail: '✘', missing: '✘', danger: '⚡', error: '⚡', bug: '🐞', example: '☰', quote: '❝', cite: '❝', abstract: '📋', summary: '📋', tldr: '📋' };
+const CALLOUT_ICON = { note: '✎', info: 'ℹ', todo: '☐', tip: '🔥', hint: '🔥', important: '🔥', success: '✔', check: '✔', done: '✔', question: '?', help: '?', faq: '?', warning: '⚠', caution: '⚠', attention: '⚠', failure: '✘', fail: '✘', missing: '✘', danger: '⚡', error: '⚡', bug: '🐞', example: '☰', quote: '❝', cite: '❝', progress: '◔', abstract: '📋', summary: '📋', tldr: '📋' };
 
 function renderInto(el, text, from, depth = 0) {
   const { fm, body } = splitFrontmatter(text);
@@ -492,6 +499,7 @@ function renderInto(el, text, from, depth = 0) {
 }
 
 function postProcess(el, from, depth) {
+  STUDY.decorate(el, from, depth); // problem lists from exam analyses, Start buttons in revision plans
   // Heading ids for outline / [[Note#Heading]] navigation.
   const used = new Set();
   for (const h of el.querySelectorAll('h1,h2,h3,h4,h5,h6')) {
@@ -587,6 +595,7 @@ const scheduleRender = debounce(() => { renderPreview(); updateStatus(); }, 120)
 ed.addEventListener('input', () => {
   if (!S.current) return;
   S.dirty = true;
+  setDraft(S.current, ed.value, true);
   const at = activeTab(); if (at?.preview) { at.preview = false; renderTabs(); persistTabs(); }
   setSaveStatus(t('status.unsaved'));
   autosize();
@@ -597,11 +606,26 @@ ed.addEventListener('input', () => {
   if (!Sug) PM.emitEditorChange();
 });
 
-// Unsaved drafts, per note: kept until that exact text has reached the disk, also across note switches and
-// restarts (stored with the app settings). Opening a note with a draft shows the draft and keeps retrying.
-const drafts = new Map(Object.entries(store.get('drafts', {}) || {}));
-const persistDrafts = () => store.set('drafts', Object.fromEntries(drafts));
-function setDraft(path, text) { drafts.set(path, { text, at: Date.now() }); persistDrafts(); }
+// Unsaved drafts, per note: { text: the newest text typed, base: the version on disk it was written against }.
+// Kept until that text has reached the disk, across note switches, reloads and restarts (stored with the app
+// settings, separately for each vault, so a note with the same name in another vault is never touched).
+// Every save of a draft (typing, Ctrl+S, switching notes, background retries, reload, closing) goes through
+// putNote with the draft's base: if the file on disk changed since, both versions are kept, never overwritten.
+let drafts = new Map(), draftsKey = null, draftPersistTimer = null;
+function loadDrafts() {
+  draftsKey = 'drafts:' + (S.vault || '');
+  drafts = new Map(Object.entries(store.get(draftsKey, {}) || {}).filter(([, d]) => d && typeof d.text === 'string'));
+}
+const persistDrafts = () => { clearTimeout(draftPersistTimer); draftPersistTimer = null; if (draftsKey) store.set(draftsKey, Object.fromEntries(drafts)); };
+const persistDraftsSoon = () => { if (!draftPersistTimer) draftPersistTimer = setTimeout(persistDrafts, 300); };
+const draftBase = path => (drafts.has(path) ? drafts.get(path).base : S.files.get(path)?.disk);
+function setDraft(path, text, soon = false) {
+  const old = drafts.get(path);
+  drafts.set(path, { text, base: old ? old.base : (S.files.get(path)?.disk ?? null), at: Date.now() });
+  if (soon) persistDraftsSoon(); else persistDrafts();
+}
+// The draft now builds on a newer disk version (merged with it, or the other version was kept as a copy).
+function rebaseDraft(path, base) { const d = drafts.get(path); if (d) { d.base = base; persistDrafts(); } }
 function clearDraft(path, text) { const d = drafts.get(path); if (d && (text == null || d.text === text)) { drafts.delete(path); persistDrafts(); } }
 // Try to write every draft of a note that isn't open (the open one goes through saveNow).
 async function retryDrafts() {
@@ -609,11 +633,11 @@ async function retryDrafts() {
     if (path === S.current) continue;
     const f = S.files.get(path);
     try {
-      const r = await putNote(path, d.text, f);
+      const r = await putNote(path, d.text, d.base);
       if (f) { f.content = r.content; f.disk = r.content; f.mtime = r.mtime; f.size = r.content.length; indexFile(f); }
       else { S.files.set(path, { path, mtime: r.mtime, size: r.content.length, content: r.content, disk: r.content }); addFolderChain(path); rebuildNameIndex(); renderTree(); }
-      clearDraft(path, d.text);
-    } catch { /* still failing: keep the draft */ }
+      clearDraft(path, d.text); rebaseDraft(path, r.content);
+    } catch { /* still failing: keep the draft (and its base) */ }
   }
   updateDraftStatus();
 }
@@ -656,7 +680,7 @@ async function saveOnce() {
   if (f) { f.content = text; indexFile(f); }
   setSaveStatus(t('status.saving'));
   try {
-    const r = await putNote(path, text, f);
+    const r = await putNote(path, text, draftBase(path));
     if (f) { f.mtime = r.mtime; f.size = r.content.length; f.disk = r.content; }
     if (r.content !== text && S.current === path) {
       // Saved together with changes from another device: bring those into the editor too.
@@ -667,7 +691,9 @@ async function saveOnce() {
       if (f) { f.content = next; indexFile(f); }
       renderPreview(); updateStatus();
     }
-    clearDraft(path, text);
+    // Saved. Anything typed meanwhile stays a draft, now building on what was just written.
+    clearDraft(path, text); rebaseDraft(path, r.content);
+    if (S.dirty && S.current === path) setDraft(path, ed.value);
     if (!S.dirty) setSaveStatus(t('status.saved'));
     refreshSidePanels();
     PM.emitVault('modify', path); PM.emitMetadata(path);
@@ -682,7 +708,7 @@ async function saveOnce() {
 }
 
 async function writeFile(path, content) {
-  const r = await putNote(path, content);
+  const r = await putNote(path, content, S.files.get(path)?.disk);
   const f = S.files.get(path);
   if (f) { f.content = r.content; f.disk = r.content; f.mtime = r.mtime; indexFile(f); }
   PM.emitVault('modify', path); PM.emitMetadata(path);
@@ -910,12 +936,32 @@ function renderPreview() {
   renderInto($('#preview'), ed.value, S.current);
 }
 
+// Lines of a note that are code (fenced ``` / ~~~ blocks and indented code blocks) or frontmatter, found with the
+// Markdown parser itself so they match what the preview treats as code.
+function codeLines(text) {
+  const out = new Set();
+  const fm = text.match(FM_RE)?.[0] || '';
+  const fmLines = fm ? (fm.match(/\n/g) || []).length : 0;
+  for (let i = 0; i < fmLines; i++) out.add(i);
+  let line = fmLines, tokens;
+  try { tokens = marked.lexer(text.slice(fm.length)); } catch { return out; }
+  for (const tk of tokens) {
+    const n = ((tk.raw || '').match(/\n/g) || []).length;
+    if (tk.type === 'code') { const end = tk.raw.endsWith('\n') ? n : n + 1; for (let k = 0; k < end; k++) out.add(line + k); }
+    line += n;
+  }
+  return out;
+}
+// Apply fn to the parts of one line that are not inline `code`.
+const outsideInlineCode = (line, fn) => line.split(/(`+[^`]*?`+)/).map((seg, i) => (i % 2 ? seg : fn(seg))).join('');
+
 function toggleTask(n) {
   const v = ed.value, lines = v.split('\n');
   const fmLen = (v.match(FM_RE)?.[0] || '').split('\n').length - 1;
+  const code = codeLines(v); // fenced AND indented code blocks: task syntax there is an example, not a task
   let fence = null, k = 0, offset = 0;
   for (let i = 0; i < lines.length; offset += lines[i].length + 1, i++) {
-    if (i < fmLen) continue;
+    if (i < fmLen || code.has(i)) continue;
     const l = lines[i];
     const f = l.match(/^\s*(```|~~~)/);
     if (f) { fence = fence ? null : f[1]; continue; }
@@ -1010,7 +1056,11 @@ async function openNote(path, { push = true, heading = '' } = {}) {
   if (!f) return;
   if (!isMd(path)) return showFile(path, { push, at: heading });
   leaveCustomTab();
-  if (S.dirty) await saveNow();
+  const prev = S.current;
+  if (S.dirty) await saveNow().catch(() => {});
+  // Typed more while that save was running (or it failed): the newest text is kept as the note's draft and
+  // written in the background, with the same conflict check.
+  if (prev && prev !== path && S.current === prev && S.dirty) { setDraft(prev, ed.value); S.dirty = false; setTimeout(retryDrafts, 50); }
   if (f.content == null) await fetchContent(f);
   if (path !== S.current) offerCheckIfWritten();
   if (S.view !== 'note') showNoteView();
@@ -1026,8 +1076,9 @@ async function openNote(path, { push = true, heading = '' } = {}) {
   $('#title').value = baseName(path);
   $('#preview-title').textContent = baseName(path);
   setEditorText(f.content ?? '', true);
+  // A draft that isn't on disk yet (compared with the disk, not with the text last tried): show it, keep it unsaved.
   const draft = drafts.get(path);
-  if (draft && draft.text !== (f.content ?? '')) {
+  if (draft && draft.text !== (f.disk ?? f.content ?? '')) {
     setEditorText(draft.text, true);
     S.dirty = true; setSaveStatus(t('status.unsaved'));
     toast(t('draft.restored', { name: baseName(path) }));
@@ -1147,30 +1198,47 @@ async function newFolder(parent = currentFolder()) {
   } catch (e) { toast(e.message); }
 }
 
-function computeLinkUpdates(from, to) {
-  const newName = baseName(to), out = [];
+// A rename or move: every file whose path changes (the file itself, or everything in a folder), old → new.
+function renamePairs(from, to) {
+  const pairs = new Map();
+  for (const p of S.files.keys()) if (p === from || p.startsWith(from + '/')) pairs.set(p, to + p.slice(from.length));
+  return pairs;
+}
+// Rewrite the links that point at moved files, in every note. Only real links change: links inside code blocks
+// and `inline code` (Markdown examples) are left exactly as written. Links written with a path keep a path (the
+// new one); links written with just a name get the new name. Page / heading parts (#page=7) and aliases stay.
+function computeLinkUpdates(pairs) {
+  const out = [];
   for (const f of S.files.values()) {
     if (!isMd(f.path) || f.content == null) continue;
+    const code = codeLines(f.content);
     let changed = false;
-    const text = f.content.replace(/(!?)\[\[([^\[\]\n]+?)\]\]/g, (all, bang, inner) => {
-      const { name, heading, alias } = splitWiki(inner);
-      if (!name || resolve(name, f.path) !== from) return all;
-      changed = true;
-      const target = name.includes('/') ? joinPath(dirName(to), newName) : newName;
-      return `${bang}[[${target}${heading ? '#' + heading : ''}${alias ? '|' + alias : ''}]]`;
-    });
-    if (changed) out.push({ path: f.path, content: text });
+    const lines = f.content.split('\n').map((line, i) => (code.has(i) ? line : outsideInlineCode(line, seg =>
+      seg.replace(/(!?)\[\[([^\[\]\n]+?)\]\]/g, (all, bang, inner) => {
+        const { name, heading, alias } = splitWiki(inner);
+        if (!name) return all;
+        const np = pairs.get(resolve(name, f.path));
+        if (!np) return all;
+        const nn = name.includes('/') ? (isMd(np) && !/\.md$/i.test(name) ? np.replace(/\.md$/i, '') : np)
+          : (isMd(np) && !/\.md$/i.test(name) ? baseName(np) : fileName(np));
+        if (nn === name) return all;
+        changed = true;
+        return `${bang}[[${nn}${heading ? '#' + heading : ''}${alias ? '|' + alias : ''}]]`;
+      }))));
+    if (changed) out.push({ path: f.path, content: lines.join('\n') });
   }
   return out;
 }
 
+const renameHooks = [pairs => RV.renamedSources(pairs), pairs => { let moved = false; for (const [o, n] of pairs) if (drafts.has(o)) { drafts.set(n, drafts.get(o)); drafts.delete(o); moved = true; } if (moved) persistDrafts(); }]; // features with their own per-file data (mistake book, cards from PDFs) follow renames
 async function renamePath(from, to) {
   if (!from || !to || from === to) return false;
   const isFile = S.files.has(from);
   const taken = S.files.has(to) || S.folders.has(to);
   if (taken && from.toLowerCase() !== to.toLowerCase()) { toast(t('toast.exists', { name: to })); return false; }
   if (S.dirty) await saveNow();
-  const edits = isFile && isMd(from) && baseName(from) !== baseName(to) ? computeLinkUpdates(from, to) : [];
+  const pairs = renamePairs(from, to);
+  const edits = computeLinkUpdates(pairs); // worked out before the rename, while links still resolve to the old paths
   try { await api('POST', 'rename', {}, { from, to }); } catch (e) { toast(e.message); return false; }
 
   const map = p => (p === from ? to : p.startsWith(from + '/') ? to + p.slice(from.length) : p);
@@ -1185,7 +1253,9 @@ async function renamePath(from, to) {
   if (S.current) S.current = map(S.current);
   rebuildNameIndex();
   PM.emitVault('rename', to, from);
-  if (isFile && isMd(to)) RV.renamed(from, to); // keep review progress
+  // Keep review progress (cards, due dates, notes checked) and other per-note data for every moved note.
+  for (const [o, n] of pairs) if (isMd(n)) RV.renamed(o, n);
+  for (const fn of renameHooks) { try { fn(pairs); } catch (e) { console.warn(e); } }
 
   for (const e of edits) {
     const p = map(e.path);
@@ -1519,7 +1589,7 @@ const COMMANDS = [
   { id: 'forward', name: 'Navigate forward', kbd: 'Alt+→', run: () => navigate(1) },
   { id: 'help', name: 'Open help', kbd: 'F1', run: () => (S.view === 'help' && S.helpPage === 'guide' ? showNoteView() : showHelp('guide')) },
   { id: 'markdown-cheatsheet', name: 'Open Markdown cheatsheet', run: () => (S.view === 'help' && S.helpPage === 'markdown' ? showNoteView() : showHelp('markdown')) },
-  { id: 'review', name: 'Open review', kbd: 'Alt+R', run: () => (S.view === 'review' ? showNoteView() : showReview()) },
+  { id: 'review', name: 'Open review', kbd: 'Alt+R', run: () => showReview() }, // always opens Review (going back is the tab or Back)
   { id: 'start-review', name: 'Start today’s review', run: () => RV.startDailyReview() },
   { id: 'check-note', name: 'Check this note for mistakes', kbd: 'Ctrl+Shift+E', available: () => !!S.current, run: async () => { if (S.dirty) await saveNow(); CK.checkNote(S.current); } },
   { id: 'tidy-format', name: 'Tidy this note\'s format to match its folder', kbd: 'Ctrl+Shift+Y', available: () => !!S.current, run: () => SA.tidyFormat(S.current) },
@@ -2149,6 +2219,9 @@ function pdfControls() {
     ${b('out', '−', t('pdf.zoomOut'))}<button class="fv-btn pdf-scale" data-pdf="fit" title="${esc(t('pdf.fitWidth'))}">…</button>${b('in', '+', t('pdf.zoomIn'))}
     <span class="pdf-sep"></span>
     <input class="pdf-find" type="search" placeholder="${esc(t('pdf.findPh'))}" title="${esc(t('pdf.find'))} (Ctrl+F)"><span class="pdf-hits"></span>
+    <span class="pdf-sep"></span>
+    <button class="fv-btn pdf-ib pdf-study" data-pdf="clip" title="${esc(t('clip.title'))}">${selSvg('scissors')}</button>
+    <button class="fv-btn pdf-ib pdf-study" data-pdf="mistake" title="${esc(t('mist.addFromPage'))}">${selSvg('mistake')}</button>
   </span>`;
 }
 function closePdf() {
@@ -2187,6 +2260,15 @@ async function openPdf(box, body, path, src, page) {
   pageIn.addEventListener('blur', () => { pageIn.value = ctl.page; });
   pageIn.addEventListener('focus', () => pageIn.select());
   box.querySelector('[data-pdf="in"]').onclick = () => ctl.zoomIn();
+  // Clip a box of the page (as a card or a mistake), or add this page's problem to the mistake book.
+  box.querySelector('[data-pdf="clip"]').onclick = e => {
+    const r = e.currentTarget.getBoundingClientRect();
+    showMenu(r.left, r.bottom + 4, [
+      { label: t('clip.asCard'), run: () => STUDY.startClip(host, path, 'card') },
+      { label: t('clip.asMistake'), run: () => STUDY.startClip(host, path, 'mistake') },
+    ]);
+  };
+  box.querySelector('[data-pdf="mistake"]').onclick = () => STUDY.mistakeForm({ src: path, page: ctl.page });
   box.querySelector('[data-pdf="out"]').onclick = () => ctl.zoomOut();
   // The % button switches between "fit the width" (follows the pane size) and "whole page".
   scaleBtn.onclick = () => ctl.setScale(scaleBtn.classList.contains('on') ? 'page-fit' : 'page-width');
@@ -2251,7 +2333,8 @@ function showSelBar(e) {
     btn('note', 'note', t('sel.addNote'), t(target.isNew ? 'sel.addNoteNew' : 'sel.addNoteTitle', { note: baseName(target.path) }), 'primary'),
     chat ? btn('ask', 'spark', t('sel.ask'), t('sel.askTitle')) : '',
     cap ? '<span class="sep"></span>' + btn('unfamiliar', 'help', t('sel.unfamiliar'), t('sel.unfamiliarTitle')) + btn('interesting', 'bulb', t('sel.interesting'), t('sel.interestingTitle')) : '',
-    '<span class="sep"></span>' + btn('copy', 'copy', t('sel.copy'), t('sel.copyTitle')),
+    '<span class="sep"></span>' + btn('card', 'cards', t('sel.card'), t('sel.cardTitle')),
+    btn('copy', 'copy', t('sel.copy'), t('sel.copyTitle')),
   ].join('');
   selBar.hidden = false;
   const r = sel.getRangeAt(0).getBoundingClientRect();
@@ -2273,6 +2356,7 @@ async function selAction(kind, ctx) {
     try { await navigator.clipboard.writeText(text); } catch { await window.myobsidianDesktop?.copyText?.(text); }
     return toast(t('sel.copied'));
   }
+  if (kind === 'card') return STUDY.cardForm({ src: path, page, a: text });
   if (kind === 'note') {
     const target = selTargetNote(path);
     const quote = text.split('\n').map(l => '> ' + l).join('\n') + '\n> — ' + selSourceLink(ctx) + '\n';
@@ -2915,6 +2999,7 @@ async function boot() {
   initGraph(host);
   AI.initAI(host);
   SA.initStudyAI(host);
+  STUDY.initStudy(host);
   setLang(store.get('lang', null) || detectLang());
   applyI18n();
   for (const el of $$('[data-icon]')) el.innerHTML = icon(el.dataset.icon);
@@ -2925,10 +3010,13 @@ async function boot() {
   fitSides();
   setMode(S.mode);
   try { await loadAll(); } catch (e) { toast(t('toast.loadFailed', { msg: e.message })); return; }
+  loadDrafts();
   renderTree(); refreshSidePanels();
   const last = store.get('last', null);
   const welcome = [...S.files.keys()].find(p => /^welcome\.md$/i.test(fileName(p)));
   void last; void welcome;
+  // Review progress first: a restored Review tab (or plan / mistake book) draws from it right away.
+  await RV.initReview(host);
   await restoreTabs();
 
   const es = new EventSource('/api/events');
@@ -2942,7 +3030,6 @@ async function boot() {
   window.myobsidianDesktop?.setLanguage(getLang());
   if (window.myobsidianDesktop?.onUpdate) { window.myobsidianDesktop.onUpdate(showUpdate); checkUpdates(); }
   initSettings(host);
-  await RV.initReview(host);
   updateReviewBadge();
   setInterval(updateReviewBadge, 60 * 1000); // new day → new reviews
   // Right-click menu actions from the desktop app
@@ -2995,6 +3082,8 @@ async function installUpdate() {
 window.__moFlush = async () => {
   try { await saveNow(); } catch { /* reported below */ }
   if (S.current && S.dirty) setDraft(S.current, ed.value);
+  persistDrafts();
+  try { await RV.flushReview(); } catch { /* review progress is retried on next start */ }
   await retryDrafts().catch(() => {});
   const unsaved = [...drafts].map(([path, d]) => ({ path, text: d.text }));
   return { ok: !unsaved.length, unsaved };
@@ -3002,8 +3091,15 @@ window.__moFlush = async () => {
 // Ask once more on startup for drafts left from last time.
 setTimeout(() => { if (drafts.size) retryDrafts(); }, 3000);
 
+// Reloading or closing the page: the newest text is stored as a draft first, then one last save is sent with
+// the same version check as every other save, so it can never overwrite a change that reached the disk.
 addEventListener('beforeunload', () => {
-  if (S.dirty && S.current) fetch(`/api/file?path=${encodeURIComponent(S.current)}`, { method: 'PUT', keepalive: true, headers: { 'X-Vault': '1' }, body: ed.value });
+  if (S.dirty && S.current) {
+    setDraft(S.current, ed.value);
+    const base = draftBase(S.current);
+    fetch(`/api/file?path=${encodeURIComponent(S.current)}`, { method: 'PUT', keepalive: true, headers: { 'X-Vault': '1', ...(base != null ? { 'X-Base-Hash': hash(base) } : {}) }, body: ed.value });
+  }
+  persistDrafts();
 });
 
 boot();

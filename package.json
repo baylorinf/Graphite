@@ -1,7 +1,7 @@
 {
   "name": "myobsidian",
   "productName": "Graphite",
-  "version": "1.1.33",
+  "version": "1.1.35",
   "description": "Graphite: a local-first notebook for studying",
   "main": "electron/main.js",
   "scripts": {
@@ -12,7 +12,7 @@
     "publish": "node scripts/publish-github.js",
     "icons": "node scripts/make-icons.js"
   },
-  "author": "Graphite",
+  "author": "MistZero",
   "license": "ISC",
   "type": "commonjs",
   "dependencies": {
@@ -32,7 +32,7 @@
   "build": {
     "appId": "com.myobsidian.app",
     "productName": "Graphite",
-    "copyright": "Graphite",
+    "copyright": "© 2026 MistZero · Co-author: Claude",
     "electronLanguages": [
       "en-US",
       "fr",

@@ -18,17 +18,43 @@ async function loadLib() {
 }
 
 // The text of a PDF, page by page ("" for scanned pages without a text layer). Used to send exam papers to an AI.
-export async function pdfText(src, { maxPages = 80 } = {}) {
+// The text of a PDF, page by page. All pages unless `only` (a list of page numbers) is given.
+// Returns { pages: [{ n, text }], numPages, empty: [page numbers with no text, e.g. scanned pages] }.
+// `pages` is also usable as a plain list of strings through .map(p => p.text).
+export async function pdfText(src, { only = null, onProgress = null } = {}) {
   const { pdfjs } = await loadLib();
-  const doc = await pdfjs.getDocument({ url: src }).promise;
-  const pages = [];
-  for (let i = 1; i <= Math.min(doc.numPages, maxPages); i++) {
-    const tc = await (await doc.getPage(i)).getTextContent();
+  const doc = await pdfjs.getDocument({ url: src, cMapUrl: '/lib/pdfjs/cmaps/', cMapPacked: true }).promise;
+  const want = only?.length ? only.filter(n => n >= 1 && n <= doc.numPages) : Array.from({ length: doc.numPages }, (_, i) => i + 1);
+  const pages = [], empty = [];
+  for (const n of want) {
+    const tc = await (await doc.getPage(n)).getTextContent();
     let line = '', out = '';
     for (const it of tc.items) { line += it.str; if (it.hasEOL) { out += line + '\n'; line = ''; } }
-    pages.push((out + line).trim());
+    const text = (out + line).trim();
+    pages.push({ n, text });
+    if (!text) empty.push(n);
+    onProgress?.(pages.length, want.length);
   }
-  return { pages, numPages: doc.numPages };
+  return { pages, numPages: doc.numPages, empty };
+}
+export async function pdfPageCount(src) { const { pdfjs } = await loadLib(); return (await pdfjs.getDocument({ url: src }).promise).numPages; }
+// "1-5, 8, 10-12" → [1,2,3,4,5,8,10,11,12] (within 1..max). Empty → null (all pages).
+export function parsePages(str, max) {
+  const out = new Set();
+  for (const part of String(str || '').split(/[,，;；\s]+/).filter(Boolean)) {
+    const m = part.match(/^(\d+)(?:[-–~～](\d+))?$/);
+    if (!m) throw new Error(part);
+    const a = +m[1], b = m[2] ? +m[2] : a;
+    for (let i = Math.min(a, b); i <= Math.max(a, b) && i <= (max || 1e9); i++) if (i >= 1) out.add(i);
+  }
+  return out.size ? [...out].sort((x, y) => x - y) : null;
+}
+// [1,2,3,5,7,8] → "1–3, 5, 7–8"
+export function pageRanges(list) {
+  const out = []; let a = null, b = null;
+  for (const n of [...list].sort((x, y) => x - y)) { if (a != null && n === b + 1) b = n; else { if (a != null) out.push(a === b ? `${a}` : `${a}–${b}`); a = b = n; } }
+  if (a != null) out.push(a === b ? `${a}` : `${a}–${b}`);
+  return out.join(', ');
 }
 
 const FIT = new Set(['page-width', 'page-fit', 'auto']);

@@ -4,6 +4,7 @@ import * as PM from '/plugins.js';
 import { DEFAULTS, loadAppearance, saveAppearance, listFonts, isInstalled } from '/appearance.js';
 import { reviewSettings, setReviewSettings } from '/review.js';
 import * as AI from '/ai.js';
+import { enhanceAISelect } from '/aipicker.js';
 
 let H = null;
 let root = null, nav = null, content = null;
@@ -101,6 +102,7 @@ function renderGeneral() {
   if (window.myobsidianDesktop) vaultRow.addButton(b => b.setButtonText(t('settings.switchVault')).onClick(() => window.myobsidianDesktop.chooseVault()));
   vaultRow.addButton(b => b.setButtonText(t('settings.reveal')).onClick(() => H.api('POST', 'reveal')));
   new PM.Setting(content).setName(t('settings.version')).setDesc(`Graphite ${H.S.version || ''}`);
+  new PM.Setting(content).setName(t('settings.credits')).setDesc(t('settings.creditsDesc', { author: 'MistZero', co: 'Claude' }));
   if (window.myobsidianDesktop?.checkUpdates) { // desktop app only
     const u = H.S.update;
     new PM.Setting(content).setName(t('settings.updates'))
@@ -150,6 +152,7 @@ function renderAI() {
         if (!o.ready) d.selectEl.lastElementChild.disabled = true;
       }
       d.setValue(AI.choice(f)).onChange(v => AI.setChoice(f, v));
+      enhanceAISelect(d.selectEl, f);
     });
   }
   const cc = content.createEl('p', { cls: 'setting-note' });
@@ -283,9 +286,21 @@ async function renderSync(token) {
   if (token !== renderToken) return;
 
   // Status: is the vault inside a cloud folder?
-  const status = content.createDiv('settings-callout' + (info?.provider ? ' is-ok' : ''));
-  status.createEl('h3', { text: info?.provider ? t('sync.inProviderTitle', { provider: info.provider }) : t('sync.notSyncedTitle') });
-  status.createEl('p', { text: info?.provider ? t('sync.inProvider', { provider: info.provider }) : t('sync.notSynced') });
+  // Three cases: inside a folder a cloud app on this PC is set up to sync ("configured": Graphite can't see
+  // whether uploads finished, so it never says they did); only *named* like a cloud folder; or not synced.
+  const kind = info?.provider ? 'configured' : info?.nameOnly ? 'nameOnly' : 'none';
+  const status = content.createDiv('settings-callout' + (kind === 'configured' ? ' is-ok' : kind === 'nameOnly' ? ' is-warn' : ''));
+  if (kind === 'configured') {
+    status.createEl('h3', { text: t('sync.inProviderTitle', { provider: info.provider }) });
+    status.createEl('p', { text: t('sync.inProvider', { provider: info.provider }) });
+    status.createEl('p', { cls: 'setting-item-description', text: t('sync.uploadUnknown', { provider: info.provider }) });
+  } else if (kind === 'nameOnly') {
+    status.createEl('h3', { text: t('sync.nameOnlyTitle', { provider: info.nameOnly }) });
+    status.createEl('p', { text: t('sync.nameOnly', { provider: info.nameOnly }) });
+  } else {
+    status.createEl('h3', { text: t('sync.notSyncedTitle') });
+    status.createEl('p', { text: t('sync.notSynced') });
+  }
   if (!info?.provider) for (const r of info?.available || []) status.createEl('p', { text: t('sync.moveHint', { provider: r.provider, path: r.root }) });
   new PM.Setting(content).setName(t('settings.vault')).setDesc(info?.vault || H.S.vault || '').then(s => {
     if (window.myobsidianDesktop) s.addButton(b => b.setButtonText(t('settings.switchVault')).onClick(() => window.myobsidianDesktop.chooseVault()));

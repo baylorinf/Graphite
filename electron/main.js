@@ -283,18 +283,59 @@ function createWindow(url) {
   });
 
   // Save unsaved typing before the window closes, and remember the window size.
+  // Closing: save every note first. The window only closes once all text is on disk, or you chose what to do
+  // with what couldn't be saved (try again, save copies somewhere else, close and keep them as drafts that are
+  // retried on next start, or keep editing). A save that hangs is treated like a failed one, never as done.
+  let closing = false;
   win.on('close', e => {
     if (!win.isMaximized() && !win.isFullScreen()) cfg.bounds = win.getBounds();
     cfg.maximized = win.isMaximized();
     saveConfig();
     if (quitting) return;
     e.preventDefault();
-    quitting = true;
-    const done = () => { if (win && !win.isDestroyed()) win.destroy(); };
-    win.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : null').catch(() => {})
-      .then(captureStorage).then(done, done);
-    setTimeout(done, 3000);
+    if (closing) return;
+    closing = true;
+    closeSafely().catch(err => console.error(err)).finally(() => { closing = false; });
   });
+  const flushPage = () => Promise.race([
+    win.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : ({ ok: true, unsaved: [] })').catch(() => null),
+    new Promise(r => setTimeout(() => r(null), 8000)),
+  ]);
+  async function closeSafely() {
+    const t = tr();
+    for (;;) {
+      if (!win || win.isDestroyed()) return;
+      const r = await flushPage();
+      await captureStorage(); // drafts are kept with the settings in any case
+      if (r && r.ok) { quitting = true; win.destroy(); return; }
+      const unsaved = (r && r.unsaved) || [];
+      const names = unsaved.map(u => '• ' + u.path).join('\n');
+      const { response } = await dialog.showMessageBox(win, {
+        type: 'warning', title: t('unsavedTitle'),
+        message: r ? t('unsavedMessage', { n: unsaved.length }) : t('unsavedTimeout'),
+        detail: (names ? names + '\n\n' : '') + t('unsavedDetail'),
+        buttons: [t('unsavedRetry'), t('unsavedSaveCopies'), t('unsavedQuit'), t('cancel')],
+        defaultId: 0, cancelId: 3, noLink: true,
+      });
+      if (response === 0) continue;
+      if (response === 1) {
+        if (!unsaved.length) continue;
+        const pick = await dialog.showOpenDialog(win, { title: t('unsavedPickFolder'), properties: ['openDirectory', 'createDirectory'] });
+        if (pick.canceled || !pick.filePaths[0]) continue;
+        const failed = [];
+        for (const u of unsaved) {
+          const name = String(u.path).split('/').pop() || 'note.md';
+          let dest = path.join(pick.filePaths[0], name), i = 1;
+          while (fs.existsSync(dest)) dest = path.join(pick.filePaths[0], name.replace(/(\.md)?$/i, ` (${++i})$1`));
+          try { fs.writeFileSync(dest, u.text, { flag: 'wx' }); } catch (err) { failed.push(name + ': ' + err.message); }
+        }
+        if (failed.length) { await dialog.showMessageBox(win, { type: 'error', title: t('unsavedTitle'), message: t('unsavedCopyFailed'), detail: failed.join('\n') }); continue; }
+        quitting = true; win.destroy(); return; // copies are safe; the drafts also stay for next start
+      }
+      if (response === 2) { quitting = true; win.destroy(); return; } // drafts stay and are retried next time
+      return; // Cancel: keep the window open and keep editing
+    }
+  }
 
   win.loadURL(url);
   return win;

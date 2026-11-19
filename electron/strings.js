@@ -69,6 +69,31 @@ const MENU = {
   'zh-TW': { undo: '復原', redo: '重做', cut: '剪下', copy: '複製', paste: '貼上', selectAll: '全選', format: '格式', bold: '粗體', italic: '斜體', highlight: '螢光標記', strike: '刪除線', code: '程式碼', math: '公式', wikilink: '連結到筆記', search: '搜尋「{text}」', openLink: '開啟連結', copyLink: '複製連結網址', copyImage: '複製圖片', check: '檢查這篇筆記的錯誤', quiz: '用這篇筆記做測驗' },
 };
 for (const [lang, d] of Object.entries(MENU)) Object.assign(S[lang], d);
+// Closing with notes that couldn't be saved.
+const UNSAVED = {
+  en: { unsavedTitle: 'Unsaved changes', unsavedMessage: '{n} note(s) could not be saved to your vault.', unsavedTimeout: 'Graphite could not confirm that your notes were saved.',
+    unsavedDetail: 'Nothing has been lost yet: the newest text is kept as a draft. Try again, save copies to another folder, or close and Graphite will try again next time you open it.',
+    unsavedRetry: 'Try again', unsavedSaveCopies: 'Save copies elsewhere…', unsavedQuit: 'Close, keep as drafts', unsavedPickFolder: 'Choose a folder for the copies', unsavedCopyFailed: 'Some copies could not be written.' },
+  fr: { unsavedTitle: 'Modifications non enregistrées', unsavedMessage: '{n} note(s) n’ont pas pu être enregistrées dans votre coffre.', unsavedTimeout: 'Graphite n’a pas pu confirmer l’enregistrement de vos notes.',
+    unsavedDetail: 'Rien n’est perdu : le texte le plus récent est gardé comme brouillon. Réessayez, enregistrez des copies dans un autre dossier, ou fermez : Graphite réessaiera à la prochaine ouverture.',
+    unsavedRetry: 'Réessayer', unsavedSaveCopies: 'Enregistrer des copies ailleurs…', unsavedQuit: 'Fermer, garder les brouillons', unsavedPickFolder: 'Choisir un dossier pour les copies', unsavedCopyFailed: 'Certaines copies n’ont pas pu être écrites.' },
+  es: { unsavedTitle: 'Cambios sin guardar', unsavedMessage: 'No se pudieron guardar {n} nota(s) en tu bóveda.', unsavedTimeout: 'Graphite no pudo confirmar que tus notas se guardaran.',
+    unsavedDetail: 'Aún no se ha perdido nada: el texto más reciente se guarda como borrador. Reinténtalo, guarda copias en otra carpeta o cierra y Graphite lo reintentará la próxima vez.',
+    unsavedRetry: 'Reintentar', unsavedSaveCopies: 'Guardar copias en otro sitio…', unsavedQuit: 'Cerrar y conservar borradores', unsavedPickFolder: 'Elige una carpeta para las copias', unsavedCopyFailed: 'No se pudieron escribir algunas copias.' },
+  ja: { unsavedTitle: '未保存の変更', unsavedMessage: '{n} 件のノートを保管庫に保存できませんでした。', unsavedTimeout: 'ノートが保存されたか確認できませんでした。',
+    unsavedDetail: 'まだ何も失われていません。最新の文章は下書きとして保持されています。もう一度試すか、別のフォルダにコピーを保存するか、閉じて次回起動時に再試行できます。',
+    unsavedRetry: '再試行', unsavedSaveCopies: '別の場所にコピーを保存…', unsavedQuit: '閉じて下書きを保持', unsavedPickFolder: 'コピーの保存先フォルダを選択', unsavedCopyFailed: '一部のコピーを書き込めませんでした。' },
+  ko: { unsavedTitle: '저장되지 않은 변경 사항', unsavedMessage: '노트 {n}개를 보관함에 저장하지 못했습니다.', unsavedTimeout: '노트가 저장되었는지 확인하지 못했습니다.',
+    unsavedDetail: '아직 잃은 것은 없습니다. 최신 내용은 초안으로 보관됩니다. 다시 시도하거나, 다른 폴더에 사본을 저장하거나, 닫으면 다음에 열 때 다시 시도합니다.',
+    unsavedRetry: '다시 시도', unsavedSaveCopies: '다른 곳에 사본 저장…', unsavedQuit: '닫고 초안 유지', unsavedPickFolder: '사본을 저장할 폴더 선택', unsavedCopyFailed: '일부 사본을 쓰지 못했습니다.' },
+  'zh-CN': { unsavedTitle: '有未保存的修改', unsavedMessage: '有 {n} 篇笔记未能保存到仓库。', unsavedTimeout: 'Graphite 无法确认笔记已经保存。',
+    unsavedDetail: '目前没有丢失任何内容：最新文字已作为草稿保留。可以重试、另存副本到其他文件夹，或直接关闭，下次打开时会自动重试。',
+    unsavedRetry: '重试', unsavedSaveCopies: '另存副本到…', unsavedQuit: '关闭并保留草稿', unsavedPickFolder: '选择保存副本的文件夹', unsavedCopyFailed: '部分副本未能写入。' },
+  'zh-TW': { unsavedTitle: '有未儲存的修改', unsavedMessage: '有 {n} 篇筆記未能儲存到儲存庫。', unsavedTimeout: 'Graphite 無法確認筆記已經儲存。',
+    unsavedDetail: '目前沒有遺失任何內容：最新文字已作為草稿保留。可以重試、另存副本到其他資料夾，或直接關閉，下次開啟時會自動重試。',
+    unsavedRetry: '重試', unsavedSaveCopies: '另存副本到…', unsavedQuit: '關閉並保留草稿', unsavedPickFolder: '選擇儲存副本的資料夾', unsavedCopyFailed: '部分副本未能寫入。' },
+};
+for (const [lang, d] of Object.entries(UNSAVED)) Object.assign(S[lang], d);
 
 // Map a system locale such as "zh-HK" or "fr-CA" to one of our languages.
 function pickLang(locale) {

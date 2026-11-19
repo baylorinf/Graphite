@@ -35,6 +35,8 @@ const op = o => { pending.push(o); save(); };
 const setCard = (id, v) => { if (v) state.cards[id] = v; else delete state.cards[id]; op({ k: 'cards', id, v: v || null }); };
 const setNoteState = (path, v) => { if (v) state.notes[path] = v; else delete state.notes[path]; op({ k: 'notes', id: path, v: v || null }); };
 const setAi = (path, v) => { state.ai = state.ai || {}; if (v) state.ai[path] = v; else delete state.ai[path]; op({ k: 'ai', id: path, v: v || null }); };
+const setItem = (id, v) => { state.items = state.items || {}; if (v) state.items[id] = v; else delete state.items[id]; op({ k: 'items', id, v: v || null }); };
+const setPlan = (id, v) => { state.plans = state.plans || {}; if (v) state.plans[id] = v; else delete state.plans[id]; op({ k: 'plans', id, v: v || null }); };
 const bump = (k, d) => { state[k][d] = (state[k][d] || 0) + 1; op({ k, id: d, inc: 1 }); };
 function apply(base, ops) {
   for (const o of ops) {
@@ -67,13 +69,19 @@ async function writeIfUnchanged(raw, text) {
 async function flush() {
   if (flushing) return flushing; // one save at a time; changes made meanwhile go in the next one
   if (!pending.length) return;
+  let failed = false;
   flushing = (async () => {
     const ops = pending; pending = [];
     try {
       for (let attempt = 0; ; attempt++) {
         const disk = await readDiskRaw();
-        // An unreadable file is kept as a backup instead of being overwritten.
-        if (disk.corrupt) await H.api('POST', 'file', { path: FILE.replace(/\.json$/, `.unreadable-${Date.now()}.json`) }, disk.raw).catch(() => {});
+        // An unreadable file is copied to a backup before anything replaces it. If the backup can't be written
+        // (disk full, read-only), the original is left exactly as it is and the ratings wait for the next try.
+        if (disk.corrupt) {
+          const bak = FILE.replace(/\.json$/, `.unreadable-${Date.now()}.json`);
+          const r = await fetch(`/api/file?path=${encodeURIComponent(bak)}`, { method: 'POST', headers: { 'X-Vault': '1' }, body: disk.raw });
+          if (!r.ok) throw Object.assign(new Error('Could not back up the unreadable review file; it was left unchanged'), { backup: true });
+        }
         const merged = apply(disk.data, ops);
         if (await writeIfUnchanged(disk.corrupt ? null : disk.raw, JSON.stringify(merged)) || (disk.corrupt && await writeIfUnchanged(disk.raw, JSON.stringify(merged)))) {
           // Adopt what other windows saved too, keeping changes made while this save was running.
@@ -85,12 +93,15 @@ async function flush() {
       }
     } catch (e) {
       pending = ops.concat(pending); // keep them for the next try
+      failed = true;
       console.warn('review save failed', e);
     }
   })();
   try { await flushing; } finally { flushing = null; }
-  if (pending.length) save();
+  // After a failure, try again a little later (not in a tight loop); the ratings stay in memory meanwhile.
+  if (pending.length) { clearTimeout(saveTimer); saveTimer = setTimeout(flush, failed ? 8000 : 600); }
 }
+export async function flushReview() { clearTimeout(saveTimer); await flush(); }
 function save() {
   clearTimeout(saveTimer);
   saveTimer = setTimeout(flush, 600);
@@ -150,14 +161,15 @@ export function extractCards(path, content) {
   };
   const used = new Set(); // lines already turned into a question
 
-  // question :: answer   (the question needs a space or "?", so Dataview fields like "status:: done" are skipped)
+  // question :: answer. A card when " :: " has a space before it ("问题 :: 答案"), or the question has a space or a
+  // question mark (? or ？). Properties written like "status:: done" (no space before ::) stay plain properties.
   lines.forEach((l, i) => {
     const m = l.match(/^\s*(?:[-*+]\s+|\d+[.)]\s+)?(.+?)\s*::\s*(.+)$/);
-    if (m && (/\s|\?/.test(m[1].trim()))) { add('qa', m[1], m[2], i); used.add(i); }
+    if (m && (/\s::/.test(l) || /[\s?？]/.test(m[1].trim()))) { add('qa', m[1], m[2], i); used.add(i); }
   });
   // Several lines: question, a line with just "?", answer (until an empty line)
   lines.forEach((l, i) => {
-    if (l.trim() !== '?') return;
+    if (l.trim() !== '?' && l.trim() !== '？') return;
     let s = i - 1; while (s >= 0 && lines[s].trim()) s--;
     let e = i + 1; while (e < lines.length && lines[e].trim()) e++;
     const q = lines.slice(s + 1, i).join('\n'), a = lines.slice(i + 1, e).join('\n');
@@ -254,7 +266,116 @@ export function inDailyReview(path) {
 export function allCards() {
   const out = [];
   for (const p of H.S.files.keys()) if (/\.md$/i.test(p) && inDailyReview(p)) out.push(...cardsFor(p));
+  out.push(...itemCards());
   return out;
+}
+
+/* =====================================================================
+   Your own items: mistakes from exam papers, and cards made from PDFs (text or a clipped image)
+   ===================================================================== */
+const newId = () => 'i' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+export const items = (kind) => Object.entries(state?.items || {}).map(([id, v]) => ({ id, ...v })).filter(i => !kind || i.kind === kind);
+export function getItem(id) { return state?.items?.[id] ? { id, ...state.items[id] } : null; }
+// item: { kind: 'mistake', src, page, no, question, myAnswer, mistake, redo (day number), note? }
+//    or { kind: 'card', src, page, q, a, img?, imgSide: 'q' | 'a' }
+export function addItem(item) {
+  const id = newId(), d = today();
+  setItem(id, { ...item, created: d });
+  // A mistake comes back on its redo day (not as a "new" card); a card is new and joins like any new question.
+  if (item.kind === 'mistake') setCard(id, { interval: 0, ease: 2.5, reps: 0, lapses: 0, due: Math.max(d, item.redo ?? d + 1), last: d, path: item.src || '' });
+  H.onReviewChange();
+  return id;
+}
+export function updateItem(id, patch) { const cur = state.items?.[id]; if (cur) setItem(id, { ...cur, ...patch }); }
+export function removeItem(id) { setItem(id, null); setCard(id, null); H.onReviewChange(); }
+export function setDue(id, day) { const c = state.cards[id]; if (c) setCard(id, { ...c, due: day }); }
+export const dueOf = id => state?.cards?.[id]?.due ?? null;
+const shortName = p => String(p || '').split('/').pop().replace(/\.(md|pdf|docx?|pptx?)$/i, '');
+const imgMd = p => `![](/vault/${String(p).split('/').map(encodeURIComponent).join('/')})`;
+function itemCard(id, v) {
+  const where = v.src ? `${shortName(v.src)}${v.page ? ' p.' + v.page : ''}` : t('mist.noSource');
+  if (v.kind === 'mistake') return {
+    id, kind: 'mistake', path: v.src || '', page: v.page || 0, note: where, item: v, line: 0,
+    q: [v.no ? `**${t('mist.problem', { no: v.no })}**` : '', v.question || '', v.img ? imgMd(v.img) : ''].filter(Boolean).join('\n\n') || t('mist.seePaper'),
+    a: `**${t('mist.oldAnswer')}**\n\n${v.myAnswer || '—'}\n\n**${t('mist.whyWrong')}**\n\n${v.mistake || '—'}`,
+  };
+  return {
+    id, kind: 'card', path: v.src || '', page: v.page || 0, note: where, item: v, line: 0,
+    q: [v.q || '', v.img && v.imgSide !== 'a' ? imgMd(v.img) : ''].filter(Boolean).join('\n\n') || '…',
+    a: [v.a || '', v.img && v.imgSide === 'a' ? imgMd(v.img) : ''].filter(Boolean).join('\n\n') || '…',
+  };
+}
+export const itemCards = () => items().map(i => itemCard(i.id, i));
+// A file was renamed or moved: items pointing at it (source PDF, clipped image, related note) follow.
+export function renamedSources(pairs) {
+  if (!state) return;
+  for (const it of items()) {
+    const patch = {};
+    for (const k of ['src', 'img', 'note']) if (it[k] && pairs.has(it[k])) patch[k] = pairs.get(it[k]);
+    if (Object.keys(patch).length) { const { id, ...v } = it; setItem(id, { ...v, ...patch }); if (patch.src && state.cards[id]) setCard(id, { ...state.cards[id], path: patch.src }); }
+  }
+  for (const [pid, rec] of Object.entries(state.plans || {})) {
+    const [plan, key] = [pid.slice(0, pid.indexOf('#')), pid.slice(pid.indexOf('#') + 1)];
+    if (pairs.has(plan)) { setPlan(pairs.get(plan) + '#' + key, rec); setPlan(pid, null); }
+  }
+}
+
+/* ---------- Revision plans: start one day's cards and mistakes, keep progress, carry over what's left ---------- */
+const planKey = (plan, key) => plan + '#' + key;
+export function planRecord(plan, key) { return state?.plans?.[planKey(plan, key)] || null; }
+function cardIndex() {
+  const byId = new Map();
+  for (const p of H.S.files.keys()) if (/\.md$/i.test(p)) for (const c of cardsFor(p)) byId.set(c.id, c);
+  for (const c of itemCards()) byId.set(c.id, c);
+  return byId;
+}
+// The cards for a day: every question from the notes it links, plus mistakes and PDF cards whose source (or
+// related note) it links. Worked out the first time the day is started, then kept, so progress stays stable.
+export function planDayIds(links) {
+  const files = new Set(links), ids = [];
+  for (const p of links) if (/\.md$/i.test(p)) for (const c of cardsFor(p)) ids.push(c.id);
+  for (const it of items()) if (files.has(it.src) || (it.note && files.has(it.note))) ids.push(it.id);
+  return [...new Set(ids)];
+}
+export function planProgress(plan, key, links) {
+  const rec = planRecord(plan, key);
+  const ids = rec ? rec.ids : planDayIds(links);
+  return { total: ids.length, done: rec ? rec.done.filter(id => ids.includes(id)).length : 0, carriedTo: rec?.carriedTo || null, carriedIn: rec?.carriedIn || 0 };
+}
+export async function startPlanDay(plan, key, { title, links, onClose } = {}) {
+  await reloadReview();
+  const pid = planKey(plan, key);
+  let rec = state.plans?.[pid];
+  if (!rec) { rec = { ids: planDayIds(links || []), done: [], started: today() }; setPlan(pid, rec); }
+  const byId = cardIndex();
+  const remaining = rec.ids.filter(id => !rec.done.includes(id)).map(id => byId.get(id)).filter(Boolean);
+  if (!remaining.length) { H.toast(rec.ids.length ? t('plan.dayDone') : t('plan.dayEmpty')); return; }
+  startSession(remaining, {
+    title,
+    onDone: card => { const r = state.plans?.[pid]; if (r && !r.done.includes(card.id)) setPlan(pid, { ...r, done: [...r.done, card.id], updated: today() }); },
+    onClose,
+  });
+}
+// Move what's left of earlier days into this day (each earlier day remembers where its rest went).
+export function carryOver(plan, fromKeys, toKey, toLinks) {
+  const pid = planKey(plan, toKey);
+  const rec = state.plans?.[pid] || { ids: planDayIds(toLinks || []), done: [], started: today() };
+  const moved = [];
+  for (const k of fromKeys) {
+    const r = state.plans?.[planKey(plan, k)];
+    if (!r || r.carriedTo) continue;
+    const left = r.ids.filter(id => !r.done.includes(id));
+    if (!left.length) continue;
+    moved.push(...left);
+    setPlan(planKey(plan, k), { ...r, carriedTo: toKey, carried: left.length });
+  }
+  const ids = [...new Set([...rec.ids, ...moved])];
+  setPlan(pid, { ...rec, ids, carriedIn: (rec.carriedIn || 0) + moved.length, updated: today() });
+  return moved.length;
+}
+// Earlier days of a plan that were started but not finished (and not yet carried over).
+export function unfinishedDays(plan, keys) {
+  return keys.filter(k => { const r = planRecord(plan, k); return r && !r.carriedTo && r.ids.some(id => !r.done.includes(id)); });
 }
 export function stats() {
   const d = today(), cards = allCards();
@@ -292,7 +413,7 @@ export const dueCount = () => { if (!state) return 0; const s = stats(); return 
    3. Check session (a quiz in a window)
    ===================================================================== */
 let session = null;
-export function startSession(cards, { title = t('review.title'), notePath = null } = {}) {
+export function startSession(cards, { title = t('review.title'), notePath = null, onDone = null, onClose = null } = {}) {
   if (!cards.length) { H.toast(t('review.noCards')); return; }
   closeSession();
   const el = document.body.appendChild(document.createElement('div'));
@@ -303,7 +424,7 @@ export function startSession(cards, { title = t('review.title'), notePath = null
     <div class="review-card scroll"><div class="review-source"></div><div class="review-q markdown"></div><div class="review-a markdown hidden"></div></div>
     <div class="review-actions"></div></div>`;
   el.querySelector('.review-title').textContent = title;
-  session = { el, queue: [...cards], done: 0, total: cards.length, good: 0, again: new Set(), notePath, results: [] };
+  session = { el, queue: [...cards], done: 0, total: cards.length, good: 0, again: new Set(), notePath, results: [], onDone, onClose, rated: new Set() };
   el.querySelector('.review-bg').onclick = closeSession;
   el.querySelector('.review-x').onclick = closeSession;
   document.addEventListener('keydown', onKey, true);
@@ -311,7 +432,9 @@ export function startSession(cards, { title = t('review.title'), notePath = null
 }
 function closeSession() {
   if (!session) return;
+  const cb = session.onClose;
   session.el.remove(); session = null;
+  try { cb?.(); } catch (e) { console.warn(e); }
   document.removeEventListener('keydown', onKey, true);
   H.onReviewChange();
 }
@@ -319,6 +442,7 @@ function onKey(e) {
   if (!session) return;
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSession(); return; }
   const shown = !session.el.querySelector('.review-a').classList.contains('hidden');
+  if (e.target?.closest?.('.review-try')) return; // typing an answer
   if (!shown && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); e.stopPropagation(); reveal(); return; }
   if (shown && /^[1-4]$/.test(e.key)) { e.preventDefault(); e.stopPropagation(); answer(+e.key); return; }
   if (session.finished && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); closeSession(); }
@@ -329,8 +453,14 @@ function showCard() {
   const { el } = s;
   el.querySelector('.review-progress').textContent = t('review.progress', { i: Math.min(s.done + 1, s.total), n: s.total });
   el.querySelector('.review-bar > div').style.width = `${(s.done / s.total) * 100}%`;
-  el.querySelector('.review-source').innerHTML = `<a href="#" data-open="${escapeHtml(card.path)}">${escapeHtml(t('review.fromNote', { note: card.note }))}</a>`;
+  // Mistakes and PDF cards link back to the exact page of their source.
+  el.querySelector('.review-source').innerHTML = card.kind === 'mistake' || card.kind === 'card'
+    ? `<span class="review-kind">${escapeHtml(t(card.kind === 'mistake' ? 'mist.kind' : 'pcard.kind'))}</span> ${card.path ? `<a href="#" class="review-goto" data-path="${escapeHtml(card.path)}" data-page="${card.page || 0}">${escapeHtml(t('mist.backTo', { where: card.note }))}</a>` : ''}`
+    : `<a href="#" data-open="${escapeHtml(card.path)}">${escapeHtml(t('review.fromNote', { note: card.note }))}</a>`;
+  el.querySelector('.review-goto')?.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); const { path, page } = ev.currentTarget.dataset; closeSession(); H.openNote(path, { heading: +page ? 'page=' + page : '' }); });
   H.renderInto(el.querySelector('.review-q'), card.q, card.path, 1);
+  // A mistake: answer it again first (written down), then compare with your old answer.
+  if (card.kind === 'mistake') el.querySelector('.review-q').insertAdjacentHTML('beforeend', `<textarea class="review-try" rows="4" placeholder="${escapeHtml(t('mist.tryPh'))}"></textarea>`);
   const a = el.querySelector('.review-a');
   a.classList.add('hidden');
   H.renderInto(a, card.a, card.path, 1);
@@ -341,6 +471,12 @@ function showCard() {
 function reveal() {
   const s = session, card = s.queue[0];
   s.el.querySelector('.review-a').classList.remove('hidden');
+  const tryEl = s.el.querySelector('.review-try');
+  if (card.kind === 'mistake' && tryEl) {
+    const answerNow = tryEl.value.trim();
+    tryEl.readOnly = true;
+    if (answerNow) { const v = state.items?.[card.id]; if (v) updateItem(card.id, { attempts: [...(v.attempts || []), { day: today(), answer: answerNow }] }); }
+  }
   const cur = state.cards[card.id];
   const labels = [[1, 'again'], [2, 'hard'], [3, 'good'], [4, 'easy']];
   s.el.querySelector('.review-actions').innerHTML = labels.map(([r, k]) =>
@@ -350,6 +486,7 @@ function reveal() {
 function answer(r) {
   const s = session, card = s.queue.shift();
   rate(card, r);
+  if (!s.rated.has(card.id)) { s.rated.add(card.id); try { s.onDone?.(card); } catch (e) { console.warn(e); } }
   if (r === 1 && !s.again.has(card.id)) { s.again.add(card.id); s.queue.push(card); s.total++; } // see it again at the end
   else if (r >= 3 && !s.again.has(card.id)) s.good++;
   s.done++;
@@ -461,6 +598,7 @@ export function renderReviewPage(el) {
     <div class="review-how markdown"></div>
   </div>`;
   H.renderInto(el.querySelector('.review-how'), t('review.how'), '', 1);
+  H.studyExtras?.(el.querySelector('.review-page'));
   el.querySelector('[data-start]').onclick = startDailyReview;
   el.querySelectorAll('[data-cmd-run]').forEach(b => { b.onclick = () => H.runCommand(b.dataset.cmdRun); });
   el.querySelectorAll('[data-check]').forEach(b => { b.onclick = () => checkNote(b.dataset.check); });
@@ -651,3 +789,13 @@ function cardsForContent(from, to) {
   const a = extractCards(from, f.content), b = extractCards(to, f.content);
   return a.map((c, i) => [c.id, b[i]?.id]).filter(([, n]) => n);
 }
+
+// Make sure a plan day has a fixed list of cards (for days that were never started, before carrying them over).
+export function ensurePlanDay(plan, key, links) {
+  const pid = planKey(plan, key);
+  if (!state.plans?.[pid]) setPlan(pid, { ids: planDayIds(links || []), done: [], started: null });
+  return state.plans[pid];
+}
+// "2026-11-21" ⇄ the day numbers used for due dates.
+export const dayFromDate = s => { const m = String(s).match(/(\d{4})\D(\d{1,2})\D(\d{1,2})/); return m ? Math.floor(Date.UTC(+m[1], +m[2] - 1, +m[3]) / 86400000) : null; };
+export const dateOfDay = n => new Date(n * 86400000).toISOString().slice(0, 10);

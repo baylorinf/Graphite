@@ -4,7 +4,7 @@
 const KEY = 'mo:appearance';
 export const DEFAULTS = { textFont: '', codeFont: '', fontSize: 16, editorMono: false };
 const TEXT_FALLBACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Microsoft YaHei", "Microsoft JhengHei", "Yu Gothic UI", Meiryo, "Malgun Gothic", sans-serif';
-const CODE_FALLBACK = '"Cascadia Code", Consolas, Menlo, monospace';
+const CODE_FALLBACK = '"Cascadia Code", Consolas, Menlo, "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Yu Gothic UI", "Malgun Gothic", monospace';
 
 export function loadAppearance() {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || '{}') }; } catch { return { ...DEFAULTS }; }

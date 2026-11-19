@@ -56,6 +56,9 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 - **Quizzes from your notes:** highlights, **bold** terms, `- **Term**: definition`, `question :: answer` and headings become questions.
 - **Spaced repetition:** daily review with Again / Hard / Good / Easy, a streak and a 14-day chart.
 - **After writing,** a card offers to check the note or quiz you on it.
+- **Mistake book:** add a problem from an exam analysis (+ Mistake book) or from any PDF page, with its page, your answer, why it was wrong and a redo date. On that day it comes back in the daily review: answer it again first, then compare with your old answer. "Back to page" opens the paper at that page.
+- **Cards from PDFs:** select text in a PDF and press **Card** (question and answer editable, file and page kept), or clip a formula, figure or scanned page with the scissors. Clipped images are saved in the vault and work offline.
+- **Plan days you can run:** each day of a revision plan gets a **Start** button for that day's cards and mistakes. Stop any time and **Continue** later; missed days can be **carried over** to today; the plan note shows the progress under each day.
 - **Study pages:** interactive review pages (`.html`) in a course's `Study Pages` folder open as 🎓 tabs, with progress saved.
 
 ### Study with AI
@@ -64,8 +67,9 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 | --- | --- |
 | **Check** (`Ctrl+Shift+E`) | Finds wrong facts, spelling, grammar and unclear sentences, shown as old → new with a reason; apply one or all. Works offline too, with a basic check. |
 | **Quiz questions** (`Ctrl+Shift+K`) | Adds AI-written questions to your quiz, refreshed whenever the note changes. |
-| **Revision plan** | From an exam date and range, a day-by-day checklist that puts your weakest and due topics first. |
-| **Exam analysis** | From an exam paper or a graded exam: every problem, its topic and your matching note, what went wrong, and a plan. |
+| **Revision plan** | From an exam date and range, a day-by-day checklist that puts your weakest and due topics first. Untick a chapter to leave it out; the final range is shown before it is sent and saved in the plan. |
+| **Exam analysis** | From an exam paper or a graded exam: every problem, its topic and your matching note, what went wrong, and a plan. Reads every page (or the pages you choose), analyses long papers in parts, and says which pages were covered and which had no text. |
+| **Connect note** (🔗) | Links a note, both ways, to the notes that really relate to it. Works with Claude Code or an API model. |
 | **Tidy format** (`Ctrl+Shift+Y`) | Makes a note follow the format of the other notes in its folder, with a before/after preview. |
 | **Graphie** (chat panel) | Ask Graphie, the study assistant, about the note or the text you're reading; pick who answers from the menu next to its name. |
 
@@ -101,6 +105,10 @@ Every AI job (Check, Quiz questions, Chat, Revision plans, Exam analysis, Tidy f
 | New tab / close tab | `Ctrl+T` / `Ctrl+W` | | Tidy format | `Ctrl+Shift+Y` |
 | Rename note | `F2` | | Settings | `Ctrl+,` |
 | Back / Forward | `Alt+←` / `Alt+→` | | Guide | `F1` |
+
+## Credits
+
+Author: **MistZero** · Co-author: **Claude**
 
 ## Development
 

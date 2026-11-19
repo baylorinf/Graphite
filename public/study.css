@@ -1,0 +1,101 @@
+/* Styles for the AI picker (aipicker.js) and the study tools (study.js): mistake book, cards from PDFs,
+   clipping, plan-day buttons. Loaded after graphite.css and uses its tokens. */
+
+/* ---------- AI picker (replaces the plain "which AI" dropdown) ---------- */
+.aip-native { display: none !important; }
+.aip-btn { display: inline-flex; align-items: center; gap: 8px; min-width: 240px; max-width: 100%; height: 34px; padding: 0 10px 0 12px; border-radius: 10px;
+  border: 1px solid var(--border); background: var(--bg-2); color: var(--text); font: inherit; font-size: 13px; cursor: pointer; text-align: left;
+  transition: border-color .15s, background .15s, box-shadow .15s; }
+.aip-btn:hover { background: var(--bg-hover); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.aip-btn:focus-visible { box-shadow: 0 0 0 3px var(--accent-ring); border-color: var(--accent); outline: none; }
+.aip-btn .aip-name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aip-btn .aip-model { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 12.5px; font-weight: 500; }
+.aip-chev { width: 16px; height: 16px; flex: none; fill: none; stroke: var(--text-muted); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; margin-left: auto; }
+.aip-dot { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-faint); }
+.aip-dot.on { background: #2ec27e; box-shadow: 0 0 0 3px rgba(46, 194, 126, .18); }
+.aip-dot.off { background: #c9a227; }
+.aip-dot.api { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.aip-dot.none { background: transparent; border: 1.5px solid var(--text-faint); width: 7px; height: 7px; }
+.aip-pop { position: fixed; z-index: 1000; overflow: auto; padding: 6px; border-radius: 14px; border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(18px) saturate(1.3); box-shadow: var(--shadow); animation: aip-in .12s ease-out; }
+@keyframes aip-in { from { opacity: 0; transform: translateY(-4px) scale(.98); } }
+.aip-group + .aip-group { margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border-soft, var(--border)); }
+.aip-head { padding: 6px 10px 4px; font-size: 11px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--text-faint); }
+.aip-opt { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border: 0; border-radius: 9px; background: none; color: var(--text); font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.aip-opt:hover { background: var(--sel, var(--bg-hover)); }
+.aip-opt.is-on { background: var(--accent-bg); }
+.aip-opt.is-locked .aip-name { color: var(--text-muted); }
+.aip-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.aip-sub { font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aip-opt[data-v="claude-code"] .aip-sub, .aip-opt.is-locked .aip-sub { font-family: inherit; }
+.aip-check { width: 16px; height: 16px; fill: none; stroke: var(--accent); stroke-width: 2.5; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.aip-addkey { font-size: 11.5px; color: var(--link); padding: 2px 8px; border-radius: 999px; background: var(--accent-bg); flex: none; }
+.ai-field .aip-btn { width: 100%; }
+
+/* ---------- forms ---------- */
+.study-modal .review-box { width: min(640px, 94vw); }
+.study-body { display: flex; flex-direction: column; gap: 12px; }
+.study-row { display: grid; grid-template-columns: 1fr 120px; gap: 12px; }
+.study-source { margin: 0; font-size: 12.5px; color: var(--text-muted); }
+.study-source a, .study-goto { color: var(--link); text-decoration: none; }
+.study-source a:hover, .study-goto:hover { text-decoration: underline; }
+.study-preview:empty { display: none; }
+.study-preview { margin-top: -6px; padding: 8px 12px; border-radius: 10px; background: var(--bg-2); border: 1px dashed var(--border); font-size: 13.5px; }
+.study-preview > :first-child { margin-top: 0; }
+.study-preview > :last-child { margin-bottom: 0; }
+.study-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.study-chip { position: relative; display: inline-flex; }
+.study-chip > input[type=radio] { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; z-index: 1; }
+.study-chip > span { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-2); font-size: 12.5px; font-weight: 500; color: var(--text); cursor: pointer; transition: background .15s, border-color .15s; }
+.study-chip > span:hover { background: var(--bg-hover); }
+.study-chip > input:checked + span { background: var(--accent-bg); border-color: var(--accent); }
+.study-chip > input:focus-visible + span { box-shadow: 0 0 0 3px var(--accent-ring); }
+.study-date { height: 30px; padding: 0 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); font: inherit; font-size: 12.5px; }
+.study-date:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.study-clip { max-width: 100%; max-height: 260px; object-fit: contain; align-self: flex-start; border-radius: 10px; border: 1px solid var(--border); background: #fff; }
+
+/* ---------- problem list in an exam analysis ---------- */
+.study-problems { margin: 1em 0; border: 1px solid var(--border); border-radius: 14px; overflow: hidden; background: var(--bg-2); }
+.study-problems-head { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; font-weight: 600; font-size: 13px; border-bottom: 1px solid var(--border); }
+.study-problem { display: flex; gap: 12px; align-items: flex-start; padding: 10px 14px; border-top: 1px solid var(--border-soft, var(--border)); }
+.study-problems-head + .study-problem { border-top: 0; }
+.study-problem.has-mistake { box-shadow: inset 3px 0 0 #e5534b; }
+.study-problem-main { flex: 1; min-width: 0; font-size: 13.5px; }
+.study-problem-q { margin-top: 4px; color: var(--text); }
+.study-problem-q > :first-child { margin-top: 0; }
+.study-problem-q > :last-child { margin-bottom: 0; }
+.study-problem-m { margin-top: 4px; font-size: 12.5px; color: #e5534b; }
+.study-tag { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--tag-bg); color: var(--link); font-size: 11.5px; margin: 0 4px; }
+.study-added { flex: none; font-size: 12.5px; color: #2ec27e; padding: 6px 4px; }
+
+/* ---------- plan days ---------- */
+.study-plan-btns { display: inline-flex; gap: 6px; margin-left: 12px; vertical-align: middle; }
+.study-plan-btns .mod-button { font-size: 12px; height: 26px; padding: 0 12px; border-radius: 999px; font-weight: 600; }
+
+/* ---------- Review page lists ---------- */
+.study-book h2 .muted { font-size: 13px; font-weight: 500; margin-left: 6px; }
+.study-item { gap: 8px; }
+.study-item-main { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: baseline; overflow: hidden; }
+.study-item-main b { flex: none; font-size: 13px; }
+.study-item-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 13px; }
+.study-item .study-goto { flex: none; font-size: 12px; }
+.study-item .clickable-icon { opacity: .55; }
+.study-item:hover .clickable-icon { opacity: 1; }
+
+/* ---------- clipping a PDF page ---------- */
+.study-clip-layer { position: absolute; inset: 0; z-index: 20; cursor: crosshair; }
+.study-clip-hint { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); padding: 7px 14px; border-radius: 999px; background: var(--bg); color: var(--text); box-shadow: var(--shadow); font-size: 12.5px; pointer-events: none; z-index: 1; }
+.study-clip-rect { position: absolute; border: 2px solid var(--accent); background: rgba(139, 108, 255, .1); border-radius: 4px; box-shadow: 0 0 0 9999px rgba(0, 0, 0, .28); }
+.pdf-study svg.i { width: 16px; height: 16px; }
+
+/* ---------- review session extras ---------- */
+.review-try { width: 100%; margin-top: 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--bg-2); color: var(--text); font: inherit; resize: vertical; }
+.review-try:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.review-kind { display: inline-block; padding: 1px 8px; border-radius: 999px; background: var(--accent-bg); color: var(--link); font-size: 11.5px; font-weight: 600; margin-right: 6px; }
+
+/* ---------- AI tool windows ---------- */
+.ai-range-summary { margin: -4px 0 0; padding: 8px 12px; border-radius: 10px; background: var(--accent-bg); font-size: 12.5px; color: var(--text); }
+.ai-pages-info:empty { display: none; }
+.ai-pages-info { margin: -6px 0 0; font-size: 12px; }
+.callout[data-callout=progress] { --c: 8, 185, 78; padding-top: 6px; padding-bottom: 6px; }
+.callout[data-callout=progress] .callout-title { font-size: 13px; }

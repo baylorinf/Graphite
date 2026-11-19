@@ -17,7 +17,8 @@ export function initAI(host) {
   window.myobsidianAI = { FEATURES, options, choice, setChoice, label, parts, request, ccListening, openSettings: () => H.openSettings('ai'), onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
 }
 
-export const FEATURES = ['check', 'quiz', 'chat', 'plan', 'exam', 'format'];
+export const FEATURES = ['check', 'quiz', 'chat', 'plan', 'exam', 'format', 'connect'];
+export const openSettings = () => H?.openSettings('ai');
 export const CC = 'claude-code';
 export const CHAT_DIR = '.obsidian/plugins/claude-chat/chat';
 
@@ -66,7 +67,7 @@ export const setKey = (p, v) => { const r = raw(); save({ keys: { ...r.keys, [p]
 export const setModel = (p, v) => { const r = raw(); save({ models: { ...r.models, [p]: v.trim() } }); };
 export const setBaseUrl = v => save({ baseUrl: v.trim() });
 // Jobs added later default to what Check uses.
-export const choice = f => raw().use[f] || (['plan', 'exam', 'format'].includes(f) && raw().use.check && raw().use.check !== 'off' ? raw().use.check : CC);
+export const choice = f => raw().use[f] || (['plan', 'exam', 'format', 'connect'].includes(f) && raw().use.check && raw().use.check !== 'off' ? raw().use.check : CC);
 export const setChoice = (f, v) => { const r = raw(); save({ use: { ...r.use, [f]: v } }); };
 const hasProvider = p => (p === 'custom' ? !!raw().baseUrl : !!keyOf(p));
 
@@ -100,7 +101,7 @@ export function label(v) {
   if (v === 'off') return t('ai.off');
   const P = PROVIDERS[v];
   if (!P) return v;
-  return `${P.label} · ${modelOf(v) || '?'}`;
+  return modelOf(v) ? `${P.label} · ${modelOf(v)}` : P.label;
 }
 // Choices for one job: Claude Code, each provider (greyed out until it has a key), and "off" for jobs that can do without AI.
 export function options(f) {
@@ -161,7 +162,7 @@ export async function request(feature, task, payload, { signal, provider } = {})
   if (v === CC) return ccRequest(task, payload, signal);
   if (!PROVIDERS[v]) throw new Error(t('ai.noKey'));
   if (!hasProvider(v)) throw new Error(t('ai.noKeyFor', { provider: PROVIDERS[v].label }));
-  const limit = AbortSignal.timeout(['plan', 'exam', 'format'].includes(task) ? 270000 : 150000);
+  const limit = AbortSignal.timeout(['plan', 'exam', 'format', 'connect'].includes(task) ? 270000 : 150000);
   const res = await fetch('/api/ai', {
     signal: signal ? AbortSignal.any([signal, limit]) : limit,
     method: 'POST',

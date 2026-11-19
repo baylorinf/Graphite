@@ -5,7 +5,7 @@
 import { t, getLang } from '/i18n.js';
 import * as AI from '/ai.js';
 import * as RV from '/review.js';
-import { pdfText } from '/pdfview.js';
+import { pdfText, parsePages, pageRanges } from '/pdfview.js';
 
 let H = null;
 export function initStudyAI(host) { H = host; }
@@ -37,7 +37,7 @@ function open(title, cls = '') {
   document.addEventListener('keydown', onKey, true);
   return { body: win.querySelector('.ai-tool-body'), actions: win.querySelector('.ai-tool-actions') };
 }
-const engineSelect = job => `<label class="ai-field"><span>${esc(t('ai.usedFor'))}</span><select data-f="engine">${AI.options(job).filter(o => o.value !== 'off')
+const engineSelect = job => `<label class="ai-field"><span>${esc(t('ai.usedFor'))}</span><select data-f="engine" data-aip-job="${job}">${AI.options(job).filter(o => o.value !== 'off')
   .map(o => `<option value="${esc(o.value)}"${o.value === AI.choice(job) ? ' selected' : ''}${o.ready ? '' : ' disabled'}>${esc(o.label)}</option>`).join('')}</select></label>`;
 
 // Run one AI job with a timer and a Stop button. Resolves with the result, or null if stopped / failed (shown in the window).
@@ -94,22 +94,67 @@ export function planDialog() {
     <div class="ai-field"><span>${esc(t('plan.folders'))}</span><div class="ai-folders">${folders.filter(f => !f.includes('/')).map(f => `
       <details${(last.folders || []).some(x => x === f || x.startsWith(f + '/')) ? ' open' : ''}><summary><label><input type="checkbox" data-folder="${esc(f)}"${(last.folders || []).includes(f) ? ' checked' : ''}> ${esc(f)}</label></summary>
       ${folders.filter(x => x.startsWith(f + '/')).map(x => `<label class="ai-sub"><input type="checkbox" data-folder="${esc(x)}"${(last.folders || []).includes(x) ? ' checked' : ''}> ${esc(x.slice(f.length + 1))}</label>`).join('')}</details>`).join('')}</div></div>
+    <p class="ai-range-summary"></p>
     <label class="ai-field"><span>${esc(t('plan.minutes'))}</span><input type="number" data-f="minutes" min="15" max="600" step="15" value="${esc(last.minutes || 90)}"></label>
     ${engineSelect('plan')}`;
-  // Ticking a course ticks everything inside it.
+  // A course box ticks or clears all its chapters; a chapter box makes the course box full, partial (–) or empty.
+  // What is actually sent is worked out from the chapter boxes, so a chapter you untick is really left out.
+  const box = f => body.querySelector(`[data-folder="${CSS.escape(f)}"]`);
+  const subsOf = f => [...body.querySelectorAll('[data-folder]')].filter(x => x.dataset.folder.startsWith(f + '/'));
+  const syncParent = f => {
+    const subs = subsOf(f), p = box(f);
+    if (!p || !subs.length) return;
+    const on = subs.filter(x => x.checked).length;
+    p.checked = on === subs.length; p.indeterminate = on > 0 && on < subs.length;
+  };
+  // Restoring last time's choice: a whole course means all of its chapters.
+  for (const f of last.folders || []) if (!f.includes('/')) subsOf(f).forEach(x => { x.checked = true; });
+  folders.filter(f => !f.includes('/')).forEach(syncParent);
+  const inRangeNow = p => {
+    const parts = p.split('/');
+    if (parts.length < 2) return false;
+    const sub = parts.length > 2 ? box(parts[0] + '/' + parts[1]) : null;
+    if (sub) return sub.checked;
+    const c = box(parts[0]);
+    return !!c && (c.checked || c.indeterminate); // notes directly in a course count when any of it is chosen
+  };
+  // The final range, written out: "Biology (all) · History: Chapter 1, Chapter 3 — 12 notes".
+  const chosen = () => {
+    const out = [];
+    for (const f of folders.filter(x => !x.includes('/'))) {
+      const p = box(f), subs = subsOf(f);
+      if (p.checked) out.push(f);
+      else if (p.indeterminate) out.push(...subs.filter(x => x.checked).map(x => x.dataset.folder));
+    }
+    return out;
+  };
+  const summary = () => {
+    const parts = folders.filter(x => !x.includes('/')).map(f => {
+      const p = box(f), subs = subsOf(f);
+      if (p.checked) return `${f} (${t('plan.all')})`;
+      if (p.indeterminate) return `${f}: ${subs.filter(x => x.checked).map(x => x.dataset.folder.slice(f.length + 1)).join(', ')}`;
+      return null;
+    }).filter(Boolean);
+    const n = [...H.S.files.values()].filter(f => isMd(f.path) && !SKIP.test(f.path) && inRangeNow(f.path) && !hidden(f)).length;
+    body.querySelector('.ai-range-summary').textContent = parts.length ? t('plan.rangeSummary', { list: parts.join(' · '), n }) : t('plan.rangeNone');
+  };
   body.querySelectorAll('[data-folder]').forEach(cb => cb.addEventListener('change', () => {
-    if (!cb.dataset.folder.includes('/')) body.querySelectorAll(`[data-folder^="${CSS.escape(cb.dataset.folder)}/"]`).forEach(x => { x.checked = cb.checked; });
+    const f = cb.dataset.folder;
+    if (!f.includes('/')) { subsOf(f).forEach(x => { x.checked = cb.checked; }); cb.indeterminate = false; if (cb.checked && subsOf(f).length) cb.closest('details').open = true; }
+    else syncParent(f.split('/')[0]);
+    summary();
   }));
+  summary();
   actions.innerHTML = `<button class="mod-button mod-cta" data-a="go">${esc(t('plan.make'))}</button><button class="mod-button" data-a="cancel">${esc(t('review.close'))}</button>`;
   actions.querySelector('[data-a=cancel]').onclick = close;
   actions.querySelector('[data-a=go]').onclick = async () => {
     const v = k => body.querySelector(`[data-f=${k}]`).value.trim();
     const form = { exam: v('exam') || t('plan.examDefault'), date: v('date'), range: v('range'), minutes: Number(v('minutes')) || 90,
-      folders: [...body.querySelectorAll('[data-folder]:checked')].map(x => x.dataset.folder) };
+      folders: chosen() };
     if (!form.folders.length && !form.range) { H.toast(t('plan.needRange')); return; }
     if (!form.date) { H.toast(t('plan.needDate')); return; }
     H.store.set('planForm', form);
-    const inRange = p => !form.folders.length || form.folders.some(f => p === f || p.startsWith(f + '/'));
+    const inRange = p => !form.folders.length || inRangeNow(p);
     const notes = [...H.S.files.values()].filter(f => isMd(f.path) && !SKIP.test(f.path) && inRange(f.path) && !hidden(f));
     const slides = [...H.S.files.keys()].filter(p => /\.pdf$/i.test(p) && !SKIP.test(p) && inRange(p)).map(p => p.split('/').pop());
     if (!notes.length) { H.toast(t('plan.noNotes')); return; }
@@ -117,16 +162,18 @@ export function planDialog() {
     const heads = f => (f.headings || []).map(h => h.text || h).filter(Boolean).slice(0, 8).join('; ');
     const daysLeft = Math.max(0, Math.round((new Date(form.date) - new Date(day())) / 86400000));
     const content = [`Exam: ${form.exam}`, `Today: ${day()}`, `Exam date: ${form.date} (${daysLeft} days from today)`,
-      `What is examined: ${form.range || '(the notes below)'}`, `Time per day: ${form.minutes} minutes`, '', 'Notes in range:',
+      `What is examined: ${form.range || '(the notes below)'}`, `Folders in range: ${form.folders.join(', ') || '(any)'}`, `Time per day: ${form.minutes} minutes`, '', 'Notes in range (only these; nothing else is examined):',
       ...notes.map(f => `- [[${base(f.path)}]] (${f.path.split('/').slice(0, -1).join('/')}) · ${mem(f.path)}${heads(f) ? ' · sections: ' + heads(f) : ''}`),
       ...(slides.length ? ['', 'Slide / PDF files in range: ' + slides.join(', ')] : [])].join('\n');
-    const job = { exam: form.exam, date: form.date, today: day(), range: form.range, minutes: form.minutes,
+    const job = { exam: form.exam, date: form.date, today: day(), range: form.range, minutes: form.minutes, folders: form.folders,
       notes: notes.map(f => f.path), memory: Object.fromEntries(notes.map(f => [f.path, mem(f.path)])) };
     const r = await runJob('plan', 'plan', { title: form.exam, content, job }, { body, actions });
     if (!r || !win) return;
     const courses = [...new Set(notes.map(f => top(f.path)))];
     const folder = (courses.length === 1 && courses[0] ? courses[0] + '/' : '') + '复习计划 Review Plans';
-    await saveNote(folder, r.title || `${form.exam} ${t('plan.noteSuffix')}`, r.markdown);
+    // The plan says which range it was made for.
+    const rangeLine = `> ${t('plan.rangeUsed')}: ${form.folders.join(' · ') || form.range} (${notes.length})`;
+    await saveNote(folder, r.title || `${form.exam} ${t('plan.noteSuffix')}`, insertAfterFm(r.markdown, rangeLine));
   };
   setTimeout(() => body.querySelector('[data-f=exam]')?.focus(), 30);
 }
@@ -138,32 +185,90 @@ export function examDialog(path = '') {
   body.innerHTML = `<p class="muted">${esc(t('exam.intro'))}</p>
     <label class="ai-field"><span>${esc(t('exam.file'))}</span><input data-f="file" list="ai-exam-files" value="${esc(path)}" placeholder="${esc(t('exam.filePh'))}"></label>
     <datalist id="ai-exam-files">${files.map(p => `<option value="${esc(p)}">`).join('')}</datalist>
+    <label class="ai-field"><span>${esc(t('exam.pages'))}</span><input data-f="pages" placeholder="${esc(t('exam.pagesPh'))}"></label>
+    <p class="ai-pages-info muted"></p>
     <label class="ai-field"><span>${esc(t('exam.comment'))}</span><textarea data-f="comment" rows="3" placeholder="${esc(t('exam.commentPh'))}"></textarea></label>
     ${engineSelect('exam')}`;
+  // Picking a PDF shows how many pages it has, so you can choose a range.
+  const info = body.querySelector('.ai-pages-info');
+  const showInfo = async () => {
+    const f = body.querySelector('[data-f=file]').value.trim();
+    info.textContent = '';
+    if (!/\.pdf$/i.test(f) || !H.S.files.has(f)) return;
+    const n = await pdfPageCount(f).catch(() => 0);
+    if (n && body.querySelector('[data-f=file]').value.trim() === f) info.textContent = t('exam.pageCount', { n });
+  };
+  body.querySelector('[data-f=file]').addEventListener('change', showInfo);
+  showInfo();
   actions.innerHTML = `<button class="mod-button mod-cta" data-a="go">${esc(t('exam.analyse'))}</button><button class="mod-button" data-a="cancel">${esc(t('review.close'))}</button>`;
   actions.querySelector('[data-a=cancel]').onclick = close;
   actions.querySelector('[data-a=go]').onclick = async () => {
     const file = body.querySelector('[data-f=file]').value.trim(), comment = body.querySelector('[data-f=comment]').value.trim();
+    const pagesStr = body.querySelector('[data-f=pages]').value.trim();
     const engine = body.querySelector('[data-f=engine]').value;
     if (!H.S.files.has(file)) { H.toast(t('exam.pickFile')); return; }
     const course = top(file);
     const noteTitles = [...H.S.files.values()].filter(f => isMd(f.path) && !SKIP.test(f.path) && (!course || top(f.path) === course) && !hidden(f)).map(f => base(f.path));
-    let text = '';
-    if (engine !== AI.CC) { // API models get the paper as text
-      if (/\.pdf$/i.test(file)) {
-        body.querySelector('.muted').textContent = t('exam.reading');
+    const isPdf = /\.pdf$/i.test(file);
+    let only = null;
+    if (isPdf && pagesStr) { try { only = parsePages(pagesStr); } catch (e) { H.toast(t('exam.badPages', { part: e.message })); return; } }
+    // API models get the paper as text: every chosen page (no hidden limit), sent in batches if it is long.
+    // Claude Code reads the file itself and is told the page range.
+    let batches = [{ text: '', pages: only }], numPages = 0, empty = [], read = [];
+    if (engine !== AI.CC) {
+      if (isPdf) {
+        const msg = body.querySelector('.muted');
+        msg.textContent = t('exam.reading');
         try {
-          const { pages } = await pdfText('/vault/' + file.split('/').map(encodeURIComponent).join('/'));
-          text = pages.map((p, i) => `--- page ${i + 1} ---\n${p}`).join('\n');
-          if (!pages.join('').trim()) { H.toast(t('exam.noText')); body.querySelector('.muted').textContent = t('exam.noText'); return; }
+          const r = await pdfText('/vault/' + file.split('/').map(encodeURIComponent).join('/'), { only, onProgress: (i, n) => { msg.textContent = t('exam.readingN', { i, n }); } });
+          numPages = r.numPages; empty = r.empty; read = r.pages.map(p => p.n);
+          const withText = r.pages.filter(p => p.text);
+          if (!withText.length) { H.toast(t('exam.noText')); msg.textContent = t('exam.noText'); return; }
+          batches = []; let cur = null;
+          for (const p of withText) {
+            const chunk = `--- page ${p.n} ---\n${p.text}\n`;
+            if (!cur || (cur.text.length + chunk.length > BATCH_CHARS && cur.text)) batches.push(cur = { text: '', pages: [] });
+            cur.text += chunk; cur.pages.push(p.n);
+          }
         } catch (e) { H.toast(e.message); return; }
-      } else text = H.getNoteText(file);
+      } else batches = [{ text: H.getNoteText(file), pages: null }];
     }
-    const content = `<paper file="${file}">\n${text}\n</paper>\n<student_comment>${comment || '(none)'}</student_comment>\n<their_notes>${noteTitles.join(' | ')}</their_notes>`;
-    const r = await runJob('exam', 'exam', { title: base(file.replace(/\.pdf$/i, '')), content, path: file, job: { comment, notes: noteTitles } }, { body, actions });
-    if (!r || !win) return;
-    await saveNote((course ? course + '/' : '') + '考试分析 Exam Analysis', r.title || `${base(file.replace(/\.pdf$/i, ''))} ${t('exam.noteSuffix')}`, r.markdown);
+    if (batches.length > 1 && !confirm(t('exam.batchesConfirm', { n: batches.length, pages: read.length }))) return;
+    const results = [];
+    for (const [i, b] of batches.entries()) {
+      const part = batches.length > 1 ? ` (${t('exam.batch', { i: i + 1, n: batches.length, pages: pageRanges(b.pages) })})` : '';
+      const rangeNote = b.pages ? `\n<pages_included>${pageRanges(b.pages)}${numPages ? ` of ${numPages}` : ''}</pages_included>` : '';
+      const content = `<paper file="${file}">\n${b.text}\n</paper>${rangeNote}\n<student_comment>${comment || '(none)'}</student_comment>\n<their_notes>${noteTitles.join(' | ')}</their_notes>`;
+      const r = await runJob('exam', 'exam', { title: base(file.replace(/\.pdf$/i, '')) + part, content, path: file, job: { comment, notes: noteTitles, pages: b.pages ? pageRanges(b.pages) : 'all' } }, { body, actions });
+      if (!r || !win) return;
+      results.push({ ...r, pages: b.pages });
+    }
+    // One note: coverage first (which pages were analysed, which had no text), then each batch's analysis,
+    // then the problems as data for the mistake book.
+    const cover = engine === AI.CC
+      ? (only ? t('exam.coverCC', { pages: pageRanges(only) }) : '')
+      : isPdf ? t('exam.cover', { pages: pageRanges(read.filter(n => !empty.includes(n))), total: numPages }) + (empty.length ? ' ' + t('exam.coverEmpty', { pages: pageRanges(empty) }) : '') : '';
+    const fmM = results[0].markdown.match(/^---\n[\s\S]*?\n---\n?/);
+    const fm = fmM ? fmM[0] : '';
+    const bodies = results.map((r, i) => {
+      const md = i === 0 ? r.markdown.slice(fm.length) : r.markdown.replace(/^---\n[\s\S]*?\n---\n?/, '');
+      return results.length > 1 ? `# ${t('exam.batchHeading', { pages: pageRanges(r.pages) })}\n\n${md.replace(/^(#{1,5}) /gm, '#$1 ').trim()}` : md.trim();
+    });
+    const problems = results.flatMap(r => (r.problems || []).map(p => ({ ...p, src: file })));
+    const md = `${fm}${cover ? `> [!info] ${t('exam.coverTitle')}\n> ${cover}\n\n` : ''}${bodies.join('\n\n')}\n${problems.length ? `\n## ${t('mist.fromPaper')}\n\n\`\`\`graphite-problems\n${JSON.stringify({ src: file, problems }, null, 1)}\n\`\`\`\n` : ''}`;
+    await saveNote((course ? course + '/' : '') + '考试分析 Exam Analysis', results[0].title || `${base(file.replace(/\.pdf$/i, ''))} ${t('exam.noteSuffix')}`, md);
   };
+}
+
+const BATCH_CHARS = 60000;
+async function pdfPageCount(path) {
+  const lib = await import('/pdfview.js');
+  return lib.pdfPageCount('/vault/' + path.split('/').map(encodeURIComponent).join('/'));
+}
+// Put a line right after a note's frontmatter (or at the top).
+function insertAfterFm(md, line) {
+  const m = md.match(/^---\n[\s\S]*?\n---\n?/);
+  return m ? m[0] + '\n' + line + '\n' + md.slice(m[0].length) : line + '\n\n' + md;
 }
 
 /* ---------- 3. Tidy format ---------- */
