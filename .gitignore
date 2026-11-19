@@ -1,0 +1,8 @@
+# Dependencies and builds
+node_modules/
+dist/
+# The user's own notes live in vault/ (not part of the app). The sample vault for new users is sample-vault/.
+vault/
+# Local tool settings
+.claude/
+*.log

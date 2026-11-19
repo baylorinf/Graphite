@@ -1,0 +1,193 @@
+/* Graphite design layer — loaded after style.css.
+   Floating panels on a graphite canvas: the sidebars and the editor are rounded cards with small gaps, the
+   ribbon is a slim rail, tabs are pills, and dialogs are frosted. Colours are cool graphite greys with the
+   logo's violet as the accent. Everything here overrides tokens/looks only; the page structure is unchanged. */
+
+:root, :root[data-theme="dark"] {
+  --canvas: #0e0f11;
+  --bg: #18191c;
+  --bg-2: #141518;
+  --bg-3: #242529;
+  --bg-hover: #222327;
+  --border: #2a2b30;
+  --lead: linear-gradient(180deg, #f1f2f4, #c4c8cf);
+  --lead-text: #16171a;
+  --sel: rgba(255, 255, 255, .075);
+  --sheen: linear-gradient(180deg, #ffffff 10%, #b9bdc5 95%);
+  --border-soft: rgba(255, 255, 255, .05);
+  --text: #e9eaec;
+  --text-muted: #a0a3aa;
+  --text-faint: #63666e;
+  --accent: #8b6cff;
+  --accent-2: #ab97ff;
+  --accent-bg: rgba(139, 108, 255, .16);
+  --accent-ring: rgba(139, 108, 255, .35);
+  --link: #ab97ff;
+  --unresolved: #7c72a8;
+  --tag-bg: rgba(139, 108, 255, .14);
+  --code-bg: #1f232a;
+  --shadow: 0 18px 50px rgba(0, 0, 0, .55), 0 2px 8px rgba(0, 0, 0, .35);
+  --panel-shadow: 0 1px 0 rgba(255, 255, 255, .03) inset, 0 6px 24px rgba(0, 0, 0, .28);
+  --graph-node: #b9c0cc;
+  --graph-line: rgba(200, 210, 230, .2);
+  --radius: 14px;
+}
+:root[data-theme="light"] {
+  --canvas: #e4e5e8;
+  --bg: #ffffff;
+  --bg-2: #f6f6f7;
+  --bg-3: #ececee;
+  --bg-hover: #ededef;
+  --border: #e0e1e4;
+  --lead: linear-gradient(180deg, #484c53, #24262b);
+  --lead-text: #ffffff;
+  --sel: rgba(20, 22, 26, .065);
+  --sheen: linear-gradient(180deg, #2a2c31 20%, #5e626b 100%);
+  --border-soft: rgba(15, 23, 42, .06);
+  --text: #1a1b1e;
+  --text-muted: #5f626a;
+  --text-faint: #9a9ca3;
+  --accent: #6b4cf5;
+  --accent-2: #5937e0;
+  --accent-bg: rgba(107, 76, 245, .1);
+  --accent-ring: rgba(107, 76, 245, .28);
+  --link: #5937e0;
+  --unresolved: #9c90c8;
+  --tag-bg: rgba(107, 76, 245, .09);
+  --code-bg: #f3f4f7;
+  --shadow: 0 18px 50px rgba(15, 23, 42, .16), 0 2px 8px rgba(15, 23, 42, .08);
+  --panel-shadow: 0 1px 2px rgba(15, 23, 42, .05), 0 8px 24px rgba(15, 23, 42, .05);
+  --graph-node: #5d6470;
+  --graph-line: rgba(15, 23, 42, .2);
+}
+
+body {
+  background: var(--canvas);
+  font-family: "Segoe UI Variable Text", "Segoe UI", Inter, -apple-system, system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; letter-spacing: -.003em;
+}
+::selection { background: var(--accent-bg); }
+
+/* ---------- layout: cards on a canvas ---------- */
+#app {
+  background: var(--canvas) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.9' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix values='0 0 0 0 .5 0 0 0 0 .5 0 0 0 0 .5 0 0 0 .06 0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  padding: 8px 8px 8px 0;
+  grid-template-columns: 52px var(--left-w) 8px minmax(0, 1fr) 8px var(--right-w);
+}
+#app.left-collapsed { grid-template-columns: 52px 0 0 minmax(0, 1fr) 8px var(--right-w); }
+#app.right-collapsed { grid-template-columns: 52px var(--left-w) 8px minmax(0, 1fr) 0 0; }
+#app.left-collapsed.right-collapsed { grid-template-columns: 52px 0 0 minmax(0, 1fr) 0 0; }
+#left, #right, #main {
+  background: var(--bg-2); border: 1px solid var(--border-soft); border-radius: var(--radius);
+  box-shadow: var(--panel-shadow); overflow: hidden;
+}
+#main { background: var(--bg); position: relative; }
+#left, #right { border-right: 1px solid var(--border-soft); border-left: 1px solid var(--border-soft); }
+.resizer { background: transparent !important; }
+.resizer::after { content: ""; position: absolute; top: 30%; bottom: 30%; left: 50%; width: 2px; margin-left: -1px; border-radius: 2px; background: transparent; transition: background .15s; }
+.resizer:hover::after, .resizer.active::after { background: var(--accent); }
+
+/* ---------- ribbon: a slim rail ---------- */
+#ribbon { background: transparent; border: 0; padding: 6px 0; gap: 6px; }
+#ribbon button { width: 36px; height: 36px; border-radius: 11px; color: var(--text-faint); transition: background .12s, color .12s; }
+#ribbon button:hover { background: var(--bg-3); color: var(--text); }
+#ribbon button:active { transform: scale(.96); }
+#ribbon svg.i { width: 19px; height: 19px; stroke-width: 1.7; }
+#ribbon .spacer { min-height: 12px; }
+
+/* ---------- side panels ---------- */
+.side-tabs { border: 0; margin: 8px 8px 4px; padding: 3px; gap: 2px; background: var(--bg-3); border-radius: 11px; }
+.side-tabs button { flex: 1; height: 28px; border-radius: 8px; color: var(--text-muted); }
+.side-tabs button:hover { background: transparent; color: var(--text); }
+.side-tabs button.active { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, .18); }
+:root[data-theme="light"] .side-tabs button.active { box-shadow: 0 1px 2px rgba(15, 23, 42, .12); }
+.pane-toolbar { gap: 4px; padding: 4px 8px 6px; justify-content: flex-start; }
+.pane-toolbar button, #topbar > button { border-radius: 9px; color: var(--text-faint); }
+.pane-toolbar button:hover, #topbar > button:hover { background: var(--bg-3); color: var(--text); }
+
+#tree { padding: 2px 8px 40px; }
+.tree-item { min-height: 28px; border-radius: 8px; padding-top: 2px; padding-bottom: 2px; color: var(--text-muted); transition: background .1s; }
+.tree-item:hover { background: var(--bg-hover); }
+.tree-item { position: relative; }
+.tree-item.active { background: var(--sel); color: var(--text); font-weight: 600; }
+.tree-item.active::before { content: ""; position: absolute; left: 2px; top: 7px; bottom: 7px; width: 3px; border-radius: 3px; background: var(--accent); }
+.tree-item.folder { color: var(--text); font-weight: 600; font-size: 13px; }
+.tree-item .ext { background: transparent; border: 1px solid var(--border); color: var(--text-faint); font-weight: 600; letter-spacing: .02em; }
+.search-box input, #modal-input { background: var(--bg); border: 1px solid var(--border); border-radius: 10px; padding: 7px 12px; transition: border-color .12s, box-shadow .12s; }
+.search-box input:focus, #modal-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-ring); }
+.section-title { text-transform: uppercase; letter-spacing: .06em; font-size: 11px; color: var(--text-faint); }
+
+/* ---------- tabs: pills ---------- */
+#tabbar { background: var(--bg); border-bottom: 1px solid var(--border-soft); padding: 7px 8px 6px; align-items: center; min-height: 44px; }
+#tabbar .tabs { align-items: center; gap: 4px; }
+#tabbar .tab { height: 30px; margin: 0; border: 0; border-radius: 9px; padding: 0 6px 0 10px; color: var(--text-muted); }
+#tabbar .tab:hover { background: var(--bg-hover); }
+#tabbar .tab.active { background: var(--sel); border: 0; box-shadow: inset 0 0 0 1px var(--border-soft); color: var(--text); }
+#tabbar .tab:not(.active) + .tab:not(.active)::before { display: none; }
+#tabbar .tab-x { border-radius: 6px; }
+
+/* ---------- top bar & status ---------- */
+#topbar { border-bottom: 0; min-height: 46px; padding: 6px 12px; gap: 2px; }
+#breadcrumb { font-size: 13px; }
+.seg { background: var(--bg-3); border: 0; border-radius: 10px; padding: 3px; }
+.seg button { border-radius: 7px; padding: 3px 12px; }
+.seg button.active { background: var(--bg); color: var(--text); box-shadow: 0 1px 3px rgba(0, 0, 0, .2); }
+:root[data-theme="light"] .seg button.active { box-shadow: 0 1px 2px rgba(15, 23, 42, .12); }
+#status { background: transparent; border-top: 1px solid var(--border-soft); color: var(--text-faint); padding: 4px 16px; }
+
+/* ---------- writing ---------- */
+.col { max-width: 780px; padding: 40px 52px 40vh; }
+#title, #preview-title { font-size: 2.15em; font-weight: 750; letter-spacing: -.025em; margin-bottom: 22px; }
+#preview-title, #empty-state h2 { background: var(--sheen); -webkit-background-clip: text; background-clip: text; color: transparent; }
+#title { caret-color: var(--accent); }
+#panes.mode-split #editor-wrap { border-right: 1px solid var(--border-soft); }
+.markdown h1, .markdown h2, .markdown h3 { letter-spacing: -.015em; }
+.markdown h2 { padding-bottom: .2em; border-bottom: 1px solid var(--border-soft); }
+.markdown code { border-radius: 6px; }
+.markdown pre { border-radius: 12px; border: 1px solid var(--border-soft); }
+.markdown blockquote { border-left-color: var(--accent); background: var(--bg-2); border-radius: 0 10px 10px 0; padding: .4em 1em; }
+.markdown a { text-decoration-color: color-mix(in srgb, var(--link) 40%, transparent); text-underline-offset: 3px; }
+#empty-state h2 { font-size: 1.6em; letter-spacing: -.02em; }
+
+/* ---------- controls ---------- */
+.mod-button, button.mod-cta {
+  border-radius: 10px; border: 1px solid var(--border); background: var(--bg-2); padding: 6px 14px; transition: background .12s, border-color .12s, transform .06s;
+}
+.mod-button:hover { background: var(--bg-3); }
+.mod-button:active { transform: translateY(1px); }
+.mod-button.mod-cta, button.mod-cta {
+  background: var(--lead); color: var(--lead-text); border-color: transparent; font-weight: 600;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .25), inset 0 1px 0 rgba(255, 255, 255, .25);
+}
+.mod-button.mod-cta:hover { filter: brightness(1.07); }
+input[type="checkbox"] { accent-color: var(--accent); }
+select { border-radius: 8px; }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline: 2px solid var(--accent-ring); outline-offset: 1px; }
+
+/* ---------- dialogs: frosted ---------- */
+.review-bg, #modal { backdrop-filter: blur(6px) saturate(1.1); }
+.review-bg { background: rgba(8, 10, 13, .5); }
+:root[data-theme="light"] .review-bg { background: rgba(30, 35, 45, .25); }
+.review-box, .modal-box, #ctxmenu, #suggest, .settings-box, .modal-container .modal {
+  border-radius: 16px !important; border: 1px solid var(--border) !important; box-shadow: var(--shadow) !important;
+}
+#ctxmenu { padding: 5px; }
+#ctxmenu .menu-item, #ctxmenu > div { border-radius: 7px; }
+#toast > * { border-radius: 12px; }
+
+/* ---------- graph & review pages sit on the panel colour ---------- */
+#graph-view { background: var(--bg); }
+.graph-controls { border-radius: 12px; }
+
+/* ---------- scrollbars: thin ---------- */
+.scroll::-webkit-scrollbar, ::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
+::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: padding-box; }
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- graphite details ---------- */
+.seg button.active { font-weight: 600; }
+#ribbon button.active, #ribbon button[aria-pressed="true"] { background: var(--sel); color: var(--text); }
+#review-btn .badge { background: var(--accent); box-shadow: 0 0 0 2px var(--canvas); }
+.markdown .tag, .chip { border-radius: 999px; }
+.markdown hr { border: 0; height: 1px; background: linear-gradient(90deg, transparent, var(--border), transparent); }

@@ -1,0 +1,92 @@
+{
+  "name": "myobsidian",
+  "productName": "Graphite",
+  "version": "1.1.30",
+  "description": "Graphite: a local Markdown knowledge base for studying",
+  "main": "electron/main.js",
+  "scripts": {
+    "start": "node server.js",
+    "app": "electron .",
+    "icon": "electron build/make-icon.js",
+    "dist": "node scripts/bump-version.js && electron-builder --win && node scripts/legacy-installer-name.js",
+    "publish": "node scripts/publish-github.js",
+    "icons": "node scripts/make-icons.js"
+  },
+  "author": "Graphite",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "js-yaml": "^5.5.0",
+    "katex": "^0.19.1",
+    "lucide-static": "^1.69.0",
+    "marked": "^15.0.12",
+    "moment": "^2.31.0",
+    "pdfjs-dist": "6.4.299"
+  },
+  "devDependencies": {
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0"
+  },
+  "build": {
+    "appId": "com.myobsidian.app",
+    "productName": "Graphite",
+    "copyright": "Graphite",
+    "electronLanguages": [
+      "en-US",
+      "fr",
+      "es",
+      "ja",
+      "ko",
+      "zh-CN",
+      "zh-TW"
+    ],
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "electron/**",
+      "server.js",
+      "public/**",
+      "build/icon.png",
+      "package.json",
+      "!node_modules/lucide-static/{font,dist,sprite.svg,icon-nodes.json,tags.json}",
+      "!node_modules/lucide-static/**/*.map",
+      "!node_modules/pdfjs-dist/{legacy,types,image_decoders}/**",
+      "!node_modules/pdfjs-dist/**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "sample-vault",
+        "to": "sample-vault",
+        "filter": [
+          "**/*",
+          "**/.*",
+          "**/.*/**"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        "nsis"
+      ],
+      "icon": "build/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Graphite",
+      "artifactName": "Graphite-Setup-${version}.${ext}"
+    }
+  },
+  "myobsidian": {
+    "updateFolder": "D:\\MyObsidian\\dist"
+  },
+  "graphite": {
+    "updateRepo": ""
+  }
+}

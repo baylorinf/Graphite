@@ -1,0 +1,392 @@
+// Graphite desktop app (Electron). (Formerly MyObsidian.)
+// The app page and server code are the same as the browser version. Here the server runs inside the app,
+// on a random port that only this window can use (every request carries a secret token).
+'use strict';
+const { app, BrowserWindow, dialog, ipcMain, shell, session, Menu, screen } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
+const { strings, pickLang } = require('./strings');
+
+const ROOT = path.join(__dirname, '..');
+const SAMPLE_VAULT = app.isPackaged ? path.join(process.resourcesPath, 'sample-vault') : path.join(ROOT, 'sample-vault');
+const ICON = path.join(ROOT, 'build', 'icon.png');
+const CONFIG = () => path.join(app.getPath('userData'), 'config.json');
+// The app used to be called MyObsidian, and its settings (vault, language, AI keys…) are in that folder.
+// The first time Graphite starts, carry them over.
+function carryOverOldSettings() {
+  if (process.argv.some(a => a.startsWith('--user-data-dir'))) return;
+  try {
+    const old = path.join(app.getPath('appData'), 'MyObsidian', 'config.json');
+    if (!fs.existsSync(CONFIG()) && fs.existsSync(old)) {
+      fs.mkdirSync(path.dirname(CONFIG()), { recursive: true });
+      fs.copyFileSync(old, CONFIG());
+    }
+  } catch (e) { console.error('Could not carry over MyObsidian settings:', e); }
+}
+const arg = name => { const a = process.argv.find(x => x.startsWith(`--${name}=`)); return a ? a.slice(name.length + 3) : null; };
+const SELFTEST = process.argv.includes('--selftest');
+
+let cfg = {};
+let win = null;
+let VAULT = ''; // the vault actually open in this window
+let quitting = false;
+
+function loadConfig() { carryOverOldSettings(); try { cfg = JSON.parse(fs.readFileSync(CONFIG(), 'utf8')); } catch { cfg = {}; } }
+function saveConfig() { try { fs.mkdirSync(path.dirname(CONFIG()), { recursive: true }); fs.writeFileSync(CONFIG(), JSON.stringify(cfg, null, 2)); } catch (e) { console.error(e); } }
+const tr = () => strings(cfg.lang || pickLang(app.getLocale()));
+
+function isEmptyDir(p) { try { return fs.readdirSync(p).filter(n => !n.startsWith('.')).length === 0; } catch { return true; } }
+
+/* ---------- Updates ----------
+   Two places are checked for a newer version:
+   - GitHub: the latest release of the repo in package.json → graphite.updateRepo ("owner/name"). Its asset
+     Graphite-Setup-<version>.exe is downloaded when you press Update.
+   - A local folder (for development): installers named Graphite-Setup-<version>.exe (or MyObsidian-Setup-, the
+     old name) in the project's dist/ folder, recorded at build time.
+   When either is newer than this app, the page shows an Update button; installing runs the installer silently
+   and reopens the app. */
+const PKG = require(path.join(ROOT, 'package.json'));
+const updateFolder = () => arg('update-folder') || cfg.updateFolder || PKG.myobsidian?.updateFolder || null;
+const cmpVer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; };
+let update = { current: app.getVersion(), available: null, file: null, folder: null };
+const updateRepo = () => arg('update-repo') || cfg.updateRepo || PKG.graphite?.updateRepo || null;
+const SETUP = /^(?:Graphite|MyObsidian)-Setup-(\d+\.\d+\.\d+)\.exe$/;
+// GitHub allows 60 unauthenticated API calls an hour, so ask at most every 15 minutes.
+let gh = { at: 0, best: null };
+async function checkGitHub() {
+  const repo = updateRepo();
+  if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
+  if (Date.now() - gh.at < 15 * 60 * 1000) return gh.best;
+  gh.at = Date.now();
+  try {
+    const r = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Graphite-updater' }, signal: AbortSignal.timeout(15000) });
+    if (!r.ok) return (gh.best = null);
+    const rel = await r.json();
+    let best = null;
+    for (const a of rel.assets || []) {
+      const m = a.name.match(SETUP);
+      if (m && cmpVer(m[1], app.getVersion()) > 0 && (!best || cmpVer(m[1], best.version) > 0)) best = { version: m[1], url: a.browser_download_url, size: a.size, name: a.name, notes: rel.body || '' };
+    }
+    return (gh.best = best);
+  } catch { return gh.best; } // offline: keep what we knew
+}
+
+async function checkForUpdates() {
+  const dir = updateFolder();
+  let best = null;
+  try {
+    for (const f of fs.readdirSync(dir)) {
+      const m = f.match(/^(?:Graphite|MyObsidian)-Setup-(\d+\.\d+\.\d+)\.exe$/);
+      // The .blockmap is written last, so its presence means the installer is complete.
+      if (!m || !fs.existsSync(path.join(dir, f + '.blockmap'))) continue;
+      if (cmpVer(m[1], app.getVersion()) > 0 && (!best || cmpVer(m[1], best.version) > 0)) best = { version: m[1], file: path.join(dir, f) };
+    }
+  } catch { /* folder missing: no updates */ }
+  const remote = await checkGitHub();
+  if (remote && (!best || cmpVer(remote.version, best.version) > 0)) best = remote;
+  update = { current: app.getVersion(), available: best?.version || null, file: best?.file || null, url: best?.url || null, size: best?.size || 0,
+    name: best?.name || null, notes: best?.notes || '', source: best?.url ? 'github' : best ? 'folder' : null, folder: dir, repo: updateRepo() };
+  if (win && !win.isDestroyed()) win.webContents.send('update-state', update);
+  return update;
+}
+
+// Download a release installer to the temp folder, reporting progress to the page.
+async function downloadInstaller(u) {
+  const dest = path.join(app.getPath('temp'), u.name || `Graphite-Setup-${u.available}.exe`);
+  const r = await fetch(u.url, { headers: { 'User-Agent': 'Graphite-updater' }, redirect: 'follow' });
+  if (!r.ok || !r.body) throw new Error(`Download failed (${r.status})`);
+  const total = Number(r.headers.get('content-length')) || u.size || 0;
+  const out = fs.createWriteStream(dest);
+  let got = 0, last = 0;
+  for await (const chunk of r.body) {
+    if (!out.write(chunk)) await new Promise(res => out.once('drain', res));
+    got += chunk.length;
+    if (total && Date.now() - last > 250) { last = Date.now(); win?.webContents.send('update-state', { ...update, progress: got / total }); }
+  }
+  await new Promise((res, rej) => out.end(e => (e ? rej(e) : res())));
+  if (total && fs.statSync(dest).size !== total) throw new Error('Download incomplete; try again');
+  return dest;
+}
+
+async function installUpdate() {
+  let downloaded = null;
+  if (update.url) {
+    try { downloaded = await downloadInstaller(update); }
+    catch (e) { win?.webContents.send('update-state', update); return { ok: false, error: e.message }; }
+  } else if (!update.file || !fs.existsSync(update.file)) return { ok: false, error: 'Installer not found' };
+  // Save open notes, remember the window, then hand over to the installer.
+  await win.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : null').catch(() => {});
+  await captureStorage();
+  if (!win.isMaximized()) cfg.bounds = win.getBounds();
+  cfg.maximized = win.isMaximized();
+  saveConfig();
+  // Run a copy from the temp folder, so the original can be replaced by the next build meanwhile.
+  let tmp = downloaded;
+  if (!tmp) { tmp = path.join(app.getPath('temp'), path.basename(update.file)); fs.copyFileSync(update.file, tmp); }
+  // Same switches electron-updater uses: silent install, then start the app again.
+  require('child_process').spawn(tmp, ['--updated', '/S', '--force-run'], { detached: true, stdio: 'ignore' }).unref();
+  quitting = true;
+  setTimeout(() => app.exit(0), 300);
+  return { ok: true };
+}
+
+/* ---------- Remembering the page's settings ----------
+   The page keeps its settings (language, theme, fonts, layout, last note…) in localStorage. That storage
+   belongs to the exact address, and the built-in server uses a new random port at every launch, so we copy
+   it into config.json (cfg.storage) and put it back before the page starts (see preload.js). */
+let lastStorage = '';
+async function captureStorage() {
+  if (!win || win.isDestroyed()) return;
+  try {
+    const json = await win.webContents.executeJavaScript('JSON.stringify(Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])))');
+    if (json && json !== lastStorage) { lastStorage = json; cfg.storage = JSON.parse(json); saveConfig(); }
+  } catch { /* page not ready */ }
+}
+function storageForPage() {
+  const s = { ...(cfg.storage || {}) };
+  // Versions up to 1.1.5 lost these settings, but did record the language here: carry it over.
+  if (!('mo:lang' in s) && cfg.lang) s['mo:lang'] = JSON.stringify(cfg.lang);
+  return s;
+}
+
+// Ask the user where their notes live. Returns a folder path, or null if they cancel.
+async function askForVault(parent) {
+  const t = tr();
+  const r = await dialog.showMessageBox(parent, {
+    type: 'question', title: t('chooseTitle'), message: t('chooseMessage'), detail: t('chooseDetail'),
+    buttons: [t('openExisting'), t('createNew'), t('cancel')], defaultId: 0, cancelId: 2, noLink: true,
+  });
+  if (r.response === 0) {
+    const p = await dialog.showOpenDialog(parent, { title: t('pickFolder'), properties: ['openDirectory', 'createDirectory'] });
+    return p.canceled ? askForVault(parent) : p.filePaths[0];
+  }
+  if (r.response === 1) {
+    const p = await dialog.showSaveDialog(parent, {
+      title: t('newVault'), buttonLabel: t('createButton'),
+      defaultPath: path.join(app.getPath('documents'), 'Graphite Vault'),
+      properties: ['createDirectory', 'showOverwriteConfirmation'],
+    });
+    if (p.canceled || !p.filePath) return askForVault(parent);
+    fs.mkdirSync(p.filePath, { recursive: true });
+    // Fill a brand-new vault with the starter notes and the example plugin.
+    if (isEmptyDir(p.filePath) && fs.existsSync(SAMPLE_VAULT)) fs.cpSync(SAMPLE_VAULT, p.filePath, { recursive: true });
+    return p.filePath;
+  }
+  return null;
+}
+
+async function resolveVault() {
+  const forced = arg('vault');
+  if (forced) return path.resolve(forced);
+  if (cfg.vault && fs.existsSync(cfg.vault)) return cfg.vault;
+  if (cfg.vault) await dialog.showMessageBox({ type: 'warning', title: 'Graphite', message: tr()('missing', { path: cfg.vault }) });
+  const v = await askForVault(null);
+  if (v) { cfg.vault = v; saveConfig(); }
+  return v;
+}
+
+// Builds the right-click menu for what was clicked: the editor, selected text, a link or an image.
+function buildContextMenu(p, origin) {
+  const t = tr(), items = [], sep = () => { if (items.length && items[items.length - 1].type !== 'separator') items.push({ type: 'separator' }); };
+  const send = cmd => () => win.webContents.send('app-command', cmd);
+  const sel = (p.selectionText || '').trim();
+  if (p.linkURL && !p.linkURL.startsWith(origin)) {
+    items.push({ label: t('openLink'), click: () => shell.openExternal(p.linkURL) });
+    items.push({ label: t('copyLink'), click: () => require('electron').clipboard.writeText(p.linkURL) });
+  }
+  if (p.mediaType === 'image') { sep(); items.push({ label: t('copyImage'), click: () => win.webContents.copyImageAt(p.x, p.y) }); }
+  if (p.isEditable) {
+    sep();
+    const f = p.editFlags || {};
+    items.push(
+      { label: t('undo'), role: 'undo', enabled: f.canUndo !== false }, { label: t('redo'), role: 'redo', enabled: f.canRedo !== false }, { type: 'separator' },
+      { label: t('cut'), role: 'cut', enabled: !!f.canCut }, { label: t('copy'), role: 'copy', enabled: !!f.canCopy },
+      { label: t('paste'), role: 'paste', enabled: f.canPaste !== false }, { label: t('selectAll'), role: 'selectAll' },
+    );
+    // Formatting only in the note editor (not in search boxes and such).
+    if (p.formControlType === 'text-area' || p.inputFieldType === 'plainText') {
+      items.push({ type: 'separator' }, {
+        label: t('format'), submenu: [
+          { label: t('bold'), accelerator: 'Ctrl+B', click: send({ type: 'wrap', before: '**' }) },
+          { label: t('italic'), accelerator: 'Ctrl+I', click: send({ type: 'wrap', before: '*' }) },
+          { label: t('highlight'), click: send({ type: 'wrap', before: '==' }) },
+          { label: t('strike'), click: send({ type: 'wrap', before: '~~' }) },
+          { label: t('code'), click: send({ type: 'wrap', before: '`' }) },
+          { label: t('math'), click: send({ type: 'wrap', before: '$' }) },
+          { label: t('wikilink'), click: send({ type: 'wrap', before: '[[', after: ']]' }) },
+        ],
+      });
+    }
+  } else if (sel) {
+    sep();
+    items.push({ label: t('copy'), role: 'copy' });
+  }
+  if (sel) {
+    sep();
+    const short = sel.length > 30 ? sel.slice(0, 30) + '…' : sel;
+    items.push({ label: t('search', { text: short.replace(/\s+/g, ' ') }), click: send({ type: 'search', text: sel }) });
+  }
+  if (p.isEditable && (p.formControlType === 'text-area' || p.inputFieldType === 'plainText')) {
+    sep();
+    items.push({ label: t('check'), click: send({ type: 'command', id: 'check-note' }) });
+    items.push({ label: t('quiz'), click: send({ type: 'command', id: 'quiz-note' }) });
+  }
+  return items;
+}
+
+function createWindow(url) {
+  let b = cfg.bounds || {};
+  // A saved position on a monitor that is no longer connected would open the window off-screen: forget it.
+  if (b.x != null && b.y != null && b.width && b.height) {
+    const area = screen.getDisplayMatching(b).workArea;
+    const visible = Math.min(b.x + b.width, area.x + area.width) - Math.max(b.x, area.x) > 100 && Math.min(b.y + b.height, area.y + area.height) - Math.max(b.y, area.y) > 50;
+    if (!visible) b = { width: Math.min(b.width, area.width), height: Math.min(b.height, area.height) };
+  }
+  win = new BrowserWindow({
+    width: b.width || 1280, height: b.height || 820, x: b.x, y: b.y,
+    minWidth: 640, minHeight: 420,
+    show: false, backgroundColor: '#1e1e1e', autoHideMenuBar: true, icon: ICON, title: 'Graphite',
+    webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
+  });
+  if (cfg.maximized) win.maximize();
+  win.once('ready-to-show', () => { if (SELFTEST) win.showInactive(); else win.show(); });
+
+  const origin = new URL(url).origin;
+  // Links: external pages open in the normal browser, vault attachments in their default program.
+  win.webContents.setWindowOpenHandler(({ url: target }) => {
+    if (target.startsWith(origin + '/vault/')) {
+      let rel = '';
+      try { rel = decodeURIComponent(new URL(target).pathname.slice('/vault/'.length)); } catch { return { action: 'deny' }; }
+      const abs = path.resolve(VAULT, rel);
+      if (abs.startsWith(path.resolve(VAULT) + path.sep)) shell.openPath(abs);
+    } else if (/^https?:|^mailto:/i.test(target)) shell.openExternal(target);
+    return { action: 'deny' };
+  });
+  win.webContents.on('will-navigate', (e, target) => { if (!target.startsWith(origin)) { e.preventDefault(); if (/^https?:/i.test(target)) shell.openExternal(target); } });
+
+  // Right-click menu (Electron shows none by default). The file list has its own menu inside the page.
+  win.webContents.on('context-menu', (_e, p) => {
+    const items = buildContextMenu(p, origin);
+    if (items.length) Menu.buildFromTemplate(items).popup({ window: win });
+  });
+
+  // A few app-level shortcuts (there is no menu bar).
+  win.webContents.on('before-input-event', (e, input) => {
+    if (input.type !== 'keyDown') return;
+    const mod = input.control || input.meta, k = input.key.toLowerCase();
+    if (input.key === 'F12' || (mod && input.shift && k === 'i')) { win.webContents.toggleDevTools(); e.preventDefault(); }
+    else if (mod && (k === '=' || k === '+')) { win.webContents.setZoomLevel(win.webContents.getZoomLevel() + 0.5); e.preventDefault(); }
+    else if (mod && k === '-') { win.webContents.setZoomLevel(win.webContents.getZoomLevel() - 0.5); e.preventDefault(); }
+    else if (mod && k === '0') { win.webContents.setZoomLevel(0); e.preventDefault(); }
+    else if (input.key === 'F11') { win.setFullScreen(!win.isFullScreen()); e.preventDefault(); }
+  });
+
+  // Save unsaved typing before the window closes, and remember the window size.
+  win.on('close', e => {
+    if (!win.isMaximized() && !win.isFullScreen()) cfg.bounds = win.getBounds();
+    cfg.maximized = win.isMaximized();
+    saveConfig();
+    if (quitting) return;
+    e.preventDefault();
+    quitting = true;
+    const done = () => { if (win && !win.isDestroyed()) win.destroy(); };
+    win.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : null').catch(() => {})
+      .then(captureStorage).then(done, done);
+    setTimeout(done, 3000);
+  });
+
+  win.loadURL(url);
+  return win;
+}
+
+async function main() {
+  loadConfig();
+  Menu.setApplicationMenu(null);
+  const vault = await resolveVault();
+  if (!vault) { app.quit(); return; }
+  VAULT = vault;
+
+  const token = crypto.randomBytes(24).toString('hex');
+  const { start } = require(path.join(ROOT, 'server.js'));
+  const port = await start({ vault, port: 0, token });
+  const url = `http://127.0.0.1:${port}/`;
+
+  // Attach the secret to every request this app makes to its own server.
+  session.defaultSession.webRequest.onBeforeSendHeaders({ urls: [`http://127.0.0.1:${port}/*`] }, (details, cb) => {
+    details.requestHeaders['X-App-Token'] = token;
+    cb({ requestHeaders: details.requestHeaders });
+  });
+
+  ipcMain.handle('choose-vault', async () => {
+    const v = await askForVault(win);
+    if (!v || path.resolve(v) === path.resolve(vault)) return false;
+    cfg.vault = v; saveConfig();
+    await win.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : null').catch(() => {});
+    await captureStorage();
+    app.relaunch({ args: process.argv.slice(1).filter(a => !a.startsWith('--vault=')) });
+    quitting = true;
+    app.exit(0);
+    return true;
+  });
+  ipcMain.on('set-language', (_e, code) => { if (code && code !== cfg.lang) { cfg.lang = code; saveConfig(); } });
+  ipcMain.on('storage-load', e => { e.returnValue = storageForPage(); });
+  ipcMain.handle('update-check', () => checkForUpdates());
+  ipcMain.handle('update-install', () => installUpdate());
+  ipcMain.handle('copy-text', (_e, text) => { require('electron').clipboard.writeText(String(text)); return true; });
+
+  createWindow(url);
+  // Also save settings every 15 s, so they survive even if Windows ends the app without a normal quit.
+  setInterval(captureStorage, 15 * 1000);
+  // Look for new versions at start, every 10 minutes, and when you come back to the window.
+  if (app.isPackaged || arg('update-folder')) {
+    setInterval(checkForUpdates, 10 * 60 * 1000);
+    let last = 0;
+    win.on('focus', () => { if (Date.now() - last > 60 * 1000) { last = Date.now(); checkForUpdates(); } });
+  }
+  if (SELFTEST) runSelfTest();
+}
+
+// `--selftest`: load the app hidden, report errors and a screenshot, then quit. Used to check builds.
+function runSelfTest() {
+  const errors = [];
+  win.webContents.on('console-message', (...a) => {
+    const d = a[0] && typeof a[0] === 'object' && 'message' in a[0] ? a[0] : { level: a[1], message: a[2] };
+    if (d.level === 3 || d.level === 'error') errors.push(d.message);
+  });
+  win.webContents.once('did-finish-load', async () => {
+    await new Promise(r => setTimeout(r, 2500));
+    const info = await win.webContents.executeJavaScript(`({
+      title: document.title,
+      notes: document.querySelectorAll('.tree-item.file').length,
+      desktop: !!window.myobsidianDesktop,
+      lang: document.documentElement.lang,
+    })`).catch(e => ({ error: String(e) }));
+    info.apiOk = await win.webContents.executeJavaScript(`fetch('/api/list').then(r => r.status)`).catch(e => String(e));
+    info.version = await win.webContents.executeJavaScript(`fetch('/api/all').then(r => r.json()).then(d => d.version)`).catch(e => String(e));
+    info.fonts = await win.webContents.executeJavaScript(`import('/appearance.js').then(m => m.listFonts()).then(f => ({ all: f.all.length, mono: f.mono.length, sampleMono: f.mono.slice(0, 6) }))`).catch(e => String(e));
+    info.update = await win.webContents.executeJavaScript(`({ button: !document.querySelector('#update-btn')?.classList.contains('hidden'), label: document.querySelector('#st-update')?.textContent || '' })`).catch(e => String(e));
+    info.settings = await win.webContents.executeJavaScript(`({ theme: document.documentElement.dataset.theme, appearance: localStorage.getItem('mo:appearance'), mode: localStorage.getItem('mo:mode') })`).catch(e => String(e));
+    // --selftest-eval=<js>: change something (e.g. a setting) before quitting, to test what's remembered.
+    // Right-click menu for the editor with some text selected (labels only).
+    const label = i => i.type === 'separator' ? '—' : i.label + (i.submenu ? ` [${i.submenu.map(s => s.label).join(', ')}]` : '');
+    info.menuEditor = buildContextMenu({ isEditable: true, formControlType: 'text-area', editFlags: { canCut: true, canCopy: true, canPaste: true }, selectionText: 'mitochondria' }, 'http://x').map(label).join(' | ');
+    info.menuText = buildContextMenu({ isEditable: false, selectionText: 'some text', linkURL: 'https://obsidian.md' }, 'http://x').map(label).join(' | ');
+    const evFile = arg('selftest-eval-file');
+    const ev = evFile ? fs.readFileSync(evFile, 'utf8') : arg('selftest-eval');
+    if (ev) info.eval = await win.webContents.executeJavaScript(ev).catch(e => String(e));
+    const out = arg('shot');
+    if (out) { const img = await win.webContents.capturePage(); fs.writeFileSync(out, img.toPNG()); }
+    console.log('SELFTEST ' + JSON.stringify({ ...info, errors }));
+    await captureStorage(); // as on a normal quit
+    quitting = true;
+    app.exit(0);
+  });
+}
+
+if (!app.requestSingleInstanceLock()) app.quit();
+else {
+  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  app.whenReady().then(main).catch(e => { dialog.showErrorBox('Graphite', String(e?.stack || e)); app.exit(1); });
+  app.on('window-all-closed', () => app.quit());
+}

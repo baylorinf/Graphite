@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Graphite</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%232a2f37'/%3E%3Cg fill='none' stroke='%23dfe3e9' stroke-width='2' stroke-linejoin='round'%3E%3Cpath d='M16 5.5 25 10.7v10.6L16 26.5 7 21.3V10.7z'/%3E%3Cpath d='M16 16 7 10.7M16 16l9-5.3M16 16v10.5'/%3E%3C/g%3E%3Ccircle cx='16' cy='16' r='3.4' fill='%238a5cf5'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/lib/katex/katex.min.css">
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/graphite.css">
+  <script src="/lib/moment.js"></script>
+</head>
+<body>
+<div id="app">
+  <nav id="ribbon">
+    <button data-cmd="toggle-left" data-icon="sidebarLeft" data-i18n-title="ribbon.toggleLeft"></button>
+    <button data-cmd="quick-switcher" data-icon="switcher" data-i18n-title="ribbon.quickSwitcher" data-kbd="Ctrl+O"></button>
+    <button data-cmd="graph" data-icon="graph" data-i18n-title="ribbon.graph" data-kbd="Ctrl+G"></button>
+    <button data-cmd="daily" data-icon="calendar" data-i18n-title="ribbon.daily" data-kbd="Alt+D"></button>
+    <button data-cmd="random" data-icon="dice" data-i18n-title="ribbon.random"></button>
+    <button id="review-btn" data-cmd="review" data-icon="brain" data-i18n-title="ribbon.review" data-kbd="Alt+R"></button>
+    <button data-cmd="palette" data-icon="terminal" data-i18n-title="ribbon.palette" data-kbd="Ctrl+P"></button>
+    <div class="spacer"></div>
+    <button id="update-btn" class="hidden" data-cmd="install-update" data-icon="download"></button>
+    <button data-cmd="help" data-icon="help" data-i18n-title="ribbon.help" data-kbd="F1"></button>
+    <button data-cmd="language" data-icon="globe" data-i18n-title="ribbon.language"></button>
+    <button data-cmd="toggle-theme" data-icon="moon" data-i18n-title="ribbon.theme"></button>
+    <button data-cmd="settings" data-icon="gear" data-i18n-title="ribbon.settings" data-kbd="Ctrl+,"></button>
+  </nav>
+
+  <aside id="left">
+    <div class="side-tabs">
+      <button data-ltab="files" class="active" data-icon="folder" data-i18n-title="tab.files"></button>
+      <button data-ltab="search" data-icon="search" data-i18n-title="tab.search" data-kbd="Ctrl+Shift+F"></button>
+      <button data-ltab="tags" data-icon="tag" data-i18n-title="tab.tags"></button>
+    </div>
+    <div class="pane" id="lpane-files">
+      <div class="pane-toolbar">
+        <button data-cmd="new-note" data-icon="filePlus" data-i18n-title="tree.newNote" data-kbd="Alt+N"></button>
+        <button data-cmd="new-folder" data-icon="folderPlus" data-i18n-title="tree.newFolder"></button>
+        <button data-cmd="collapse-all" data-icon="collapse" data-i18n-title="tree.collapseAll"></button>
+      </div>
+      <div id="tree" class="scroll"></div>
+    </div>
+    <div class="pane hidden" id="lpane-search">
+      <div class="search-box"><input id="search-input" type="search" data-i18n-ph="search.placeholder" spellcheck="false"></div>
+      <div id="search-results" class="scroll"></div>
+    </div>
+    <div class="pane hidden" id="lpane-tags">
+      <div id="tag-list" class="scroll"></div>
+    </div>
+  </aside>
+  <div class="resizer" data-resize="left"></div>
+
+  <main id="main">
+    <div id="tabbar" role="tablist">
+      <div class="tabs"></div>
+      <button type="button" class="tab-new" data-i18n-title="tabs.newTabTitle">+</button>
+    </div>
+    <header id="topbar">
+      <button id="nav-back" data-icon="back" data-i18n-title="nav.back" data-kbd="Alt+←"></button>
+      <button id="nav-fwd" data-icon="forward" data-i18n-title="nav.forward" data-kbd="Alt+→"></button>
+      <div id="breadcrumb"></div>
+      <div class="spacer"></div>
+      <button id="fix-btn" data-cmd="check-note" data-icon="spellcheck" data-i18n-title="cmd.check-note" data-kbd="Ctrl+Shift+E"></button>
+      <button id="tidy-btn" data-cmd="tidy-format" data-icon="wand" data-i18n-title="cmd.tidy-format" data-kbd="Ctrl+Shift+Y"></button>
+      <button id="check-btn" data-cmd="quiz-note" data-icon="cap" data-i18n-title="cmd.quiz-note" data-kbd="Ctrl+Shift+K"></button>
+      <div class="seg" id="mode-switch">
+        <button data-mode="source" data-i18n="mode.edit" data-i18n-title="mode.editTitle"></button>
+        <button data-mode="split" data-i18n="mode.split" data-i18n-title="mode.splitTitle"></button>
+        <button data-mode="preview" data-i18n="mode.read" data-i18n-title="mode.readTitle" data-kbd="Ctrl+E"></button>
+      </div>
+      <button data-cmd="toggle-right" data-icon="sidebarRight" data-i18n-title="right.toggle"></button>
+    </header>
+
+    <section id="note-view">
+      <div id="empty-state">
+        <div class="empty-inner">
+          <h2 data-i18n="empty.title"></h2>
+          <p><a href="#" data-cmd="new-note" data-i18n="empty.create"></a> (Alt+N)</p>
+          <p><a href="#" data-cmd="quick-switcher" data-i18n="empty.goto"></a> (Ctrl+O)</p>
+          <p><a href="#" data-cmd="daily" data-i18n="empty.daily"></a> (Alt+D)</p>
+          <p><a href="#" data-cmd="graph" data-i18n="empty.graph"></a> (Ctrl+G)</p>
+          <p><a href="#" data-cmd="help" data-i18n="empty.help"></a> (F1)</p>
+        </div>
+      </div>
+      <div id="doc" class="hidden">
+        <div id="panes" class="mode-split">
+          <div id="editor-wrap" class="scroll">
+            <div class="col">
+              <input id="title" spellcheck="false" autocomplete="off" data-i18n-title="editor.renameTitle">
+              <textarea id="editor" spellcheck="false" data-i18n-ph="editor.placeholder"></textarea>
+            </div>
+          </div>
+          <div id="preview-wrap" class="scroll">
+            <div class="col">
+              <h1 id="preview-title"></h1>
+              <div id="preview" class="markdown"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="graph-view" class="hidden">
+      <div class="graph-controls">
+        <label><input type="checkbox" id="g-local"> <span data-i18n="graph.local"></span></label>
+        <label><input type="checkbox" id="g-unresolved"> <span data-i18n="graph.unresolved"></span></label>
+        <label><input type="checkbox" id="g-attach"> <span data-i18n="graph.attachments"></span></label>
+        <label><input type="checkbox" id="g-orphans" checked> <span data-i18n="graph.orphans"></span></label>
+        <button id="g-hidden" data-i18n="graph.hidden" data-i18n-title="graph.hiddenTitle"></button>
+        <span class="gsep"></span>
+        <label data-i18n-title="graph.regionsTitle"><input type="checkbox" id="g-regions"> <span data-i18n="graph.regions"></span></label>
+        <label data-i18n-title="graph.assocTitle"><input type="checkbox" id="g-assoc"> <span data-i18n="graph.associations"></span></label>
+        <label data-i18n-title="graph.memoryTitle"><input type="checkbox" id="g-memory"> <span data-i18n="graph.memory"></span></label>
+        <button id="g-wander" data-i18n="graph.wander" data-i18n-title="graph.wanderTitle"></button>
+        <button data-cmd="graph-fit" data-i18n="graph.fit"></button>
+        <button data-cmd="graph" data-i18n="graph.close"></button>
+      </div>
+      <canvas id="graph"></canvas>
+      <div id="graph-card" class="hidden"></div>
+      <div id="graph-legend"></div>
+      <div id="graph-trail" class="hidden"></div>
+    </section>
+
+    <section id="review-view" class="hidden scroll"></section>
+
+    <!-- Attachments (PDF, images, video, audio, text) open here instead of in another program -->
+    <section id="file-view" class="hidden"></section>
+
+    <section id="help-view" class="hidden scroll">
+      <nav id="help-tabs"></nav>
+      <div class="help-layout">
+        <nav id="help-toc"></nav>
+        <div class="col"><div id="help-body" class="markdown"></div></div>
+      </div>
+    </section>
+
+    <footer id="status">
+      <span id="st-update" class="hidden" role="button" data-cmd="install-update"></span>
+      <span id="st-sync" class="hidden" role="button"></span>
+      <span id="st-save"></span>
+      <span id="st-links"></span>
+      <span id="st-words"></span>
+      <span id="st-chars"></span>
+    </footer>
+  </main>
+
+  <div class="resizer" data-resize="right"></div>
+  <aside id="right">
+    <div class="side-tabs">
+      <button data-rtab="links" class="active" data-icon="link" data-i18n-title="right.links"></button>
+      <button data-rtab="outline" data-icon="list" data-i18n-title="right.outline"></button>
+    </div>
+    <div class="pane scroll" id="rpane-links">
+      <div class="section"><div class="section-title"><span data-i18n="right.backlinks"></span> <span class="count" id="bl-count"></span></div><div id="backlinks"></div></div>
+      <div class="section"><div class="section-title"><span data-i18n="right.unlinked"></span> <span class="count" id="ul-count"></span></div><div id="unlinked"></div></div>
+      <div class="section"><div class="section-title"><span data-i18n="right.outgoing"></span> <span class="count" id="ol-count"></span></div><div id="outgoing"></div></div>
+      <div class="section"><div class="section-title"><span data-i18n="right.related"></span> <span class="count" id="rel-count"></span></div><div id="related"></div></div>
+      <div class="section"><div class="section-title" data-i18n="right.tags"></div><div id="note-tags"></div></div>
+    </div>
+    <div class="pane scroll hidden" id="rpane-outline"><div id="outline"></div></div>
+  </aside>
+</div>
+
+<div id="modal" class="hidden">
+  <div class="modal-box">
+    <input id="modal-input" spellcheck="false" autocomplete="off">
+    <div id="modal-list"></div>
+    <div id="modal-hint"></div>
+  </div>
+</div>
+<div id="ctxmenu" class="hidden"></div>
+<div id="suggest" class="hidden"></div>
+<div id="toast"></div>
+
+<script type="module" src="/app.js"></script>
+</body>
+</html>

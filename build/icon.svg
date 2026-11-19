@@ -1,0 +1,45 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <!-- Graphite: a graphite crystal (hexagonal cell, seen as a cube) drawn as a graph of linked notes. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4b525d"/>
+      <stop offset=".55" stop-color="#2a2f37"/>
+      <stop offset="1" stop-color="#14161a"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff" stop-opacity=".16"/>
+      <stop offset=".45" stop-color="#fff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="lead" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#f2f4f7"/>
+      <stop offset="1" stop-color="#a3acba"/>
+    </linearGradient>
+    <radialGradient id="core" cx=".4" cy=".35" r=".7">
+      <stop offset="0" stop-color="#d2c2ff"/>
+      <stop offset=".6" stop-color="#8a5cf5"/>
+      <stop offset="1" stop-color="#5b33c9"/>
+    </radialGradient>
+    <radialGradient id="halo">
+      <stop offset="0" stop-color="#8a5cf5" stop-opacity=".55"/>
+      <stop offset="1" stop-color="#8a5cf5" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#bg)"/>
+  <rect x="16" y="16" width="480" height="480" rx="112" fill="url(#sheen)"/>
+  <!-- cube faces -->
+  <path d="M256 104 388 180 256 256 124 180Z" fill="#fff" opacity=".13"/>
+  <path d="M124 180 256 256V408L124 332Z" fill="#fff" opacity=".05"/>
+  <path d="M388 180 256 256V408L388 332Z" fill="#000" opacity=".18"/>
+  <!-- edges -->
+  <g fill="none" stroke="url(#lead)" stroke-width="15" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M256 104 388 180V332L256 408 124 332V180Z"/>
+    <path d="M256 256 124 180M256 256 388 180M256 256V408"/>
+  </g>
+  <!-- nodes -->
+  <g fill="url(#lead)" stroke="#1b1e23" stroke-width="6">
+    <circle cx="256" cy="104" r="22"/><circle cx="388" cy="180" r="22"/><circle cx="388" cy="332" r="22"/>
+    <circle cx="256" cy="408" r="22"/><circle cx="124" cy="332" r="22"/><circle cx="124" cy="180" r="22"/>
+  </g>
+  <circle cx="256" cy="256" r="74" fill="url(#halo)"/>
+  <circle cx="256" cy="256" r="32" fill="url(#core)" stroke="#1b1e23" stroke-width="6"/>
+</svg>

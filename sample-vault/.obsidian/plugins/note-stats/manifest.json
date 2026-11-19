@@ -1,0 +1,9 @@
+{
+  "id": "note-stats",
+  "name": "Note Stats",
+  "version": "1.0.0",
+  "minAppVersion": "1.0.0",
+  "description": "Example plugin bundled with Graphite: reading time in the status bar, a note statistics window, a ```stats code block, @today date suggestions and a “Copy wikilink” file menu item.",
+  "author": "Graphite",
+  "isDesktopOnly": false
+}
