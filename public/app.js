@@ -127,7 +127,9 @@ const score = (p, from) => (isMd(p) ? 0 : 500) + (dirName(p) === dirName(from) ?
 
 // Shortest unambiguous name to write inside [[ ]] for a path.
 function linkNameFor(path) {
-  if (!isMd(path)) return fileName(path);
+  // Another file with the same name (e.g. Lecture1.pdf in two courses): write the full path, so the link
+  // can't open the other one. The label after "|" stays short.
+  if (!isMd(path)) return (nameIdx.get(fileName(path).toLowerCase()) || []).length > 1 ? path : fileName(path);
   const n = baseName(path);
   return (nameIdx.get(n.toLowerCase()) || []).length > 1 ? path.replace(/\.md$/i, '') : n;
 }
@@ -240,8 +242,15 @@ async function mergeIntoEditor(f, base, theirs) {
   if (m.ok) {
     if (m.text !== mine) { setEditorText(m.text, false); syncNotice(t('sync.merged', { name })); }
   } else {
-    const copy = await saveConflictCopy(f.path, theirs);
-    syncNotice(t('sync.conflict', { name }), copy);
+    try {
+      const copy = await saveConflictCopy(f.path, theirs);
+      syncNotice(t('sync.conflict', { name }), copy);
+    } catch (e) {
+      // The other version isn't safely on disk yet: keep treating the disk as changed, so the next save
+      // is refused by the server and tries the copy again instead of overwriting it.
+      f.disk = base;
+      syncNotice(e.message);
+    }
   }
   S.dirty = true; scheduleSave();
   f.content = ed.value; indexFile(f); renderPreview(); updateStatus(); refreshSidePanels();
@@ -272,13 +281,28 @@ async function resolveConflict(path, base, mine, theirs) {
   syncNotice(t('sync.conflict', { name }), copy);
   return mine;
 }
+// Save the other version as "Name (conflict YYYY-MM-DD HHmm).md". The server creates it exclusively: if a copy
+// with that name is already on disk (even one the app hasn't seen yet), the next number is tried. Any other
+// failure throws, so the caller does NOT overwrite the original with only one of the two versions.
 async function saveConflictCopy(path, content) {
   const d = new Date();
   const stamp = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}${pad(d.getMinutes())}`;
-  let p = joinPath(dirName(path), `${baseName(path)} (conflict ${stamp}).md`), i = 2;
-  while (S.files.has(p)) p = joinPath(dirName(path), `${baseName(path)} (conflict ${stamp} ${i++}).md`);
-  const f = await createFile(p, content, { silent: true });
-  return f ? f.path : null;
+  for (let i = 1; i <= 50; i++) {
+    const p = joinPath(dirName(path), `${baseName(path)} (conflict ${stamp}${i > 1 ? ' ' + i : ''}).md`);
+    if (S.files.has(p)) continue;
+    let res;
+    try { res = await fetch(`/api/file?path=${encodeURIComponent(p)}`, { method: 'POST', headers: { 'X-Vault': '1' }, body: content }); }
+    catch (e) { throw new Error(t('sync.copyFailed', { name: baseName(path), msg: e.message })); }
+    if (res.status === 409) continue; // that name is taken on disk: try the next one
+    if (!res.ok) throw new Error(t('sync.copyFailed', { name: baseName(path), msg: (await res.json().catch(() => ({}))).error || res.statusText }));
+    const r = await res.json();
+    const f = { path: r.path, mtime: r.mtime, size: content.length, content, disk: content };
+    indexFile(f); S.files.set(f.path, f); addFolderChain(f.path);
+    rebuildNameIndex(); renderTree(); refreshSidePanels();
+    PM.emitVault('create', f.path); PM.emitMetadata(f.path);
+    return f.path;
+  }
+  throw new Error(t('sync.copyFailed', { name: baseName(path), msg: 'no free name' }));
 }
 function syncNotice(msg, openPath) {
   const frag = document.createDocumentFragment();
@@ -430,7 +454,7 @@ function renderWiki(t) {
     return `<span class="embed-note" data-embed="${esc(target)}" data-heading="${esc(t.heading)}"></span>`;
   }
   const label = t.alias || (t.heading ? (t.name ? `${t.name} > ${t.heading}` : t.heading) : t.name);
-  return `<a href="#" class="internal-link${target ? '' : ' unresolved'}" data-target="${esc(t.name)}" data-heading="${esc(t.heading)}">${esc(label)}</a>`;
+  return `<a href="#" class="internal-link${target ? '' : ' unresolved'}" data-target="${esc(t.name)}" data-heading="${esc(t.heading)}" data-from="${esc(renderCtx.from || '')}">${esc(label)}</a>`;
 }
 
 function sectionOf(text, heading) {
@@ -573,6 +597,48 @@ ed.addEventListener('input', () => {
   if (!Sug) PM.emitEditorChange();
 });
 
+// Unsaved drafts, per note: kept until that exact text has reached the disk, also across note switches and
+// restarts (stored with the app settings). Opening a note with a draft shows the draft and keeps retrying.
+const drafts = new Map(Object.entries(store.get('drafts', {}) || {}));
+const persistDrafts = () => store.set('drafts', Object.fromEntries(drafts));
+function setDraft(path, text) { drafts.set(path, { text, at: Date.now() }); persistDrafts(); }
+function clearDraft(path, text) { const d = drafts.get(path); if (d && (text == null || d.text === text)) { drafts.delete(path); persistDrafts(); } }
+// Try to write every draft of a note that isn't open (the open one goes through saveNow).
+async function retryDrafts() {
+  for (const [path, d] of [...drafts]) {
+    if (path === S.current) continue;
+    const f = S.files.get(path);
+    try {
+      const r = await putNote(path, d.text, f);
+      if (f) { f.content = r.content; f.disk = r.content; f.mtime = r.mtime; f.size = r.content.length; indexFile(f); }
+      else { S.files.set(path, { path, mtime: r.mtime, size: r.content.length, content: r.content, disk: r.content }); addFolderChain(path); rebuildNameIndex(); renderTree(); }
+      clearDraft(path, d.text);
+    } catch { /* still failing: keep the draft */ }
+  }
+  updateDraftStatus();
+}
+function updateDraftStatus() {
+  const n = [...drafts.keys()].filter(p => p !== S.current).length;
+  $('#st-save').classList.toggle('has-drafts', n > 0 || ($('#st-save').textContent === t('status.saveFailed')));
+  if (n && !S.dirty && $('#st-save').textContent !== t('status.saveFailed')) setSaveStatus(t('status.draftsWaiting', { n }));
+}
+setInterval(() => { if (drafts.size) retryDrafts(); }, 20000);
+// Download a draft as a .md file, for when the vault can't be written to.
+function downloadDraft(path, text) {
+  const a = Object.assign(document.createElement('a'), { href: URL.createObjectURL(new Blob([text], { type: 'text/markdown' })), download: fileName(path) });
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+$('#st-save').addEventListener('click', e => {
+  const open = S.current && (S.dirty || drafts.has(S.current)) ? [[S.current, ed.value]] : [];
+  const list = [...open, ...[...drafts].filter(([p]) => p !== S.current).map(([p, d]) => [p, d.text])];
+  if (!list.length) return;
+  showMenu(e.clientX, e.clientY - 10, [
+    { label: t('draft.retry'), run: async () => { await saveNow(); await retryDrafts(); if (!drafts.size && !S.dirty) toast(t('status.saved')); } },
+    '-',
+    ...list.map(([p, text]) => ({ label: t('draft.saveAs', { name: baseName(p) }), run: () => downloadDraft(p, text) })),
+  ]);
+});
+
 // Saves run one at a time: a second save waits for the one already on its way to disk. Without this, closing
 // the app mid-save skipped the flush, and two overlapping saves looked like an edit from another device.
 let saveChain = Promise.resolve();
@@ -586,6 +652,7 @@ async function saveOnce() {
   if (!S.current || !S.dirty) return;
   const path = S.current, text = ed.value, f = S.files.get(path);
   S.dirty = false;
+  setDraft(path, text); // kept until this text is on disk
   if (f) { f.content = text; indexFile(f); }
   setSaveStatus(t('status.saving'));
   try {
@@ -600,11 +667,17 @@ async function saveOnce() {
       if (f) { f.content = next; indexFile(f); }
       renderPreview(); updateStatus();
     }
+    clearDraft(path, text);
     if (!S.dirty) setSaveStatus(t('status.saved'));
     refreshSidePanels();
     PM.emitVault('modify', path); PM.emitMetadata(path);
+    if (drafts.size) retryDrafts();
   } catch (e) {
-    S.dirty = true; setSaveStatus(t('status.saveFailed')); toast(t('toast.saveFailed', { msg: e.message }));
+    // Keep the newest text as this note's draft. If you are still in the note, it stays "unsaved" so Ctrl+S
+    // (or the next edit) retries; if you switched away, it is retried in the background and on reopening.
+    if (S.current === path) { S.dirty = true; setDraft(path, ed.value); } else setDraft(path, text);
+    setSaveStatus(t('status.saveFailed')); updateDraftStatus();
+    toast(t('toast.saveFailed', { msg: e.message }));
   }
 }
 
@@ -859,6 +932,12 @@ function toggleTask(n) {
   }
 }
 
+$('#preview').addEventListener('auxclick', e => {
+  const link = e.target.closest('a.internal-link');
+  if (!link || e.button !== 1) return;
+  const tg = resolve(link.dataset.target, link.dataset.from || S.current || '');
+  if (tg) { e.preventDefault(); openInTab(tg, { where: 'new', keep: true, heading: link.dataset.heading || '' }); }
+});
 $('#preview').addEventListener('change', e => {
   if (e.target.matches('input[type=checkbox][data-task]')) toggleTask(+e.target.dataset.task);
 });
@@ -947,6 +1026,13 @@ async function openNote(path, { push = true, heading = '' } = {}) {
   $('#title').value = baseName(path);
   $('#preview-title').textContent = baseName(path);
   setEditorText(f.content ?? '', true);
+  const draft = drafts.get(path);
+  if (draft && draft.text !== (f.content ?? '')) {
+    setEditorText(draft.text, true);
+    S.dirty = true; setSaveStatus(t('status.unsaved'));
+    toast(t('draft.restored', { name: baseName(path) }));
+    clearTimeout(saveTimer); saveTimer = setTimeout(saveNow, 400);
+  } else if (draft) clearDraft(path);
   setSaveStatus('');
   renderPreview();
   for (const el of $$('.tree-item.file')) el.classList.toggle('active', el.dataset.path === path);
@@ -981,9 +1067,9 @@ function closeNote() {
   PM.emitFileOpen(null);
 }
 
-async function openLink(name, heading = '') {
+async function openLink(name, heading = '', from = '') {
   if (!name) return scrollToHeading(heading);
-  const target = resolve(name, S.current || '');
+  const target = resolve(name, from || S.current || '');
   if (target) return openNote(target, { heading });
   const clean = name.replace(/\.md$/i, '').split('/').map(seg => safeName(seg)).filter(Boolean).join('/');
   if (!clean) return;
@@ -1040,9 +1126,11 @@ function addFiles(folder = currentFolder()) {
     }
     if (!added.length) return;
     rebuildNameIndex(); renderTree();
+    // Read every imported note now, so search, links, tags and review questions include them at once.
+    for (const ap of added) if (isMd(ap)) { const f = S.files.get(ap); if (f) { await fetchContent(f); PM.emitMetadata(ap); } }
+    rebuildNameIndex(); refreshSidePanels(); onReviewChange();
     toast(t('toast.filesAdded', { n: added.length, folder: folder || t('tree.vaultRoot') }));
     // Show the first one: notes open as notes, PDFs and other files in the file view.
-    if (isMd(added[0])) { const f = S.files.get(added[0]); if (f) await fetchContent(f); }
     openNote(added[0]);
   };
   input.click();
@@ -1526,7 +1614,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && S.view === 'help') { showNoteView(); return; }
   if (mod && !e.shiftKey && k === 'o') { e.preventDefault(); quickSwitcher(); }
   else if (mod && !e.shiftKey && k === 'p') { e.preventDefault(); palette(); }
-  else if (mod && !e.shiftKey && k === 's') { e.preventDefault(); saveNow(); }
+  else if (mod && !e.shiftKey && k === 's') { e.preventDefault(); saveNow().then(retryDrafts); }
   else if (mod && !e.shiftKey && k === 'e') { e.preventDefault(); runCommand('toggle-mode'); }
   else if (mod && !e.shiftKey && k === 'g') { e.preventDefault(); runCommand('graph'); }
   else if (mod && !e.shiftKey && k === 'n') { e.preventDefault(); newNote(); }
@@ -1570,8 +1658,9 @@ document.addEventListener('click', e => {
     return;
   }
   const link = e.target.closest('a.internal-link');
-  if (link && (e.ctrlKey || e.metaKey)) { const tg = resolve(link.dataset.target, S.current || ''); if (tg) { e.preventDefault(); openInTab(tg, { where: 'new', keep: true, heading: link.dataset.heading || '' }); return; } }
-  if (link) { e.preventDefault(); openLink(link.dataset.target, link.dataset.heading); return; }
+  // Resolve from the note the link was written in (an embedded note's own folder), not the outer note.
+  if (link && (e.ctrlKey || e.metaKey)) { const tg = resolve(link.dataset.target, link.dataset.from || S.current || ''); if (tg) { e.preventDefault(); openInTab(tg, { where: 'new', keep: true, heading: link.dataset.heading || '' }); return; } }
+  if (link) { e.preventDefault(); openLink(link.dataset.target, link.dataset.heading, link.dataset.from); return; }
   const tag = e.target.closest('[data-tag]');
   if (tag) { e.preventDefault(); searchFor('#' + tag.dataset.tag); }
 });
@@ -2903,7 +2992,15 @@ async function installUpdate() {
 }
 
 // The desktop app calls this before closing the window so the last edits are written to disk.
-window.__moFlush = () => saveNow();
+window.__moFlush = async () => {
+  try { await saveNow(); } catch { /* reported below */ }
+  if (S.current && S.dirty) setDraft(S.current, ed.value);
+  await retryDrafts().catch(() => {});
+  const unsaved = [...drafts].map(([path, d]) => ({ path, text: d.text }));
+  return { ok: !unsaved.length, unsaved };
+};
+// Ask once more on startup for drafts left from last time.
+setTimeout(() => { if (drafts.size) retryDrafts(); }, 3000);
 
 addEventListener('beforeunload', () => {
   if (S.dirty && S.current) fetch(`/api/file?path=${encodeURIComponent(S.current)}`, { method: 'PUT', keepalive: true, headers: { 'X-Vault': '1' }, body: ed.value });

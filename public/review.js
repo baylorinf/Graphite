@@ -45,8 +45,24 @@ function apply(base, ops) {
   }
   return base;
 }
-async function readDisk() {
-  try { return { ...fresh(), ...JSON.parse((await H.api('GET', 'file', { path: FILE })).content) }; } catch { return fresh(); }
+// The file on disk: { raw: its exact text (null if there is none), data: parsed progress, corrupt: true if unreadable }.
+async function readDiskRaw() {
+  let raw = null;
+  try { raw = (await H.api('GET', 'file', { path: FILE })).content; } catch { return { raw: null, data: fresh() }; }
+  try { return { raw, data: { ...fresh(), ...JSON.parse(raw) } }; } catch { return { raw, data: fresh(), corrupt: true }; }
+}
+async function readDisk() { return (await readDiskRaw()).data; }
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+// Write the merged progress only if the file is still the version just read ("compare and swap"): if another
+// window saved in between, the server refuses, and the save re-reads and re-applies this window's operations.
+async function writeIfUnchanged(raw, text) {
+  const enc = encodeURIComponent(FILE);
+  const res = raw == null
+    ? await fetch(`/api/file?path=${enc}`, { method: 'POST', headers: { 'X-Vault': '1' }, body: text })   // create only
+    : await fetch(`/api/file?path=${enc}`, { method: 'PUT', headers: { 'X-Vault': '1', 'X-Base-Hash': hash(raw) }, body: text });
+  if (res.status === 409) return false;
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  return true;
 }
 async function flush() {
   if (flushing) return flushing; // one save at a time; changes made meanwhile go in the next one
@@ -54,10 +70,19 @@ async function flush() {
   flushing = (async () => {
     const ops = pending; pending = [];
     try {
-      const merged = apply(await readDisk(), ops);
-      await H.api('PUT', 'file', { path: FILE }, JSON.stringify(merged));
-      // Adopt what other windows saved too, keeping changes made while this save was running.
-      state = apply(merged, pending);
+      for (let attempt = 0; ; attempt++) {
+        const disk = await readDiskRaw();
+        // An unreadable file is kept as a backup instead of being overwritten.
+        if (disk.corrupt) await H.api('POST', 'file', { path: FILE.replace(/\.json$/, `.unreadable-${Date.now()}.json`) }, disk.raw).catch(() => {});
+        const merged = apply(disk.data, ops);
+        if (await writeIfUnchanged(disk.corrupt ? null : disk.raw, JSON.stringify(merged)) || (disk.corrupt && await writeIfUnchanged(disk.raw, JSON.stringify(merged)))) {
+          // Adopt what other windows saved too, keeping changes made while this save was running.
+          state = apply(merged, pending);
+          break;
+        }
+        if (attempt >= 12) throw new Error('review.json kept changing');
+        await sleep(30 + Math.random() * 60 * (attempt + 1));
+      }
     } catch (e) {
       pending = ops.concat(pending); // keep them for the next try
       console.warn('review save failed', e);

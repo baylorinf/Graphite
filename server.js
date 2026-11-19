@@ -397,6 +397,38 @@ function send(res, status, body, type = 'application/json; charset=utf-8') {
   res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
 }
 
+// A short lock per file (".name.graphite-lock" next to it, hidden like all dot files), shared by every
+// Graphite window and process using this vault. A lock older than 10 s is left over from a crash and ignored.
+async function withFileLock(abs, fn) {
+  const lock = path.join(path.dirname(abs), '.' + path.basename(abs) + '.graphite-lock');
+  await fsp.mkdir(path.dirname(abs), { recursive: true });
+  const t0 = Date.now();
+  for (;;) {
+    try { const h = await fsp.open(lock, 'wx'); await h.close(); break; }
+    catch (e) {
+      if (e.code !== 'EEXIST') throw e;
+      const st = await fsp.stat(lock).catch(() => null);
+      if (st && Date.now() - st.mtimeMs > 10000) { await fsp.unlink(lock).catch(() => {}); continue; }
+      if (Date.now() - t0 > 5000) throw new HttpError(503, 'The file is busy; try again');
+      await new Promise(r => setTimeout(r, 20 + Math.random() * 40));
+    }
+  }
+  try { return await fn(); } finally { await fsp.unlink(lock).catch(() => {}); }
+}
+// Write to a temporary file and rename it over the original, so a failed write never leaves half a file.
+async function atomicWrite(abs, body) {
+  await fsp.mkdir(path.dirname(abs), { recursive: true });
+  const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.${process.pid}.${Date.now()}.tmp`);
+  await fsp.writeFile(tmp, body);
+  try { await fsp.rename(tmp, abs); }
+  catch (e) {
+    // Windows can refuse to replace a file another program has open (antivirus, cloud sync): write in place.
+    if (e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY') { try { await fsp.copyFile(tmp, abs); } finally { await fsp.unlink(tmp).catch(() => {}); } return; }
+    await fsp.unlink(tmp).catch(() => {});
+    throw e;
+  }
+}
+
 async function uniquePath(abs) {
   if (!(await exists(abs))) return abs;
   const ext = path.extname(abs), base = abs.slice(0, abs.length - ext.length);
@@ -425,24 +457,34 @@ async function api(req, res, u) {
       if (st.isDirectory()) return send(res, 200, { path: toRel(abs), mtime: st.mtimeMs, folder: true, content: null });
       return send(res, 200, { path: toRel(abs), mtime: st.mtimeMs, content: await fsp.readFile(abs, 'utf8') });
     }
-    if (m === 'PUT' || m === 'POST') {
-      if (m === 'POST' && await exists(abs)) throw new HttpError(409, 'A file with that name already exists');
+    if (m === 'POST') {
+      // Create only: exclusive, so a new file (e.g. a sync conflict copy) never replaces one already on disk.
+      const body = await readBody(req);
+      await fsp.mkdir(path.dirname(abs), { recursive: true });
+      try { await fsp.writeFile(abs, body, { flag: 'wx' }); }
+      catch (e) { if (e.code === 'EEXIST') throw new HttpError(409, 'A file with that name already exists'); throw e; }
+      const st = await fsp.stat(abs);
+      return send(res, 200, { path: toRel(abs), mtime: st.mtimeMs });
+    }
+    if (m === 'PUT') {
       const body = await readBody(req);
       // Sync safety: the app says which version it last saw (X-Base-Hash). If the file on disk has
       // changed since (e.g. a cloud app brought in an edit from another device), refuse and return it.
+      // The check and the write happen under a per-file lock, so two windows can't both pass the check.
       const base = req.headers['x-base-hash'];
-      if (m === 'PUT' && base && await exists(abs)) {
-        const cur = await fsp.readFile(abs, 'utf8');
-        const h = hash(cur);
-        if (h !== base && h !== hash(body.toString('utf8'))) {
-          const st = await fsp.stat(abs);
-          return send(res, 409, { error: 'conflict', content: cur, mtime: st.mtimeMs });
+      return await withFileLock(abs, async () => {
+        if (base && await exists(abs)) {
+          const cur = await fsp.readFile(abs, 'utf8');
+          const h = hash(cur);
+          if (h !== base && h !== hash(body.toString('utf8'))) {
+            const st = await fsp.stat(abs);
+            return send(res, 409, { error: 'conflict', content: cur, mtime: st.mtimeMs });
+          }
         }
-      }
-      await fsp.mkdir(path.dirname(abs), { recursive: true });
-      await fsp.writeFile(abs, body);
-      const st = await fsp.stat(abs);
-      return send(res, 200, { path: toRel(abs), mtime: st.mtimeMs });
+        await atomicWrite(abs, body);
+        const st = await fsp.stat(abs);
+        return send(res, 200, { path: toRel(abs), mtime: st.mtimeMs });
+      });
     }
     if (m === 'DELETE') {
       if (!(await exists(abs))) throw new HttpError(404, 'Not found');

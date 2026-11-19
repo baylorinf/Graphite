@@ -36,6 +36,9 @@ const same = (x, y) => x.length === y.length && x.every((v, i) => v === y[i]);
 
 // Three-way merge of two edited versions of `base`.
 // Returns { ok: true, text } when the edits don't overlap, or { ok: false } when they clash.
+// Each version's edits are worked out as "hunks": which lines of the base they replace (start..end) and with
+// what. Hunks from the two sides merge when they touch different base lines, even next to each other (one side
+// changed line 2, the other line 3). They clash only when they change the same base lines differently.
 export function merge3(base, mine, theirs) {
   if (mine === theirs) return { ok: true, text: mine };
   if (base === mine) return { ok: true, text: theirs };
@@ -43,26 +46,51 @@ export function merge3(base, mine, theirs) {
   const O = base.split('\n'), A = mine.split('\n'), B = theirs.split('\n');
   const ma = lcsMap(O, A), mb = lcsMap(O, B);
   if (!ma || !mb) return { ok: false };
-  const out = [];
-  let o = 0, a = 0, b = 0;
-  const region = (o2, a2, b2) => {
-    const oR = O.slice(o, o2), aR = A.slice(a, a2), bR = B.slice(b, b2);
-    if (same(aR, oR)) out.push(...bR);
-    else if (same(bR, oR)) out.push(...aR);
-    else if (same(aR, bR)) out.push(...aR);
-    else if (!oR.length) out.push(...aR, ...bR); // both only added lines here: keep both
-    else return false;
-    return true;
+  const ha = hunks(O, A, ma).map(h => ({ ...h, side: 'a' })), hb = hunks(O, B, mb).map(h => ({ ...h, side: 'b' }));
+  const all = [...ha, ...hb].sort((x, y) => x.s - y.s || x.e - y.e || (x.side < y.side ? -1 : 1));
+  // Two hunks clash if they replace overlapping base lines, or both insert at the same place, or one inserts
+  // strictly inside the lines the other replaces.
+  const touch = (x, y) => {
+    const xi = x.s === x.e, yi = y.s === y.e;
+    if (xi && yi) return x.s === y.s;
+    if (xi) return x.s > y.s && x.s < y.e;
+    if (yi) return y.s > x.s && y.s < x.e;
+    return x.s < y.e && y.s < x.e;
   };
-  for (let i = 0; i < O.length; i++) {
-    // A base line kept unchanged by both sides is a stable anchor.
-    if (ma[i] < 0 || mb[i] < 0 || ma[i] < a || mb[i] < b) continue;
-    if (!region(i, ma[i], mb[i])) return { ok: false };
-    out.push(O[i]);
-    o = i + 1; a = ma[i] + 1; b = mb[i] + 1;
+  const out = [];
+  let pos = 0;
+  for (let i = 0; i < all.length;) {
+    const group = [all[i++]];
+    while (i < all.length && group.some(g => touch(g, all[i]))) group.push(all[i++]);
+    const s0 = Math.min(...group.map(h => h.s)), e0 = Math.max(...group.map(h => h.e));
+    let lines;
+    if (group.length === 1) lines = group[0].lines;
+    else if (group.length === 2 && group[0].side !== group[1].side) {
+      const [x, y] = group;
+      if (x.s === y.s && x.e === y.e && same(x.lines, y.lines)) lines = x.lines;          // the same edit on both sides
+      else if (x.s === x.e && y.s === y.e) lines = [...x.lines, ...y.lines];              // both only added lines here: keep both
+      else return { ok: false };
+    } else return { ok: false };
+    out.push(...O.slice(pos, s0), ...lines);
+    pos = e0;
   }
-  if (!region(O.length, A.length, B.length)) return { ok: false };
+  out.push(...O.slice(pos));
   return { ok: true, text: out.join('\n') };
+}
+
+// The edits that turn base lines O into X, given the LCS map O→X: [{ s, e, lines }], where base lines s..e-1 are
+// replaced by `lines` (s === e means lines inserted before base line s).
+function hunks(O, X, map) {
+  const out = [];
+  let po = 0, px = 0;
+  for (let i = 0; i < O.length; i++) {
+    const j = map[i];
+    if (j < 0 || j < px) continue; // not a kept line (or out of order): part of an edit
+    if (i > po || j > px) out.push({ s: po, e: i, lines: X.slice(px, j) });
+    po = i + 1; px = j + 1;
+  }
+  if (po < O.length || px < X.length) out.push({ s: po, e: O.length, lines: X.slice(px) });
+  return out;
 }
 
 // Conflict copies made by Graphite, Dropbox, Syncthing, Google Drive and OneDrive.
