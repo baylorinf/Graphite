@@ -16,6 +16,7 @@ addEventListener('resize', closePop);
 
 function describe(v) {
   if (v === AI.CC) return { name: 'Claude Code', sub: t('aip.ccSub'), group: 'local' };
+  if (AI.isLocal(v)) { const st = AI.fwStatus(v); return { name: AI.LOCAL[v].label, sub: st.text, group: 'local', ok: st.ok }; }
   if (v === 'off') return { name: t('ai.off'), sub: '', group: 'off' };
   const p = AI.parts(v);
   return { name: p.name, sub: p.model || '', group: 'api' };
@@ -37,29 +38,31 @@ export function enhanceAISelect(select, feature) {
     const v = select.value, d = describe(v);
     const opt = [...select.options].find(o => o.value === v);
     const offLabel = v === 'off' ? opt?.textContent || d.name : d.name;
-    btn.innerHTML = `<span class="aip-dot ${v === AI.CC ? (cc ? 'on' : cc === false ? 'off' : '') : v === 'off' ? 'none' : 'api'}"></span>
-      <span class="aip-name">${esc(offLabel)}</span>${d.sub && v !== AI.CC ? `<span class="aip-model">${esc(d.sub)}</span>` : ''}${CHEV}`;
-    btn.title = v === AI.CC ? (cc ? t('ai.ccOn') : t('ai.ccOffNote')) : '';
+    const local = AI.isLocal(v);
+    btn.innerHTML = `<span class="aip-dot ${v === AI.CC ? (cc ? 'on' : cc === false ? 'off' : '') : local ? (d.ok ? 'on' : d.ok === false ? 'bad' : '') : v === 'off' ? 'none' : 'api'}"></span>
+      <span class="aip-name">${esc(offLabel)}</span>${d.sub && v !== AI.CC ? `<span class="aip-model${local && d.ok === false ? ' is-bad' : ''}">${esc(d.sub)}</span>` : ''}${CHEV}`;
+    btn.title = v === AI.CC ? (cc ? t('ai.ccOn') : t('ai.ccOffNote')) : local ? `${AI.LOCAL[v].label}: ${d.sub}` : '';
   };
   AI.ccListening().then(on => { cc = on; draw(); });
+  AI.refreshFrameworks().then(draw).catch(() => {});
   select.addEventListener('change', draw);
   btn.addEventListener('click', () => {
     if (openPop?.dataset.for === feature + '|' + (select.id || '')) { closePop(); return; }
     closePop();
-    const opts = [...select.options].map(o => ({ value: o.value, label: o.textContent, ready: !o.disabled }));
+    const opts = [...select.options].map(o => ({ value: o.value, label: o.textContent, ready: AI.isLocal(o.value) ? AI.fwStatus(o.value).ok !== false : !o.disabled }));
     const pop = document.createElement('div');
     pop.className = 'aip-pop';
     pop.dataset.for = feature + '|' + (select.id || '');
     const row = o => {
       const d = describe(o.value);
       const name = o.value === 'off' ? o.label : d.name;
-      const sub = o.value === AI.CC ? (cc ? t('aip.ccOn') : t('aip.ccOff')) : o.ready ? d.sub : t('aip.noKey');
+      const sub = o.value === AI.CC ? (cc ? t('aip.ccOn') : t('aip.ccOff')) : AI.isLocal(o.value) ? d.sub : o.ready ? d.sub : t('aip.noKey');
       return `<button type="button" class="aip-opt${o.value === select.value ? ' is-on' : ''}${o.ready ? '' : ' is-locked'}" data-v="${esc(o.value)}">
-        <span class="aip-dot ${o.value === AI.CC ? (cc ? 'on' : 'off') : o.value === 'off' ? 'none' : o.ready ? 'api' : 'none'}"></span>
+        <span class="aip-dot ${o.value === AI.CC ? (cc ? 'on' : 'off') : AI.isLocal(o.value) ? (d.ok ? 'on' : d.ok === false ? 'bad' : '') : o.value === 'off' ? 'none' : o.ready ? 'api' : 'none'}"></span>
         <span class="aip-text"><span class="aip-name">${esc(name)}</span>${sub ? `<span class="aip-sub">${esc(sub)}</span>` : ''}</span>
-        ${o.ready ? (o.value === select.value ? CHECK : '') : `<span class="aip-addkey">${esc(t('aip.addKey'))}</span>`}</button>`;
+        ${o.ready ? (o.value === select.value ? CHECK : '') : `<span class="aip-addkey">${esc(t(AI.isLocal(o.value) ? 'aip.setUp' : 'aip.addKey'))}</span>`}</button>`;
     };
-    const groups = [['local', t('aip.local')], ['api', t('aip.api')], ['off', '']];
+    const groups = [['local', t('aip.localFw')], ['api', t('aip.api')], ['off', '']];
     pop.innerHTML = groups.map(([g, title]) => {
       const list = opts.filter(o => describe(o.value).group === g);
       if (!list.length) return '';

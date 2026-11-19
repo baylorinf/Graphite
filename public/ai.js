@@ -6,6 +6,9 @@
 //   window is connected.
 // - an API provider with the user's own key: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek, Qwen, Kimi,
 //   GLM, or any OpenAI-compatible URL. Requests go through this computer's server to that provider only.
+// - a local agent framework installed on this computer: DeepSeek Harness ("dsh") or Codex CLI ("codex"). Graphite
+//   starts it with the task; it reads the files itself (read-only) and answers (see frameworks.js on the server).
+// The user picks one per job; Graphite never switches to another AI on its own when the chosen one fails.
 // Keys and choices are kept on this computer (app settings), never in the vault.
 import { t, getLang } from '/i18n.js';
 
@@ -15,7 +18,51 @@ export function initAI(host) {
   H = host;
   // For plugins (the chat panel): window.myobsidianAI
   window.myobsidianAI = { FEATURES, options, choice, setChoice, label, parts, request, ccListening, openSettings: () => H.openSettings('ai'), onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
-  Object.assign(window.myobsidianAI, { AGENT_FEATURES, agent, isApi: v => !!PROVIDERS[v] });
+  Object.assign(window.myobsidianAI, { AGENT_FEATURES, agent, isApi: v => !!PROVIDERS[v], isLocal: v => !!LOCAL[v], isAgent: v => !!PROVIDERS[v] || !!LOCAL[v], frameworks: () => fwState, refreshFrameworks, errorText });
+  refreshFrameworks().catch(() => {});
+}
+
+/* ---------- local agent frameworks ---------- */
+export const LOCAL = { dsh: { label: 'DeepSeek Harness', short: 'DeepSeek Harness' }, codex: { label: 'Codex CLI', short: 'Codex' } };
+export const isLocal = v => !!LOCAL[v];
+let fwState = {}; // id → { found, version, path, reason, detail } (from the server)
+let fwLoading = null;
+export const frameworks = () => fwState;
+export async function refreshFrameworks(force = false) {
+  if (fwLoading && !force) return fwLoading;
+  fwLoading = fetch('/api/frameworks', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ paths: raw().fwPaths || {}, force }) }).then(r => (r.ok ? r.json() : {})).then(d => { fwState = d || {}; listeners.forEach(fn => { try { fn(); } catch { /* gone */ } }); return fwState; })
+    .catch(() => fwState).finally(() => { fwLoading = null; });
+  return fwLoading;
+}
+export const fwPath = id => (raw().fwPaths || {})[id] || '';
+export const setFwPath = (id, v) => { save({ fwPaths: { ...(raw().fwPaths || {}), [id]: String(v || '').trim() } }); return refreshFrameworks(true); };
+// A framework's state in words: "detected · 0.2.2-rc.1", "not installed", "can't start: …".
+export function fwStatus(id) {
+  const f = fwState[id];
+  if (!f) return { ok: null, text: t('fw.checking') };
+  if (f.found) return { ok: true, text: t('fw.found', { version: f.version || '?' }) };
+  return { ok: false, text: t('fw.reason.' + (f.reason || 'notInstalled'), { name: LOCAL[id]?.label || id, path: f.path || f.custom || '', detail: f.detail || '' }) };
+}
+// An error from a job in words, saying which framework or AI it was and why.
+export function errorText(e, v) {
+  const name = LOCAL[v]?.label || (v === CC ? 'Claude Code' : PROVIDERS[v]?.label || v || '');
+  let msg = e?.code && LOCAL[v] ? t('fw.err.' + e.code, { name, detail: e.detail || e.message || '' }) : e?.message || String(e);
+  if (e?.stage) msg += ' ' + t('fw.stageKept', { path: e.stage });
+  return msg;
+}
+async function failFrom(res, v) {
+  const d = await res.json().catch(() => ({}));
+  throw Object.assign(new Error(d.error || res.statusText), { code: d.code, detail: d.detail, framework: d.framework, stage: d.stage }, { message: errorText({ ...d, message: d.error }, v) });
+}
+async function localRequest(v, task, payload, signal) {
+  const files = [...new Set([...(payload.job?.papers || []), ...(payload.job?.examples || [])])];
+  const res = await fetch('/api/local-ai', {
+    signal, method: 'POST',
+    headers: { 'X-Vault': '1', 'Content-Type': 'application/json', ...(v === 'dsh' && keyOf('deepseek') ? { 'X-AI-Key': keyOf('deepseek') } : {}) },
+    body: JSON.stringify({ task, framework: v, lang: getLang(), frameworkPaths: raw().fwPaths || {}, files, ...payload, job: undefined }),
+  });
+  if (!res.ok) await failFrom(res, v);
+  return res.json();
 }
 
 export const FEATURES = ['check', 'quiz', 'chat', 'plan', 'exam', 'mock', 'format', 'connect'];
@@ -52,7 +99,7 @@ function raw() {
     const rev = H?.store.get('review', {}) || {};
     use = { check: def, quiz: rev.aiQuestions === false ? 'off' : def, chat: CC, plan: def, exam: def, format: def };
   }
-  return { keys, models, lists: { ...(s.lists || {}) }, baseUrl: s.baseUrl || '', use, agent: { ...(s.agent || {}) } };
+  return { keys, models, lists: { ...(s.lists || {}) }, baseUrl: s.baseUrl || '', use, agent: { ...(s.agent || {}) }, fwPaths: { ...(s.fwPaths || {}) } };
 }
 function save(patch) {
   const next = { ...raw(), ...patch };
@@ -93,6 +140,7 @@ function prettyModel(p, m) {
 }
 export function parts(v) {
   if (v === CC) return { name: 'Claude Code', model: '' };
+  if (LOCAL[v]) return { name: LOCAL[v].label, model: fwState[v]?.found ? fwState[v].version || '' : '' };
   if (!PROVIDERS[v]) return { name: v, model: '' };
   return { name: SHORT[v], model: prettyModel(v, modelOf(v)) };
 }
@@ -100,6 +148,7 @@ export function parts(v) {
 export function label(v) {
   if (v === CC) return t('ai.cc');
   if (v === 'off') return t('ai.off');
+  if (LOCAL[v]) return LOCAL[v].label;
   const P = PROVIDERS[v];
   if (!P) return v;
   return modelOf(v) ? `${P.label} · ${modelOf(v)}` : P.label;
@@ -107,6 +156,8 @@ export function label(v) {
 // Choices for one job: Claude Code, each provider (greyed out until it has a key), and "off" for jobs that can do without AI.
 export function options(f) {
   const out = [{ value: CC, label: t('ai.cc'), ready: true }];
+  // Local frameworks are always offered; one that isn't installed shows why (and fails clearly if chosen).
+  for (const id of Object.keys(LOCAL)) out.push({ value: id, label: LOCAL[id].label, ready: fwState[id] ? !!fwState[id].found : true, local: true });
   for (const p of Object.keys(PROVIDERS)) out.push({ value: p, label: label(p) + (hasProvider(p) ? '' : ' ' + t('ai.needsKey')), ready: hasProvider(p) });
   if (f === 'check') out.push({ value: 'off', label: t('ai.offCheck'), ready: true });
   if (f === 'quiz') out.push({ value: 'off', label: t('ai.offQuiz'), ready: true });
@@ -161,6 +212,7 @@ export async function request(feature, task, payload, { signal, provider } = {})
   const v = provider || choice(feature);
   if (v === 'off') throw new Error(t('ai.isOff'));
   if (v === CC) return ccRequest(task, payload, signal);
+  if (LOCAL[v]) return localRequest(v, task, payload, signal);
   if (!PROVIDERS[v]) throw new Error(t('ai.noKey'));
   if (!hasProvider(v)) throw new Error(t('ai.noKeyFor', { provider: PROVIDERS[v].label }));
   const limit = AbortSignal.timeout(['plan', 'exam', 'mock', 'format', 'connect'].includes(task) ? 270000 : 150000);
@@ -193,9 +245,11 @@ export async function testProvider(p) {
    around with read-only tools and proposes a plan; nothing is copied or written until the user confirms it.
    It may read only the vault and the course folders listed here (minus the left-out folder names). */
 export const AGENT_FEATURES = ['import', 'inbox'];
+export const DEFAULT_ROOT = 'D:\\Task\\DYS';
 export function agentConf() {
   const a = raw().agent || {};
-  return { roots: Array.isArray(a.roots) ? a.roots : ['D:\Task\DYS'], skip: Array.isArray(a.skip) ? a.skip : ['UPC'], extras: !!a.extras };
+  const fix = r => (/^[A-Za-z]:TaskDYS$/i.test(String(r)) ? String(r).slice(0, 2) + '\\Task\\DYS' : r); // saved by an earlier version without its backslashes
+  return { roots: Array.isArray(a.roots) ? a.roots.map(fix) : [DEFAULT_ROOT], skip: Array.isArray(a.skip) ? a.skip : ['UPC'], extras: !!a.extras };
 }
 export const setAgentConf = patch => save({ agent: { ...agentConf(), ...patch } });
 // agent('import', 'import', { phase: 'plan' }, { onProgress }) → { planId, items, ignore, questions, … }
@@ -203,14 +257,15 @@ export const setAgentConf = patch => save({ agent: { ...agentConf(), ...patch } 
 // Jobs: 'import' (feature import), 'inbox' and 'brain' (feature inbox).
 export async function agent(feature, job, payload = {}, { onProgress, signal, provider } = {}) {
   const v = provider || choice(feature);
-  if (!PROVIDERS[v]) throw new Error(t('agent.needsApi'));
-  if (!hasProvider(v)) throw new Error(t('ai.noKeyFor', { provider: PROVIDERS[v].label }));
+  if (!PROVIDERS[v] && !LOCAL[v]) throw new Error(t('agent.needsApi'));
+  if (PROVIDERS[v] && !hasProvider(v)) throw new Error(t('ai.noKeyFor', { provider: PROVIDERS[v].label }));
+  const key = LOCAL[v] ? (v === 'dsh' ? keyOf('deepseek') : '') : keyOf(v);
   const res = await fetch('/api/agent', {
     signal, method: 'POST',
-    headers: { 'X-Vault': '1', 'Content-Type': 'application/json', 'X-AI-Key': keyOf(v) },
-    body: JSON.stringify({ job, provider: v, model: modelOf(v), baseUrl: v === 'custom' ? baseUrl() : undefined, lang: getLang(), ...agentConf(), ...payload }),
+    headers: { 'X-Vault': '1', 'Content-Type': 'application/json', ...(key ? { 'X-AI-Key': key } : {}) },
+    body: JSON.stringify({ job, ...(LOCAL[v] ? { framework: v, frameworkPaths: raw().fwPaths || {} } : { provider: v, model: modelOf(v), baseUrl: v === 'custom' ? baseUrl() : undefined }), lang: getLang(), ...agentConf(), ...payload }),
   });
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+  if (!res.ok) await failFrom(res, v);
   // One JSON object per line: progress steps, then the result or an error.
   const reader = res.body.getReader(), dec = new TextDecoder();
   let buf = '';
@@ -223,7 +278,7 @@ export async function agent(feature, job, payload = {}, { onProgress, signal, pr
       if (!line) continue;
       const o = JSON.parse(line);
       if (o.progress) { try { onProgress?.(o.progress); } catch { /* display only */ } }
-      else if (o.error) throw new Error(o.error);
+      else if (o.error) throw Object.assign(new Error(errorText({ ...o, message: o.error }, v)), { code: o.code, framework: o.framework, stage: o.stage });
       else if (o.result) return o.result;
     }
     if (done) throw new Error(t('agent.cutOff'));

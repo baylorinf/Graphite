@@ -1,0 +1,9 @@
+{
+  "id": "claude-capture",
+  "name": "Claude Capture",
+  "version": "1.1.0",
+  "minAppVersion": "1.0.0",
+  "description": "Mark anything interesting or unfamiliar with one click. The captures wait in \"Claude Inbox\" until Claude files them into your notes. No API key, nothing leaves your computer.",
+  "author": "Claude",
+  "isDesktopOnly": false
+}

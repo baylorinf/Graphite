@@ -649,6 +649,27 @@ async function api(req, res, u) {
   // Which cloud service (if any) the vault lives in, and which ones exist on this PC.
   if (route === 'sync-info' && m === 'GET') return send(res, 200, await syncInfo());
   if (route === 'ai' && m === 'POST') return send(res, 200, await aiTask(req));
+  if (route === 'local-ai' && m === 'POST') return send(res, 200, await localAiTask(req, res));
+  // Which local frameworks are installed. A custom program path can only come with a POST from the app itself
+  // (X-Vault, like every other change), and must name the program (dsh / codex): a web page can't make
+  // Graphite start some other program.
+  // The course folders the file jobs may read: is each a full path, and does it exist?
+  if (route === 'check-folders' && m === 'POST') {
+    const b = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+    const out = [];
+    for (const p of (Array.isArray(b.paths) ? b.paths : []).slice(0, 50).map(String)) {
+      if (!path.isAbsolute(p) || /^[A-Za-z]:[^\\/]/.test(p)) { out.push({ path: p, ok: false, reason: 'notAbsolute' }); continue; }
+      const st = await fsp.stat(p).catch(() => null);
+      out.push(st && st.isDirectory() ? { path: p, ok: true } : { path: p, ok: false, reason: 'missing' });
+    }
+    return send(res, 200, out);
+  }
+  if (route === 'frameworks' && m === 'GET') return send(res, 200, await frameworks.detect({ force: q.get('force') === '1' }));
+  if (route === 'frameworks' && m === 'POST') {
+    const b = JSON.parse((await readBody(req, 65536)).toString('utf8') || '{}');
+    const paths = {}; for (const id of frameworks.ids) if (typeof b.paths?.[id] === 'string' && b.paths[id].trim()) paths[id] = b.paths[id].trim();
+    return send(res, 200, await frameworks.detect({ paths, force: !!b.force }));
+  }
   // The agent harness (agent.js): import files, file inbox captures, update the Claude Brain with an API model.
   if (route === 'agent' && m === 'POST') return agent.handle(req, res);
   if (route === 'office-pdf' && m === 'POST') return send(res, 200, await officePdf(q.get('path'), q.get('save') === '1'));
@@ -736,10 +757,41 @@ async function serveFile(res, abs, req) {
   } catch { send(res, 404, 'Not found', 'text/plain'); }
 }
 
+// Local agent frameworks (DeepSeek Harness, Codex CLI): detection and running, shared by the file jobs and AI jobs.
+const frameworks = require('./frameworks')({ HttpError });
 const agent = require('./agent')({
   HttpError, hash, inVault, toRel, exists, uniquePath, atomicWrite, withFileLock, officeToPdf, readBody, LANG_NAMES, COMPAT, ANTHROPIC_DEFAULT,
-  parseJsonReply, compatCaller, anthropicClient, anthropicError, vault: () => VAULT,
+  parseJsonReply, compatCaller, anthropicClient, anthropicError, vault: () => VAULT, frameworks,
 });
+// An AI job (Check, quiz questions, chat, plan, exam analysis, mock paper, tidy format, connect) done by a local
+// framework: it gets the same instructions as an API model, plus the paths of the files involved, which it may
+// open itself (read-only). The answer comes back as the same JSON and goes through the same checks.
+async function localAiTask(req, res) {
+  const key = String(req.headers['x-ai-key'] || '').trim();
+  const body = JSON.parse((await readBody(req, 8 * 1024 * 1024)).toString('utf8') || '{}');
+  if (!frameworks.ids.includes(body.framework)) throw new HttpError(400, 'Unknown local framework');
+  const prompt = AI_PROMPTS[body.task];
+  if (!prompt) throw new HttpError(400, 'Unknown task');
+  const ui = LANG_NAMES[body.lang] || 'English';
+  const files = [...new Set([body.path, ...(Array.isArray(body.files) ? body.files : [])].filter(Boolean).map(String))]
+    .map(f => { try { return inVault(f); } catch { return null; } }).filter(Boolean);
+  const chat = body.task === 'chat';
+  const parts = [chat ? prompt() : prompt(ui), '',
+    '## How to work here',
+    `You are running as a local agent for Graphite, a notes app. The vault (the user's notes) is the folder: ${VAULT}`,
+    files.length ? `Files for this task (open them with your own tools if you need to; the text below may be shortened): ${files.join(' ; ')}` : '',
+    'This is read-only: read files in the vault if useful, but do not create, change, move or delete anything, and do not read outside the vault.', ''];
+  if (chat) parts.push(...chatMessages(body).map(m => `[${m.role}] ${typeof m.content === 'string' ? m.content : JSON.stringify(m.content)}`), '', 'Reply with your answer only, in Markdown.');
+  else parts.push(noteBlock(body), '', '## Your answer',
+    'Reply with exactly one JSON object in this format, between <graphite-result> and </graphite-result>, and nothing after it:',
+    JSON.stringify(AI_EXAMPLES[body.task] || {}, null, 1));
+  const ctl = new AbortController();
+  res.on('close', () => { if (!res.writableFinished) ctl.abort(); }); // the app pressed Stop
+  const out = await frameworks.run(body.framework, { prompt: parts.filter(x => x !== null).join('\n'), cwd: VAULT, key, paths: body.frameworkPaths || {}, signal: ctl.signal, mode: 'read', allow: { roots: [VAULT], skip: [] } });
+  if (chat) return { text: out.text.replace(/<graphite-result>[\s\S]*?<\/graphite-result>/g, '').trim(), framework: body.framework, reads: out.reads };
+  if (!out.result) throw Object.assign(new HttpError(502, 'no result'), { code: 'noResult', framework: body.framework });
+  return { ...tidyResult(body.task, out.result), framework: body.framework, reads: out.reads };
+}
 
 // Live updates: tell open browser tabs when files change on disk (e.g. edited in another program).
 const clients = new Set();
@@ -795,7 +847,7 @@ const server = http.createServer(async (req, res) => {
     if (!abs.startsWith(PUBLIC + path.sep)) throw new HttpError(404, 'Not found');
     return serveFile(res, abs);
   } catch (e) {
-    if (!res.headersSent) send(res, e.status || 500, { error: e.message || String(e) });
+    if (!res.headersSent) send(res, e.status || 500, { error: e.message || String(e), ...(e.code ? { code: e.code } : {}), ...(e.framework ? { framework: e.framework, detail: e.detail || '' } : {}) });
     if (!e.status) console.error(e);
   }
 });
@@ -807,12 +859,35 @@ function openBrowser(url) {
 }
 
 // Start serving a vault. port 0 picks a free port. Resolves to the port actually used.
+// Graphite ships its own plugins (Graphie chat, Claude Capture) in the sample vault that new vaults start from.
+// When an existing vault has an older copy of one of them, its code (main.js, manifest.json, styles.css) is
+// updated; its settings (data.json), chat history and import records are kept. Plugins a vault doesn't have are
+// not added, and the vault's list of enabled plugins is not changed.
+function sampleVaultDir() {
+  for (const d of [path.join(__dirname, 'sample-vault'), process.resourcesPath && path.join(process.resourcesPath, 'sample-vault')]) if (d && fs.existsSync(d)) return d;
+  return null;
+}
+const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
+async function updateBundledPlugins() {
+  const sample = sampleVaultDir();
+  if (!sample) return;
+  const from = path.join(sample, '.obsidian', 'plugins');
+  for (const id of await fsp.readdir(from).catch(() => [])) {
+    const mine = path.join(PLUGIN_DIR, id);
+    if (!fs.existsSync(path.join(mine, 'manifest.json'))) continue;
+    const have = JSON.parse(await fsp.readFile(path.join(mine, 'manifest.json'), 'utf8').catch(() => '{}'));
+    const ship = JSON.parse(await fsp.readFile(path.join(from, id, 'manifest.json'), 'utf8').catch(() => '{}'));
+    if (have.id !== ship.id || !newer(ship.version, have.version || '0')) continue;
+    for (const f of ['main.js', 'styles.css', 'manifest.json']) if (fs.existsSync(path.join(from, id, f))) await fsp.copyFile(path.join(from, id, f), path.join(mine, f));
+  }
+}
 async function start({ vault, port = 0, token = null, retry = 0 } = {}) {
   VAULT = path.resolve(vault);
   CONFIG_DIR = path.join(VAULT, '.obsidian');
   PLUGIN_DIR = path.join(CONFIG_DIR, 'plugins');
   TOKEN = token;
   await fsp.mkdir(VAULT, { recursive: true });
+  await updateBundledPlugins().catch(e => console.warn('bundled plugins:', e.message));
   startWatcher();
   return new Promise((resolve, reject) => {
     let p = port;

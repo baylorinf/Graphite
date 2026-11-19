@@ -6,3 +6,5 @@ vault/
 # Local tool settings
 .claude/
 *.log
+
+test/.work/

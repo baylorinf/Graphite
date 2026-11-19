@@ -11,11 +11,15 @@
 //           model loop then adds the new files to the course index notes with write_vault_file.
 // Sandbox: reads only inside the vault and the course folders the user approved (minus left-out names such as
 // UPC); writes only inside the vault, never in .obsidian/, .trash/ or the mirrored brain folders.
+// Local frameworks: with DeepSeek Harness or Codex CLI chosen instead of an API model, the same job is handed to
+// that program (frameworks.js). It reads the files with its own tools, read-only, and returns the plan as JSON;
+// Graphite checks it exactly as above and still does the confirmed copies and writes itself.
 // Progress is streamed as one JSON object per line: {"progress":{...}} … then {"result":{...}} or {"error":"…"}.
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
 const crypto = require('crypto');
+const os = require('os');
 const { execFile } = require('child_process');
 
 module.exports = function createAgent(h) {
@@ -65,6 +69,14 @@ module.exports = function createAgent(h) {
     const real = await fsp.realpath(abs).catch(() => abs);
     if (inside(real, VAULT()) || sb.roots.some(r => inside(real, r))) return;
     throw new Error('Not allowed: the path leads outside the allowed folders');
+  }
+  // The real folder a path ends up in (following links and junctions), checked against the real vault folder.
+  async function realInVault(abs) {
+    let dir = abs;
+    while (!(await exists(dir))) { const up = path.dirname(dir); if (up === dir) break; dir = up; }
+    const real = await fsp.realpath(dir).catch(() => dir), vreal = await fsp.realpath(VAULT()).catch(() => VAULT());
+    if (!inside(real, vreal)) throw new Error('Not allowed: this path leads outside the vault');
+    return abs;
   }
   function writeTarget(rel) {
     rel = norm(String(rel || '').trim()).replace(/^\/+/, '');
@@ -145,7 +157,52 @@ module.exports = function createAgent(h) {
   }
 
   /* ---------- the model loop (OpenAI-compatible providers and Anthropic) ---------- */
-  async function loop(run, { system, user, toolNames, submit, maxTurns = 14 }) {
+  async function loop(run, opts) {
+    if (run.fw) return frameworkLoop(run, opts);
+    return apiLoop(run, opts);
+  }
+  // The task for a local framework: the same instructions, the folders it may read, and the answer as JSON.
+  async function frameworkLoop(run, { system, user, toolNames, submit }) {
+    const writes = toolNames.includes('write_vault_file');
+    const vault = VAULT();
+    const schema = writes
+      ? { type: 'object', required: ['edits', 'summary'], properties: { summary: { type: 'string' }, edits: { type: 'array', items: { type: 'object', required: ['path', 'content'], properties: { path: { type: 'string', description: 'vault-relative path of a Markdown note' }, content: { type: 'string', description: 'the whole new note' } } } } } }
+      : submit.parameters;
+    const prompt = [system.replace(/\b(list_dir|read_file)\b/g, m => (m === 'list_dir' ? 'your folder-listing tool' : 'your file-reading tool')).replace(/call submit_plan( once)?/g, 'give your answer').replace(/write_vault_file/g, 'the edits in your answer'),
+      '',
+      '## How to work here',
+      'You are running as a local agent for Graphite, a notes app. Look at the files yourself with your own tools (list, glob, read). This is read-only: do not create, change, move or delete any file, and do not run anything that changes the computer.',
+      `The vault (the user's notes) is the folder: ${vault}`,
+      `Vault-relative paths in this task (like "Linear Algebra/课件 Slides/LA1.pdf") are relative to that folder.`,
+      run.sb.roots.length ? `Course folders you may also read: ${run.sb.roots.join(' ; ')}` : 'Read only inside the vault.',
+      run.sb.skip.length ? `Never open anything whose path contains a folder named: ${run.sb.skip.join(', ')}` : '',
+      'Do not read anything else on the computer.',
+      writes ? 'Instead of writing notes, put each changed note (its whole new text, keeping every existing line) in "edits"; Graphite checks and writes them.' : '',
+      '',
+      user,
+      '',
+      '## Your answer',
+      'When you are done, reply with exactly one JSON object that follows this JSON Schema, between <graphite-result> and </graphite-result>, and nothing after it.',
+      '<schema>' + JSON.stringify(schema) + '</schema>'].filter(x => x !== '').join('\n');
+    const out = await h.frameworks.run(run.fw, {
+      prompt, cwd: vault, key: run.key, paths: run.body.frameworkPaths || {}, signal: run.signal, mode: 'read',
+      allow: { roots: [vault, ...run.sb.roots], skip: run.sb.skip },
+      onProgress: p => run.progress(p.step === 'read' || p.step === 'list' ? { ...p, path: shortPath(p.path) } : p),
+    });
+    run.reads = (run.reads || []).concat(out.reads || []);
+    if (!out.result || typeof out.result !== 'object') throw Object.assign(new HttpError(502, 'no result'), { code: 'noResult', framework: run.fw });
+    if (writes) { // write the proposed index edits with the same checks the model's own writes get
+      const impl = tools(run);
+      for (const e of Array.isArray(out.result.edits) ? out.result.edits : []) {
+        try { await impl.read_file({ path: e.path }).catch(() => {}); await impl.write_vault_file(e); } catch { /* left out; listed as not edited */ }
+      }
+      return { summary: String(out.result.summary || '') };
+    }
+    return out.result;
+  }
+  const shortPath = p => { const v = VAULT(); const a = String(p || ''); return low(a).startsWith(low(v)) ? norm(a.slice(v.length)).replace(/^\/+/, '') : norm(a); };
+
+  async function apiLoop(run, { system, user, toolNames, submit, maxTurns = 14 }) {
     const impl = tools(run);
     const defs = toolNames.map(n => [n, n === submit.name ? submit : TOOL_DEFS[n]]);
     const terminal = submit.name;
@@ -221,6 +278,119 @@ module.exports = function createAgent(h) {
       const calls = r.content.filter(b => b.type === 'tool_use').map(b => ({ id: b.id, name: b.name, args: b.input || {} }));
       return { text: r.content.filter(b => b.type === 'text').map(b => b.text).join(''), calls, raw: r.content };
     } catch (e) { throw h.anthropicError(e, run.model); }
+  }
+
+  /* ---------- confirmed changes, carried out by the chosen local framework ----------
+     The framework gets a private stage folder (in the system temp folder, never the vault) and an exact list of
+     steps: write these files with this content, copy these files here; for imports it may also add links to the
+     listed index notes. It does them with its own tools in its workspace-write sandbox. Graphite then checks every
+     staged file (content, byte-for-byte copies, index notes keeping all their lines) and applies only those, each
+     after checking the note hasn't changed since the plan; if anything fails, what was already applied is undone.
+     A failed run, a check that doesn't pass or an error keeps the stage folder (its path is in the error). */
+  const normText = t => String(t ?? '').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
+  async function fileHash(abs) {
+    return new Promise((resolve, reject) => { const h2 = crypto.createHash('sha256'); fs.createReadStream(abs).on('error', reject).on('data', d => h2.update(d)).on('end', () => resolve(h2.digest('hex'))); });
+  }
+  async function walkFiles(dir, base = dir, out = []) {
+    for (const e of await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const abs = path.join(dir, e.name);
+      if (e.isDirectory()) await walkFiles(abs, base, out); else out.push(norm(path.relative(base, abs)));
+    }
+    return out;
+  }
+  const stageError = (msg, code, stage, detail) => Object.assign(new HttpError(502, msg), { code, framework: null, stage, detail });
+  // ops: { kind: 'file', rel, content, base } — the whole new text of a vault note (base: hash of the current text, null if new)
+  //      { kind: 'copy', src, rel, dest, convert } — copy src to rel in the stage; apply to dest (PDF made from Office files)
+  // free: vault notes the framework may add lines to (import: course index notes), with what to do.
+  async function fwApply(run, ops, { free = [], freeTask = '' } = {}) {
+    const stage = await fsp.mkdtemp(path.join(os.tmpdir(), 'graphite-stage-'));
+    const fail = (msg, code, detail) => { throw Object.assign(stageError(msg, code, stage, detail), { framework: run.fw }); };
+    const freeBase = new Map();
+    for (const rel of free) {
+      const cur = await fsp.readFile(inVault(rel), 'utf8').catch(() => null);
+      if (cur == null) continue;
+      await fsp.mkdir(path.dirname(path.join(stage, rel)), { recursive: true });
+      await fsp.writeFile(path.join(stage, rel), cur);
+      freeBase.set(rel, cur);
+    }
+    const steps = ops.map((o, i) => (o.kind === 'copy'
+      ? `${i + 1}. Copy the file "${o.src}" to "${o.rel}" (relative to your working directory), byte for byte. Create the folders it needs.`
+      : `${i + 1}. Write the file "${o.rel}" (relative to your working directory) with exactly the text between the markers, replacing the file if it is there. Create the folders it needs.\n<<<GRAPHITE-FILE\n${o.content.replace(/\s*$/, '')}\nGRAPHITE-FILE>>>`));
+    const prompt = ['You are carrying out changes the user has just confirmed in Graphite, a notes app.',
+      `Your working directory is a temporary stage folder: ${stage}`,
+      'Write ONLY inside your working directory, using your own file tools. Graphite checks what you wrote and then copies it into the user\'s notes itself.',
+      steps.length ? 'Do exactly these steps, nothing else:' : '', ...steps,
+      freeBase.size ? `${steps.length ? 'Then: ' : ''}${freeTask} The notes you may edit are already in your working directory: ${[...freeBase.keys()].join(', ')}. Keep every line that is in them now; only add lines. Do not create other notes.` : '',
+      'Do not create, change or delete anything else, and do not read anything except the files named here.',
+      'When you are done, reply with <graphite-result>{"done":[the numbers of the steps you did]}</graphite-result>.'].filter(Boolean).join('\n\n');
+    const srcDirs = [...new Set(ops.filter(o => o.kind === 'copy').map(o => path.dirname(o.src)))];
+    try {
+      await h.frameworks.run(run.fw, {
+        prompt, cwd: stage, key: run.key, paths: run.body.frameworkPaths || {}, signal: run.signal, mode: 'write',
+        allow: { roots: [stage, ...srcDirs], skip: run.sb.skip },
+        onProgress: p => run.progress(p.step === 'write' || p.step === 'read' ? { ...p, path: norm(path.relative(stage, path.resolve(stage, String(p.path || '')))) } : p),
+      });
+    } catch (e) { e.stage = stage; if (e.code === 'stopped') await fsp.rm(stage, { recursive: true, force: true }).catch(() => {}); throw e; }
+    // Check the stage.
+    run.progress({ step: 'check' });
+    const problems = [];
+    for (const o of ops) {
+      const f = path.join(stage, o.rel);
+      if (!(await exists(f))) { problems.push(`missing ${o.rel}`); continue; }
+      if (o.kind === 'copy') { if ((await fileHash(f)) !== (await fileHash(o.src))) problems.push(`${o.rel} is not an exact copy`); }
+      else if (normText(await fsp.readFile(f, 'utf8')) !== normText(o.content)) problems.push(`${o.rel} does not have the confirmed text`);
+    }
+    const freeEdits = [];
+    for (const [rel, cur] of freeBase) {
+      const now = await fsp.readFile(path.join(stage, rel), 'utf8').catch(() => null);
+      if (now == null) { problems.push(`${rel} was deleted`); continue; }
+      if (normText(now) === normText(cur)) continue;
+      const have = new Set(now.split(/\r?\n/).map(l => l.trim()));
+      const lost = cur.split(/\r?\n/).map(l => l.trim()).filter(l => l && !have.has(l));
+      if (lost.length) { problems.push(`${rel} lost lines: ${lost.slice(0, 2).join(' | ')}`); continue; }
+      freeEdits.push({ rel, content: now, base: hash(cur) });
+    }
+    if (problems.length) fail('The staged result did not match the confirmed changes', 'badStage', problems.join('; '));
+    const known = new Set([...ops.map(o => o.rel), ...freeBase.keys()].map(r => low(norm(r))));
+    const extra = (await walkFiles(stage)).filter(r => !known.has(low(r)));
+    // Apply: only the confirmed changes; undo everything if one fails.
+    const undo = [], applied = [];
+    try {
+      for (const o of ops) {
+        if (o.kind === 'copy') {
+          run.progress({ step: 'copy', path: o.dest, i: applied.length + 1, n: ops.length });
+          await realInVault(inVault(o.dest));
+          const dest = o.convert ? await officeIntoVault(path.join(stage, o.rel), o.dest) : await copyIntoVault(path.join(stage, o.rel), o.dest);
+          undo.push(() => fsp.unlink(inVault(dest)));
+          applied.push({ ...o, dest });
+        } else {
+          const abs = await realInVault(inVault(o.target || o.rel));
+          const staged = await fsp.readFile(path.join(stage, o.rel));
+          run.progress({ step: 'write', path: o.target || o.rel });
+          await withFileLock(abs, async () => {
+            const cur = await fsp.readFile(abs, 'utf8').catch(() => null);
+            if ((cur == null ? null : hash(cur)) !== (o.base ?? null)) throw new Error(`${o.target || o.rel} changed since the plan was made`);
+            if (cur == null) { await fsp.mkdir(path.dirname(abs), { recursive: true }); await fsp.writeFile(abs, staged, { flag: 'wx' }); undo.push(() => fsp.unlink(abs)); }
+            else { await atomicWrite(abs, staged); undo.push(() => atomicWrite(abs, cur)); }
+          });
+          applied.push(o);
+        }
+      }
+      for (const e of freeEdits) {
+        const abs = await realInVault(inVault(e.rel));
+        await withFileLock(abs, async () => {
+          const cur = await fsp.readFile(abs, 'utf8');
+          if (hash(cur) !== e.base) throw new Error(`${e.rel} changed meanwhile`);
+          await atomicWrite(abs, e.content); undo.push(() => atomicWrite(abs, cur));
+        });
+        if (!run.edited.includes(e.rel)) run.edited.push(e.rel);
+      }
+    } catch (e) {
+      for (const u of undo.reverse()) await Promise.resolve().then(u).catch(() => {});
+      fail('Applying the confirmed changes failed; everything was put back', 'applyFailed', e.message);
+    }
+    await fsp.rm(stage, { recursive: true, force: true }).catch(() => {});
+    return { applied, extra };
   }
 
   /* ---------- import: scan (ported from the obsidian-import skill's scan.js) ---------- */
@@ -378,6 +548,7 @@ Write reasons, questions and the note in ${lang}.`;
 - Use write_vault_file with the whole note. Then call finish with a two-line summary in ${lang}.`;
 
   async function importApply(run, plan) {
+    if (run.fw) return importApplyFw(run, plan);
     const accept = new Set((Array.isArray(run.body.accept) ? run.body.accept : plan.items.map((_, i) => i)).map(Number));
     const done = [], failed = [];
     const manifest = await readManifest();
@@ -405,6 +576,32 @@ Write reasons, questions and the note in ${lang}.`;
       } catch (e) { indexError = e.message; }
     }
     return { job: 'import', done, failed, ignored: (plan.ignore || []).length, edited: run.edited, summary, indexError };
+  }
+
+  // With a local framework: it copies the confirmed files into its stage (and adds links to the course index
+  // notes there), Graphite checks and applies them, then records the import.
+  async function importApplyFw(run, plan) {
+    const accept = acceptSet(run.body.accept, plan.items);
+    const chosen = plan.items.filter((_, i) => accept.has(i));
+    for (const it of chosen) { const st = await fsp.stat(it.src).catch(() => null); if (!st || !st.isFile()) throw new HttpError(410, `${it.name} is gone; start again`); writeTargetAny(it.dest); await realInVault(inVault(it.dest)); }
+    const ops = chosen.map(it => ({ kind: 'copy', src: it.src, dest: it.dest, convert: it.kind === 'convert',
+      rel: it.kind === 'convert' ? it.dest.replace(/\.pdf$/i, path.extname(it.src).toLowerCase()) : it.dest, name: it.name }));
+    // Index notes of the courses that get files: notes in the course folder named like an index.
+    const courses = [...new Set(chosen.filter(it => !NOTE_EXT.test(it.dest)).map(it => it.dest.split('/')[0]))];
+    const free = [];
+    for (const c of courses) {
+      const list = await walkFiles(inVault(c)).catch(() => []);
+      for (const r of list) { const rel = norm(path.join(c, r)); if (NOTE_EXT.test(rel) && !rel.split('/').some(x => x.startsWith('.')) && /(目录|索引|index|资料|resources|contents)/i.test(path.basename(rel))) free.push(rel); }
+    }
+    const added = chosen.filter(it => !NOTE_EXT.test(it.dest)).map(it => '- ' + it.dest).join('\n');
+    const freeTask = free.length ? `Add a link to each newly added file in the index note of its course and folder section, in the style the note already uses (for example [[LA5.pdf|LA5]]). The new files (vault paths): \n${added}` : '';
+    const { applied, extra } = await fwApply(run, ops, { free: free.slice(0, 40), freeTask });
+    const manifest = await readManifest(), key = p => norm(p).toLowerCase();
+    for (const o of applied) { const st = await fsp.stat(o.src); manifest.imported[key(o.src)] = { dest: o.dest, size: st.size, mtime: st.mtimeMs, at: new Date().toISOString(), by: run.fw, ...(o.convert ? { converted: true } : {}) }; }
+    if (run.body.recordIgnore !== false) for (const ig of plan.ignore || []) manifest.ignored[key(ig.src)] = { reason: ig.reason || '', at: new Date().toISOString() };
+    const mAbs = inVault(MANIFEST);
+    await withFileLock(mAbs, () => atomicWrite(mAbs, JSON.stringify(manifest, null, 2)));
+    return { job: 'import', framework: run.fw, done: applied.map(o => ({ src: o.src, name: o.name, dest: o.dest })), failed: [], ignored: (plan.ignore || []).length, edited: run.edited, extra };
   }
 
   /* ---------- inbox (ported from the obsidian-inbox skill) ---------- */
@@ -490,6 +687,7 @@ Then call submit_plan once. "shown" is the short link label, e.g. "投影 Projec
   }
 
   async function inboxApply(run, plan) {
+    if (run.fw) return inboxApplyFw(run, plan);
     const accept = new Set((Array.isArray(run.body.accept) ? run.body.accept : plan.items.map((_, i) => i)).map(Number));
     const done = [], failed = [];
     for (const [i, it] of plan.items.entries()) {
@@ -528,6 +726,37 @@ Then call submit_plan once. "shown" is the short link label, e.g. "投影 Projec
     return { job: 'inbox', done: done.map(d => ({ id: d.id, target: d.target, shown: d.shown, mode: d.mode })), failed, edited, summary: plan.summary };
   }
 
+  // With a local framework: Graphite works out the confirmed new text of every note (each target with the
+  // capture added, the inbox with those captures ticked, Brain edits); the framework writes them in its stage.
+  async function inboxApplyFw(run, plan) {
+    const accept = acceptSet(run.body.accept, plan.items), ae = acceptSet(run.body.acceptEdits, plan.edits || []);
+    const items = plan.items.filter((_, i) => accept.has(i));
+    const byTarget = new Map();
+    for (const it of items) {
+      const abs = inVault(it.target); await realInVault(abs);
+      if (!byTarget.has(it.target)) { const cur = await fsp.readFile(abs, 'utf8').catch(() => null); byTarget.set(it.target, { cur, text: cur }); }
+      const t = byTarget.get(it.target);
+      t.text = t.text == null ? it.text.replace(/\s*$/, '\n') : t.text.replace(/\s*$/, '') + '\n\n' + it.text.replace(/\s*$/, '') + '\n';
+    }
+    const ops = [...byTarget].map(([rel, t]) => ({ kind: 'file', rel, content: t.text, base: t.cur == null ? null : hash(t.cur) }));
+    if (items.length) {
+      const cur = await fsp.readFile(inVault(INBOX), 'utf8');
+      const lines = cur.split('\n');
+      for (const it of items) {
+        const k = lines.findIndex((l, n) => l.startsWith('- [ ] ') && (l.includes(`%%${it.id}%%`) || it.id === 'line-' + (n + 1)));
+        if (k < 0) continue;
+        const link = it.target.replace(/\.md$/i, '');
+        lines[k] = lines[k].replace('- [ ] ', '- [x] ').replace(/\s*$/, '') + ` → [[${link}${it.shown ? '|' + it.shown.replace(/[|\]]/g, ' ') : ''}]] (${today()})`;
+      }
+      ops.push({ kind: 'file', rel: INBOX, content: lines.join('\n'), base: hash(cur) });
+    }
+    const edits = (plan.edits || []).filter((_, i) => ae.has(i));
+    for (const e of edits) ops.push({ kind: 'file', rel: e.path, content: e.content, base: e.base });
+    if (!ops.length) return { job: 'inbox', framework: run.fw, done: [], failed: [], edited: [], summary: plan.summary };
+    await fwApply(run, ops);
+    return { job: 'inbox', framework: run.fw, done: items.map(d => ({ id: d.id, target: d.target, shown: d.shown, mode: d.mode })), failed: [], edited: edits.map(e => e.path), summary: plan.summary };
+  }
+
   /* ---------- brain (ported from the update-brain skill) ---------- */
   const BRAIN_SYSTEM = lang => `You keep a university student's study knowledge base, the "Claude Brain" folder in their notes vault: README.md, profile.md, courses/<course>.md (a table per course: topic, status, evidence, date), confusions.md (open confusions as questions; resolved ones at the bottom), next.md (what to study next), log.md (one dated entry per session, newest first). quiz-results.md is written by the app: read it, never edit it.
 From the conversation given, record what it shows:
@@ -546,6 +775,11 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
   }
   async function brainApply(run, plan) {
     const accept = acceptSet(run.body.acceptEdits ?? run.body.accept, plan.edits);
+    if (run.fw) {
+      const edits = plan.edits.filter((_, i) => accept.has(i));
+      if (edits.length) await fwApply(run, edits.map(e => ({ kind: 'file', rel: e.path, content: e.content, base: e.base })));
+      return { job: 'brain', framework: run.fw, edited: edits.map(e => e.path), failed: [], summary: plan.summary };
+    }
     const edited = [], failed = [];
     for (const [i, e] of plan.edits.entries()) {
       if (!accept.has(i)) continue;
@@ -564,11 +798,12 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
     const body = JSON.parse((await readBody(req, 5 * 1024 * 1024)).toString('utf8') || '{}');
     const job = JOBS[body.job];
     if (!job) throw new HttpError(400, 'Unknown agent job');
-    const provider = body.provider || 'anthropic';
-    if (provider !== 'anthropic' && !h.COMPAT[provider]) throw new HttpError(400, 'Unknown AI provider');
-    if (!key && provider !== 'custom') throw new HttpError(400, 'No API key');
-    const model = String(body.model || '').trim() || (provider === 'anthropic' ? h.ANTHROPIC_DEFAULT : '');
-    if (!model) throw new HttpError(400, 'Choose a model first (Settings → AI)');
+    const fw = body.framework && h.frameworks.ids.includes(body.framework) ? body.framework : null;
+    const provider = fw ? null : body.provider || 'anthropic';
+    if (!fw && provider !== 'anthropic' && !h.COMPAT[provider]) throw new HttpError(400, 'Unknown AI provider');
+    if (!fw && !key && provider !== 'custom') throw new HttpError(400, 'No API key');
+    const model = fw ? '' : String(body.model || '').trim() || (provider === 'anthropic' ? h.ANTHROPIC_DEFAULT : '');
+    if (!fw && !model) throw new HttpError(400, 'Choose a model first (Settings → AI)');
     for (const [k, v] of plans) if (Date.now() - v.at > 3600e3) plans.delete(k);
     let plan = null;
     if (body.phase === 'apply') {
@@ -579,7 +814,7 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
     res.on('close', () => { if (!res.writableFinished) ctl.abort(); });
     res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' });
     const line = o => { if (!res.writableEnded) res.write(JSON.stringify(o) + '\n'); };
-    const run = { provider, key, body: { ...body, model }, model, sb: cleanRoots(body), langName: LANG_NAMES[body.lang] || 'English',
+    const run = { provider, fw, key, body: { ...body, model }, model, sb: cleanRoots(body), langName: LANG_NAMES[body.lang] || 'English',
       signal: ctl.signal, seen: new Map(), edited: [], progress: p => line({ progress: p }) };
     try {
       let result;
@@ -593,8 +828,9 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
           if (result.items) result.items = result.items.map(({ text, ...it }) => ({ ...it, preview: text ? text.slice(0, 600) : undefined }));
         }
       }
+      if (fw) result = { ...result, framework: fw, reads: (run.reads || []).slice(0, 50) };
       line({ result });
-    } catch (e) { line({ error: e.message || String(e), status: e.status || 500 }); }
+    } catch (e) { line({ error: e.message || String(e), status: e.status || 500, ...(e.code ? { code: e.code } : {}), ...(e.framework ? { framework: e.framework, detail: e.detail || '' } : {}), ...(e.stage ? { stage: e.stage } : {}) }); }
     res.end();
   }
   return { handle, parseInbox, scan, copyIntoVault };

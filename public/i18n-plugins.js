@@ -167,6 +167,10 @@ const ROWS = [
   ['No captures were filed.', 'Aucune capture classée.', 'No se archivó ninguna captura.', '整理したキャプチャはありません。', '정리한 캡처가 없습니다.', '没有整理任何收集。', '沒有整理任何收集。'],
   ['Updated the Claude Brain:', 'Claude Brain mis à jour :', 'Claude Brain actualizado:', 'Claude Brain を更新しました：', 'Claude Brain을 업데이트했습니다:', '已更新 Claude Brain：', '已更新 Claude Brain：'],
   ['Couldn’t do {name}: {msg}', 'Impossible pour {name} : {msg}', 'No se pudo con {name}: {msg}', '{name} を処理できませんでした：{msg}', '{name} 처리 실패: {msg}', '无法处理 {name}：{msg}', '無法處理 {name}：{msg}'],
+  ["Started {name} {version} (read-only)","Lancement de {name} {version} (lecture seule)","Iniciado {name} {version} (solo lectura)","{name} {version} を起動（読み取り専用）","{name} {version} 시작 (읽기 전용)","已启动 {name} {version}（只读）","已啟動 {name} {version}（唯讀）"],
+  ["{name} ran: {path}","{name} a exécuté : {path}","{name} ejecutó: {path}","{name} が実行：{path}","{name} 실행: {path}","{name} 执行了：{path}","{name} 執行了：{path}"],
+  ["{name} is working on it on this computer","{name} y travaille sur cet ordinateur","{name} está trabajando en ello en este ordenador","{name} がこのパソコンで処理中","{name}이(가) 이 컴퓨터에서 작업 중","{name} 正在本机处理","{name} 正在本機處理"],
+  ["Planned by {name}, which read {n} files itself. Nothing is written until you confirm.","Plan établi par {name}, qui a lu {n} fichiers lui-même. Rien n’est écrit avant votre confirmation.","Plan hecho por {name}, que leyó {n} archivos por sí mismo. No se escribe nada hasta que confirmes.","{name} が自分で {n} 個のファイルを読んで作った計画です。確認するまで何も書き込みません。","{name}이(가) 직접 파일 {n}개를 읽고 세운 계획입니다. 확인하기 전에는 아무것도 쓰지 않습니다.","此方案由 {name} 自己读取了 {n} 个文件后给出。确认之前不会写入任何内容。","此方案由 {name} 自己讀取了 {n} 個檔案後給出。確認之前不會寫入任何內容。"],
 ];
 const CODES =['fr', 'es', 'ja', 'ko', 'zh-CN', 'zh-TW'];
 export const PLUG = Object.fromEntries(CODES.map((c, i) => [c, Object.fromEntries(ROWS.map(r => [r[0], r[i + 1]]))]));

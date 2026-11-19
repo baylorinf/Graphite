@@ -11,6 +11,7 @@ import { PLUG, fillVars } from '/i18n-plugins.js';
 import * as CK from '/check.js';
 import * as AI from '/ai.js';
 import * as SA from '/studyai.js';
+import * as FJ from '/filejobs.js'; // jobs on your files (find new course files, file captures), in any vault
 import { ICON, TAB_ICON, SEL_ICON } from '/icons.js'; // Lucide icons + the Graphite mark (scripts/make-icons.js)
 import { G, initGraph, buildGraph, drawGraph, readGraphColors, fitGraph, stopGraph } from '/graph.js';
 import { initSettings, openSettings, closeSettings, settingsOpen, refreshSettings } from '/settings.js';
@@ -1594,6 +1595,8 @@ const COMMANDS = [
   { id: 'check-note', name: 'Check this note for mistakes', kbd: 'Ctrl+Shift+E', available: () => !!S.current, run: async () => { if (S.dirty) await saveNow(); CK.checkNote(S.current); } },
   { id: 'tidy-format', name: 'Tidy this note\'s format to match its folder', kbd: 'Ctrl+Shift+Y', available: () => !!S.current, run: () => SA.tidyFormat(S.current) },
   { id: 'revision-plan', name: 'Make an exam revision plan', run: () => SA.planDialog() },
+  { id: 'find-course-files', name: 'Find new course files on this computer', run: () => FJ.runFileJob('import', 'import') },
+  { id: 'file-inbox', name: 'File the Claude Inbox captures', run: () => FJ.runFileJob('inbox', 'inbox') },
   { id: 'mock-paper', name: 'Make a mock paper', run: () => SA.mockDialog() },
   { id: 'exam-analysis', name: 'Analyse an exam paper', run: () => SA.examDialog(S.view === 'file' && /\.pdf$/i.test(S.filePath || '') ? S.filePath : (S.current || '')) },
   { id: 'quiz-note', name: 'Quiz yourself on this note', kbd: 'Ctrl+Shift+K', available: () => !!S.current, run: async () => { if (S.dirty) await saveNow(); RV.checkNote(S.current); } },
@@ -2414,6 +2417,7 @@ async function selAction(kind, ctx) {
     // which file is open first: it ignores selections made before the file in front changed.
     try { chat?.context?.(); } catch { /* older chat plugin */ }
     if (cap) cap.lastSel = { text: `${text}\n— ${where}`, heading: page ? `page=${page}` : '', at: Date.now() + 1, path };
+    else if (chat) chat.extSel = { text: `${text}\n— ${where}`, page, at: Date.now() + 1, path }; // without Claude Capture
     chat?.show?.();
     chat?.renderChips?.();
     setTimeout(() => chat?.input?.focus(), 50);
@@ -3039,6 +3043,7 @@ async function boot() {
   initGraph(host);
   AI.initAI(host);
   SA.initStudyAI(host);
+  FJ.initFileJobs(host);
   STUDY.initStudy(host);
   setLang(store.get('lang', null) || detectLang());
   applyI18n();

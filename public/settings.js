@@ -164,7 +164,7 @@ function renderAI() {
   content.createEl('h3', { cls: 'settings-sub', text: t('agent.jobs') });
   content.createEl('p', { cls: 'setting-note', text: t('agent.jobsDesc') });
   for (const f of AI.AGENT_FEATURES) {
-    new PM.Setting(content).setName(t('ai.job.' + f)).setDesc(t('ai.job.' + f + 'Desc')).addDropdown(d => {
+    new PM.Setting(content).setName(t('ai.job.' + f)).setDesc(t('ai.job.' + f + 'Desc')).addButton(b => { b.setButtonText(t('fj.run')).onClick(() => { closeSettings?.(); H.runCommand(f === 'import' ? 'find-course-files' : 'file-inbox'); }); b.buttonEl.dataset.fjRun = f; }).addDropdown(d => {
       for (const o of AI.options(f)) {
         d.addOption(o.value, o.label);
         if (!o.ready) d.selectEl.lastElementChild.disabled = true;
@@ -174,16 +174,55 @@ function renderAI() {
     });
   }
   const lines = s => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-  new PM.Setting(content).setName(t('agent.roots')).setDesc(t('agent.rootsDesc')).addTextArea(ta => {
-    ta.setValue(AI.agentConf().roots.join('\n')).onChange(v => AI.setAgentConf({ roots: lines(v) }));
+  const rootsRow = new PM.Setting(content).setName(t('agent.roots')).setDesc(t('agent.rootsDesc')).addTextArea(ta => {
+    ta.setValue(AI.agentConf().roots.join('\n')).onChange(v => { AI.setAgentConf({ roots: lines(v) }); checkRoots(); });
     ta.inputEl.rows = 3; ta.inputEl.dataset.agent = 'roots';
   });
+  // Each folder's state: found, not a full path (e.g. "D:TaskDYS"), or not there.
+  const rootsInfo = rootsRow.descEl.createDiv({ cls: 'fw-roots' });
+  let rootsTimer = null;
+  const checkRoots = () => {
+    clearTimeout(rootsTimer);
+    rootsTimer = setTimeout(async () => {
+      const paths = AI.agentConf().roots;
+      const r = await fetch('/api/check-folders', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ paths }) }).then(x => x.json()).catch(() => []);
+      rootsInfo.empty();
+      for (const f of r) rootsInfo.createDiv({ cls: 'fw-root ' + (f.ok ? 'is-ok' : 'is-bad'), text: (f.ok ? '✓ ' : '✗ ') + f.path + (f.ok ? '' : ' — ' + t('agent.root.' + f.reason)) });
+    }, 300);
+  };
+  checkRoots();
   new PM.Setting(content).setName(t('agent.skip')).setDesc(t('agent.skipDesc')).addText(tx => {
     tx.setValue(AI.agentConf().skip.join(', ')).onChange(v => AI.setAgentConf({ skip: v.split(',').map(x => x.trim()).filter(Boolean) }));
     tx.inputEl.dataset.agent = 'skip';
   });
   new PM.Setting(content).setName(t('agent.extras')).setDesc(t('agent.extrasDesc'))
     .addToggle(tg => tg.setValue(AI.agentConf().extras).onChange(v => AI.setAgentConf({ extras: v })));
+
+  // 1c. Local agent frameworks: found on this computer or not (and why), their version, an optional custom path.
+  content.createEl('h3', { cls: 'settings-sub', text: t('fw.title') });
+  content.createEl('p', { cls: 'setting-note', text: t('fw.desc') });
+  const fwBox = content.createDiv({ cls: 'fw-list' });
+  const drawFw = () => {
+    fwBox.empty();
+    const ccRow = new PM.Setting(fwBox).setName('Claude Code');
+    ccRow.descEl.createSpan({ cls: 'fw-status', text: '…' });
+    AI.ccListening().then(on => { const el = ccRow.descEl.querySelector('.fw-status'); if (el) { el.textContent = on ? t('fw.ccOn') : t('fw.ccOff'); el.classList.toggle('is-ok', on); el.classList.toggle('is-warn', !on); } });
+    for (const [id, F] of Object.entries(AI.LOCAL)) {
+      const st = AI.fwStatus(id), info = AI.frameworks()[id] || {};
+      const row = new PM.Setting(fwBox).setName(F.label);
+      row.settingEl.dataset.fw = id;
+      row.descEl.createSpan({ cls: 'fw-status' + (st.ok ? ' is-ok' : st.ok === false ? ' is-bad' : ''), text: st.text });
+      if (info.path) row.descEl.createDiv({ cls: 'fw-path', text: info.path });
+      row.addText(tx => {
+        tx.setPlaceholder(t('fw.pathPh')).setValue(AI.fwPath(id));
+        tx.inputEl.dataset.fwPath = id; tx.inputEl.spellcheck = false;
+        tx.inputEl.addEventListener('change', async () => { await AI.setFwPath(id, tx.getValue()); drawFw(); });
+      });
+    }
+    new PM.Setting(fwBox).addButton(b => b.setButtonText(t('fw.recheck')).onClick(async () => { b.setDisabled(true); b.setButtonText(t('fw.checking')); await AI.refreshFrameworks(true); drawFw(); }));
+  };
+  drawFw();
+  AI.refreshFrameworks().then(() => { if (fwBox.isConnected) drawFw(); });
 
   // 2. API keys, one box per provider (open when it has a key)
   content.createEl('h3', { cls: 'settings-sub', text: t('ai.keys') });

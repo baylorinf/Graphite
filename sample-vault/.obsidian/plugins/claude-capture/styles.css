@@ -1,0 +1,50 @@
+.claude-capture-modal { max-width: 560px; }
+.claude-capture-modal .cc-source { font-size: .85em; opacity: .75; margin-bottom: 10px; }
+.claude-capture-modal .cc-label { display: block; font-weight: 600; font-size: .85em; margin: 10px 0 4px; }
+.claude-capture-modal textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit; padding: 8px 10px; border-radius: 8px; }
+.claude-capture-modal .cc-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
+.claude-capture-modal button.cc-btn { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; padding: 10px 12px; border-radius: 10px; cursor: pointer; text-align: left; height: auto; border: 1px solid transparent; }
+.claude-capture-modal .cc-btn-label { font-weight: 700; font-size: 1em; }
+.claude-capture-modal .cc-btn-hint { font-size: .8em; opacity: .8; }
+.claude-capture-modal button.cc-unfamiliar.cc-btn { background: #fdecea; color: #8c1d18; border-color: #f2b8b3; }
+.claude-capture-modal button.cc-interesting.cc-btn { background: #fff4d6; color: #7a5200; border-color: #f0d48a; }
+.claude-capture-modal button.cc-btn:hover { filter: brightness(.97); }
+.claude-capture-modal .cc-foot { font-size: .75em; opacity: .6; margin-top: 10px; }
+:root[data-theme="dark"] .claude-capture-modal button.cc-unfamiliar.cc-btn { background: #3b1a18; color: #ffb4ab; border-color: #6b2a25; }
+:root[data-theme="dark"] .claude-capture-modal button.cc-interesting.cc-btn { background: #382a10; color: #f0c870; border-color: #6a5320; }
+:root[data-theme="dark"] .claude-capture-status.has-pending { color: #f2a466; }
+.claude-capture-status { cursor: pointer; }
+.claude-capture-status.has-pending { font-weight: 700; color: #b0540f; }
+.claude-capture-modal button.cc-btn.cc-suggested { box-shadow: 0 0 0 2px currentColor; }
+
+/* Floating bar over selected text in notes. Same look as the bar inside the 🎓 study tabs. */
+.cq-selbar.cc-selbar {
+  position: fixed; z-index: 50; display: flex; align-items: center; gap: 2px; padding: 4px; border-radius: 12px;
+  background: rgba(255,255,255,.95); -webkit-backdrop-filter: blur(12px) saturate(1.5); backdrop-filter: blur(12px) saturate(1.5);
+  border: 1px solid rgba(15,23,42,.10); box-shadow: 0 12px 30px rgba(15,23,42,.18), 0 2px 6px rgba(15,23,42,.08);
+  font: 600 13px/1 "Segoe UI", system-ui, -apple-system, sans-serif; color: #1f2328; animation: cc-sel-in .13s ease-out;
+}
+.cq-selbar.cc-selbar[hidden] { display: none; }
+@keyframes cc-sel-in { from { opacity: 0; transform: translateY(4px) scale(.98); } to { opacity: 1; transform: none; } }
+.cc-selbar button {
+  all: unset; box-sizing: border-box; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; height: 30px;
+  padding: 0 11px; border-radius: 8px; white-space: nowrap; transition: background .12s, filter .12s;
+}
+.cc-selbar button:hover { background: rgba(15,23,42,.07); }
+.cc-selbar button svg { width: 15px; height: 15px; flex: none; }
+.cc-selbar button.cq-primary { background: linear-gradient(135deg,#7b5cff,#4f86ff); color: #fff; box-shadow: 0 1px 3px rgba(79,70,229,.35); }
+.cc-selbar button.cq-primary:hover { filter: brightness(1.08); }
+.cc-selbar button.cc-q-unf svg { color: #c4392f; }
+.cc-selbar button.cc-q-int svg { color: #b7791f; }
+.cc-selbar .cq-sep { width: 1px; height: 18px; background: rgba(15,23,42,.12); margin: 0 3px; flex: none; }
+.cc-selbar::after {
+  content: ""; position: absolute; left: var(--ax, 50%); bottom: -6px; width: 10px; height: 10px; margin-left: -6px;
+  transform: rotate(45deg); background: inherit; border: 1px solid rgba(15,23,42,.10); border-top: 0; border-left: 0;
+}
+.cc-selbar.below::after { bottom: auto; top: -6px; border: 1px solid rgba(15,23,42,.10); border-bottom: 0; border-right: 0; }
+:root[data-theme="dark"] .cq-selbar.cc-selbar { background: rgba(32,35,42,.96); border-color: rgba(255,255,255,.09); color: #e8eaed; box-shadow: 0 12px 30px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.3); }
+:root[data-theme="dark"] .cc-selbar button:hover { background: rgba(255,255,255,.09); }
+:root[data-theme="dark"] .cc-selbar .cq-sep { background: rgba(255,255,255,.13); }
+:root[data-theme="dark"] .cc-selbar::after, :root[data-theme="dark"] .cc-selbar.below::after { border-color: rgba(255,255,255,.09); }
+:root[data-theme="dark"] .cc-selbar button.cc-q-unf svg { color: #ff8a80; }
+:root[data-theme="dark"] .cc-selbar button.cc-q-int svg { color: #f0c870; }

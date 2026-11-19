@@ -223,12 +223,22 @@ export function examDialog(path = '') {
           const r = await pdfText('/vault/' + file.split('/').map(encodeURIComponent).join('/'), { only, onProgress: (i, n) => { msg.textContent = t('exam.readingN', { i, n }); } });
           numPages = r.numPages; empty = r.empty; read = r.pages.map(p => p.n);
           const withText = r.pages.filter(p => p.text);
+          if (AI.isLocal(engine)) {
+            // A local framework opens the PDF itself (and can look at scanned pages, which have no text): one run,
+            // with the file, the page range, which pages have no text, and whatever text there is to start from.
+            batches = [{ pages: only || read, text: withText.map(p => `--- page ${p.n} ---\n${p.text}`).join('\n').slice(0, 150000),
+              local: `<pdf_file>${file}</pdf_file>\n<pages_to_analyse>${pageRanges(only || read)} of ${numPages}</pages_to_analyse>\n` +
+                (empty.length ? `<pages_without_text>${pageRanges(empty)} — scanned or images: open these pages from the PDF file yourself and read them.</pages_without_text>\n` : '') +
+                'Open the PDF file with your own tools to check the problems and anything the text below misses.' }];
+            empty = [];
+          } else {
           if (!withText.length) { H.toast(t('exam.noText')); msg.textContent = t('exam.noText'); return; }
           batches = []; let cur = null;
           for (const p of withText) {
             const chunk = `--- page ${p.n} ---\n${p.text}\n`;
             if (!cur || (cur.text.length + chunk.length > BATCH_CHARS && cur.text)) batches.push(cur = { text: '', pages: [] });
             cur.text += chunk; cur.pages.push(p.n);
+          }
           }
         } catch (e) { H.toast(e.message); return; }
       } else batches = [{ text: H.getNoteText(file), pages: null }];
@@ -238,7 +248,7 @@ export function examDialog(path = '') {
     for (const [i, b] of batches.entries()) {
       const part = batches.length > 1 ? ` (${t('exam.batch', { i: i + 1, n: batches.length, pages: pageRanges(b.pages) })})` : '';
       const rangeNote = b.pages ? `\n<pages_included>${pageRanges(b.pages)}${numPages ? ` of ${numPages}` : ''}</pages_included>` : '';
-      const content = `<paper file="${file}">\n${b.text}\n</paper>${rangeNote}\n<student_comment>${comment || '(none)'}</student_comment>\n<their_notes>${noteTitles.join(' | ')}</their_notes>`;
+      const content = `${b.local ? b.local + '\n' : ''}<paper file="${file}">\n${b.text}\n</paper>${rangeNote}\n<student_comment>${comment || '(none)'}</student_comment>\n<their_notes>${noteTitles.join(' | ')}</their_notes>`;
       const r = await runJob('exam', 'exam', { title: base(file.replace(/\.pdf$/i, '')) + part, content, path: file, job: { comment, notes: noteTitles, pages: b.pages ? pageRanges(b.pages) : 'all' } }, { body, actions });
       if (!r || !win) return;
       results.push({ ...r, pages: b.pages });
@@ -340,6 +350,8 @@ export function mockDialog() {
           if (/\.pdf$/i.test(f)) { const r = await pdfText('/vault/' + f.split('/').map(encodeURIComponent).join('/')); txt = r.pages.filter(x => x.text).map(x => `--- page ${x.n} ---\n${x.text}`).join('\n'); }
           else txt = H.getNoteText(f);
         } catch { txt = ''; }
+        // A local framework reads the paper itself, so a scanned paper (no text) is still used: it gets the path.
+        if (!txt.trim() && AI.isLocal(engine)) { paperText += `<past_paper file="${f}">(no text: a scanned paper — open this file yourself and read it)</past_paper>\n`; continue; }
         if (!txt.trim()) { left.push(f); continue; }
         const block = `<past_paper file="${f}">\n${txt}\n</past_paper>\n`;
         if (paperText.length + block.length > MOCK_CHARS) { left.push(f); continue; }

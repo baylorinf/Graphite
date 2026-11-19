@@ -181,8 +181,15 @@ input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-
 
 /* ---------- scrollbars: thin ---------- */
 .scroll::-webkit-scrollbar, ::-webkit-scrollbar { width: 9px; height: 9px; }
-::-webkit-scrollbar-thumb { background: var(--bg-3); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; }
-::-webkit-scrollbar-thumb:hover { background: var(--text-faint); background-clip: padding-box; }
+/* The thumb is a see-through grey, so it shows on any background (the old --bg-3 thumb matched the light
+   theme's grey canvas exactly and disappeared). */
+:root, :root[data-theme="dark"] { --scroll-thumb: rgba(255, 255, 255, .22); --scroll-thumb-hover: rgba(255, 255, 255, .38); }
+:root[data-theme="light"] { --scroll-thumb: rgba(20, 22, 26, .38); --scroll-thumb-hover: rgba(20, 22, 26, .56); }
+::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 8px; border: 2px solid transparent; background-clip: padding-box; min-height: 32px; }
+::-webkit-scrollbar-thumb:hover, ::-webkit-scrollbar-thumb:active { background: var(--scroll-thumb-hover); background-clip: padding-box; }
+/* Long documents (PDF preview): a wider bar that is easy to grab. */
+.pdf-scroll::-webkit-scrollbar { width: 12px; height: 12px; }
+.pdf-scroll::-webkit-scrollbar-thumb { min-height: 40px; border-width: 2px; }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* ---------- graphite details ---------- */

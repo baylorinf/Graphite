@@ -86,10 +86,12 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 
 ## AI
 
-Every AI job (Check, Quiz questions, Chat, Revision plans, Exam analysis, Tidy format) can use a different AI, chosen in **Settings → AI**:
+Every AI job (Check, Quiz questions, Chat, Revision plans, Exam analysis, Mock paper, Tidy format, Connect note, and the jobs on your files) can use a different AI, chosen in **Settings → AI**:
 
 - **Your own API key** for **Anthropic (Claude)**, **OpenAI**, **Google Gemini**, **DeepSeek**, **Qwen**, **Kimi**, **GLM**, or any **OpenAI-compatible** service (OpenRouter, a local Ollama, …). **Test the key** loads the provider's current model list, or you can type any model name.
-- **Claude Code (no key):** if you use [Claude Code](https://claude.com/claude-code) on the same computer, Graphite can hand jobs to it through files in the vault (with the companion `obsidian-chat` skill). It works only while that Claude window is connected. This is also the only option that can read scanned PDFs and reorganise several notes at once.
+- **Claude Code (no key):** if you use [Claude Code](https://claude.com/claude-code) on the same computer, Graphite can hand jobs to it through files in the vault (with the companion `obsidian-chat` skill). It works only while that Claude window is connected. Claude Code and the local frameworks below can open files themselves, so they can also read scanned PDFs.
+
+- **A local agent framework (no key in Graphite):** [DeepSeek Harness](https://www.deepseek.com) (`dsh`) or the OpenAI **Codex CLI**, if installed. Graphite finds them (Settings → AI → *Local frameworks* shows the version, or why one can't run) and starts the one you chose with the task. It reads the files itself, read-only and only in the vault and the course folders you allow. For jobs that change files (find new course files, file inbox captures, update the Brain) you see the plan first; after you confirm, the framework writes the confirmed changes in a private stage folder with its own tools, Graphite checks every file and only then applies them, and puts everything back if anything fails. Graphite never switches to another AI on its own.
 
 **Privacy:** keys are stored only on your computer, never in the vault, and never logged. A job sends only its own note or paper, and only to the provider you chose, which bills you for the use.
 
