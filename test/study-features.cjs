@@ -49,6 +49,7 @@ async function main() {
     'Bio/Cells.md': 'What is a cell? :: The unit of life\n',
     'LA/Exam.pdf': pdf(85, [5, 9, 84], 'EX', 120),
     'LA/Lecture.pdf': pdf(3, [], 'LEC', 24),
+    'LA/复习资料/2024 期中.pdf': pdf(3, [], 'MID', 24),
     'LA/复习计划 Review Plans/Plan.md': `---\ntags: [Revision plan]\ncreated: 2026.11.20\n---\n# LA plan\n\n## Day 1 · ${isoDay(-1)}\n\n- [ ] [[Det]] (30)\n\n## Day 2 · ${isoDay(0)}\n\n- [ ] [[Maps]] (30)\n\n## Day 3 · ${isoDay(1)}\n\n- [ ] [[Kernel]] (30)\n`,
   };
   for (const [n, b] of Object.entries(files)) { await fs.mkdir(path.dirname(path.join(vault, n)), { recursive: true }); await fs.writeFile(path.join(vault, n), b); }
@@ -81,6 +82,10 @@ async function main() {
         return r.fulfill({ json: { title: 'Exam analysis', markdown: `---\ntags: [Exam analysis]\n---\n## Summary\nPages ${pages[0]}-${pages.at(-1)}`,
           problems: [{ no: String(pages[0]), page: pages[0], topic: 'Eigen', question: 'Find $\\lambda$ on page ' + pages[0], myAnswer: '2', mistake: 'sign' }] } });
       }
+      if (body.task === 'mock') return r.fulfill({ json: { title: 'LA mock', topics: [{ topic: 'Determinants', pastCount: 2, note: 'every year' }], problems: [
+        { no: '1', marks: 40, kind: 'past', sourceFile: 'LA/复习资料/2024 期中.pdf', sourcePage: 2, sourceLabel: '2024 midterm Q2', topic: 'Determinants', question: 'Compute det A.', answer: 'Expand: 6.' },
+        { no: '2', marks: 30, kind: 'variant', sourceFile: 'LA/复习资料/2024 期中.pdf', sourcePage: 3, sourceLabel: '2024 midterm Q5', topic: 'Determinants', question: 'Variant problem.', answer: 'Step 1\nStep 2' },
+        { no: '3', marks: 30, kind: 'new', sourceFile: 'Det', sourcePage: 0, sourceLabel: 'Det', topic: 'Swaps', question: 'Why does a swap flip the sign?', answer: 'Alternating.' }] } });
       return r.fulfill({ status: 400, json: { error: 'unexpected task ' + body.task } });
     });
     const p = await ctx.newPage();
@@ -242,6 +247,33 @@ async function main() {
       assert.match(md, /## Day 2[^\n]*\n> \[!progress\] Progress 1\/3/);
       await today.click();
       assert.match(await p.locator('.review-progress').innerText(), /1\s*\/\s*2|2/);
+    });
+
+    await test('Mock paper: past papers as the model, chapter range respected, every problem sourced and linked, folded answers', async p => {
+      await p.locator('[data-cmd="review"]').first().click();
+      await p.locator('[data-cmd-run="mock-paper"]').click();
+      await p.locator('.ai-mock [data-f=course]').selectOption('LA');
+      await p.locator('.ai-mock [data-paper]').first().waitFor();
+      assert.ok(await p.locator('.ai-mock [data-paper="LA/复习资料/2024 期中.pdf"]').isChecked());
+      await p.locator('.ai-mock [data-chapter="Ch2"]').uncheck();
+      aiCalls.length = 0;
+      await p.locator('.ai-mock [data-a=go]').click();
+      await p.waitForFunction(() => document.querySelector('#title')?.value === 'LA mock', null, { timeout: 30000 });
+      const sent = aiCalls.find(c => c.task === 'mock').content;
+      assert.ok(sent.includes('<past_paper file="LA/复习资料/2024 期中.pdf">'), 'past paper not sent');
+      assert.ok(sent.includes('--- page 2 ---\nMID-page-2'), 'past paper pages not sent');
+      assert.ok(sent.includes('Det (LA/Ch1)'), 'chapter note missing');
+      assert.doesNotMatch(sent, /Maps|Kernel/, 'unticked chapter sent');
+      const md = await p.locator('#editor').inputValue();
+      assert.ok(md.includes('[[2024 期中.pdf#page=2|2024 midterm Q2 p.2]]'), 'past problem source link');
+      assert.ok(md.includes('[[Det|Det]]'), 'new problem note link');
+      assert.ok(md.includes('> [!success]- Answer 2\n> Step 1\n> Step 2'), 'folded answer');
+      assert.ok(md.includes('Total: 100 marks'), 'total marks');
+      assert.ok(md.includes('```graphite-problems'), 'mistake-book block');
+      await p.evaluate(() => document.querySelector('[data-mode="preview"]')?.click());
+      assert.equal(await p.locator('#preview a.internal-link.unresolved').count(), 0, 'a source link does not resolve');
+      await p.locator('#preview a.internal-link').filter({ hasText: '2024 midterm Q2 p.2' }).click();
+      await p.waitForFunction(() => document.querySelector('.pdf-page')?.value === '2', null, { timeout: 15000 });
     });
 
     await test('rename a source PDF: mistakes and cards follow it', async p => {

@@ -62,6 +62,11 @@ const AI_SCHEMAS = {
   exam: { type: 'object', additionalProperties: false, required: ['title', 'markdown', 'problems'], properties: { title: { type: 'string' }, markdown: { type: 'string' },
     problems: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['no', 'page', 'topic', 'question', 'myAnswer', 'mistake'],
       properties: { no: { type: 'string' }, page: { type: 'integer' }, topic: { type: 'string' }, question: { type: 'string' }, myAnswer: { type: 'string' }, mistake: { type: 'string' } } } } } },
+  mock: { type: 'object', additionalProperties: false, required: ['title', 'problems', 'topics'], properties: { title: { type: 'string' },
+    problems: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['no', 'marks', 'kind', 'sourceFile', 'sourcePage', 'sourceLabel', 'topic', 'question', 'answer'],
+      properties: { no: { type: 'string' }, marks: { type: 'integer' }, kind: { type: 'string', enum: ['past', 'variant', 'new'] }, sourceFile: { type: 'string' }, sourcePage: { type: 'integer' },
+        sourceLabel: { type: 'string' }, topic: { type: 'string' }, question: { type: 'string' }, answer: { type: 'string' } } } },
+    topics: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'pastCount', 'note'], properties: { topic: { type: 'string' }, pastCount: { type: 'integer' }, note: { type: 'string' } } } } } },
   connect: { type: 'object', additionalProperties: false, required: ['related'], properties: { related: { type: 'array', items: {
     type: 'object', additionalProperties: false, required: ['title', 'why'], properties: { title: { type: 'string' }, why: { type: 'string' } } } } } },
   format: { type: 'object', additionalProperties: false, required: ['markdown', 'changes'], properties: { markdown: { type: 'string' }, changes: { type: 'array', items: { type: 'string' } } } },
@@ -105,6 +110,15 @@ markdown: the whole note: YAML frontmatter (tags: [Exam analysis], created: YYYY
 title: a short note title such as "<paper name> analysis".
 - The input may be only part of the paper (a page range, or one batch of a long paper): analyse only what is given; don't guess about other pages.
 problems: one entry per problem, in order: no (its number as printed, e.g. "3" or "2(b)"), page (the page it is on, from the "--- page N ---" markers; 0 if unknown), topic, question (the problem itself, shortened if long, maths in $...$), myAnswer (the student's answer if visible, else ""), mistake (what went wrong if it lost marks, else ""). Write topic and mistake in ${ui}.`,
+  mock: ui => `You write a mock exam paper for a university student, modelled on their course's past papers.
+The input gives: the course, the time and number of problems wanted, the mix (how many past, adapted and new problems), the past papers' text (with "--- page N ---" markers, inside <past_paper file="..."> tags), the notes in range (titles, headings and their quiz questions), and the student's weak spots (mistake book, cards they keep failing).
+- Copy the past papers' shape: kinds of problems, wording, difficulty, how marks are split. The notes in range decide which topics may appear; never test anything outside them.
+- kind "past": a problem copied from a past paper as it was set. kind "variant": a past problem with new numbers or a changed setting. kind "new": a problem none of the past papers asked, aimed at a weak spot or an untested topic in range.
+- For past and variant problems: sourceFile is the exact file="..." of that past paper, sourcePage the page it is on, sourceLabel a short label such as "2024 midterm Q4". For new problems: sourceFile is the note it tests (exact title from the list, without .md), sourcePage 0, sourceLabel the note title.
+- Give every problem a full worked answer (steps, not only the result). Maths in $...$ / $$...$$. marks are whole numbers; their total should be about 100 unless the past papers use another total.
+- Write problems in the language the past papers use; write topic, sourceLabel and topics[].note in ${ui}.
+- topics: each topic in range with how many times it appears across the past papers given (pastCount) and a short note on why it is in this paper or not.
+title: a short title such as "<course> mock paper".`,
   connect: ui => `You link one of a university student's notes to their other notes that really matter for it.
 The input is the note and a list of their other notes (title, folder, headings).
 - Pick 2 to 6 notes that share a concept, give a definition or theorem this note relies on, or continue its topic. Never pick a note only because it is in the same course. Pick none if nothing really fits.
@@ -128,6 +142,7 @@ const AI_EXAMPLES = {
   plan: { title: 'Linear Algebra midterm revision plan', markdown: '---\ntags: [Revision plan]\ncreated: 2026.11.20\n---\n...' },
   exam: { title: 'Mock midterm analysis', markdown: '---\ntags: [Exam analysis]\ncreated: 2026.11.20\n---\n## Summary\n...', problems: [{ no: '1', page: 1, topic: 'Eigenvalues', question: 'Find the eigenvalues of A.', myAnswer: 'lambda = 2', mistake: 'Missed the repeated root.' }] },
   connect: { related: [{ title: 'Exact note title from the list', why: 'uses its definition of X' }] },
+  mock: { title: 'Linear Algebra mock paper', problems: [{ no: '1', marks: 10, kind: 'past', sourceFile: 'LA/复习资料/2024 midterm.pdf', sourcePage: 2, sourceLabel: '2024 midterm Q4', topic: 'Determinants', question: 'Compute $\\det A$ for ...', answer: 'Expand along the first row: ...' }], topics: [{ topic: 'Determinants', pastCount: 3, note: 'appears every year' }] },
   format: { markdown: 'the whole reformatted note', changes: ['Added frontmatter', 'Numbered the key points'] },
 };
 // OpenAI-compatible providers. `extra` holds optional fields (e.g. turning off slow "thinking"); if a provider
@@ -168,6 +183,15 @@ function tidyResult(task, out) {
     out.title = String(out.title || ''); out.markdown = String(out.markdown || ''); if (!out.markdown) throw new SyntaxError('empty');
     if (task === 'exam') out.problems = (Array.isArray(out.problems) ? out.problems : []).filter(x => x && typeof x === 'object').map(x => ({
       no: String(x.no ?? ''), page: Number.isFinite(+x.page) ? Math.max(0, Math.round(+x.page)) : 0, topic: String(x.topic || ''), question: String(x.question || ''), myAnswer: String(x.myAnswer || ''), mistake: String(x.mistake || '') }));
+  }
+  else if (task === 'mock') {
+    out.title = String(out.title || '');
+    out.problems = (Array.isArray(out.problems) ? out.problems : []).filter(x => x && typeof x === 'object' && x.question).map((x, i) => ({
+      no: String(x.no ?? i + 1), marks: Number.isFinite(+x.marks) ? Math.max(0, Math.round(+x.marks)) : 0, kind: ['past', 'variant', 'new'].includes(x.kind) ? x.kind : 'new',
+      sourceFile: String(x.sourceFile || ''), sourcePage: Number.isFinite(+x.sourcePage) ? Math.max(0, Math.round(+x.sourcePage)) : 0, sourceLabel: String(x.sourceLabel || ''),
+      topic: String(x.topic || ''), question: String(x.question), answer: String(x.answer || '') }));
+    out.topics = (Array.isArray(out.topics) ? out.topics : []).filter(x => x && x.topic).map(x => ({ topic: String(x.topic), pastCount: Math.max(0, Math.round(+x.pastCount || 0)), note: String(x.note || '') }));
+    if (!out.problems.length) throw new SyntaxError('empty');
   }
   else if (task === 'connect') out.related = (Array.isArray(out.related) ? out.related : []).filter(x => x && x.title).map(x => ({ title: String(x.title), why: String(x.why || '') }));
   else if (task === 'format') { out.markdown = String(out.markdown || ''); out.changes = Array.isArray(out.changes) ? out.changes.map(String) : []; if (!out.markdown) throw new SyntaxError('empty'); }

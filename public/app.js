@@ -1594,6 +1594,7 @@ const COMMANDS = [
   { id: 'check-note', name: 'Check this note for mistakes', kbd: 'Ctrl+Shift+E', available: () => !!S.current, run: async () => { if (S.dirty) await saveNow(); CK.checkNote(S.current); } },
   { id: 'tidy-format', name: 'Tidy this note\'s format to match its folder', kbd: 'Ctrl+Shift+Y', available: () => !!S.current, run: () => SA.tidyFormat(S.current) },
   { id: 'revision-plan', name: 'Make an exam revision plan', run: () => SA.planDialog() },
+  { id: 'mock-paper', name: 'Make a mock paper', run: () => SA.mockDialog() },
   { id: 'exam-analysis', name: 'Analyse an exam paper', run: () => SA.examDialog(S.view === 'file' && /\.pdf$/i.test(S.filePath || '') ? S.filePath : (S.current || '')) },
   { id: 'quiz-note', name: 'Quiz yourself on this note', kbd: 'Ctrl+Shift+K', available: () => !!S.current, run: async () => { if (S.dirty) await saveNow(); RV.checkNote(S.current); } },
   { id: 'latex-cheatsheet', name: 'Open LaTeX cheatsheet', run: () => (S.view === 'help' && S.helpPage === 'latex' ? showNoteView() : showHelp('latex')) },

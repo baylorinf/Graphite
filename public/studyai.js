@@ -260,6 +260,141 @@ export function examDialog(path = '') {
   };
 }
 
+/* ---------- 4. Mock paper: a new exam paper modelled on past papers ---------- */
+// Past papers set the shape (kinds of problems, wording, difficulty, marks); the chosen chapters set the range;
+// weak spots (mistake book, cards often forgotten) get the new problems. Every problem says where it came from:
+// a past paper as set (linked to its page), an adapted one, or a new one (linked to the note it tests).
+const PAPER_RE = /复习资料|真题|试卷|期中|期末|测验|exam|paper|midterm|final|quiz|mock|test/i;
+const OWN_RE = /(^|\/)(考试分析 Exam Analysis|模拟卷 Mock Papers|复习计划 Review Plans|学习页面 Study Pages)(\/|$)/;
+const MOCK_CHARS = 150000;
+export function mockDialog() {
+  const courses = [...new Set([...H.S.files.keys()].filter(p => p.includes('/') && !SKIP.test(p)).map(top))].sort();
+  if (!courses.length) { H.toast(t('mock.noCourses')); return; }
+  const last = H.store.get('mockForm', {}) || {};
+  const cur = H.S.current ? top(H.S.current) : '';
+  const startCourse = courses.includes(last.course) ? last.course : courses.includes(cur) ? cur : courses[0];
+  const { body, actions } = open(t('mock.title'), 'ai-mock');
+  body.innerHTML = `<p class="muted">${esc(t('mock.intro'))}</p>
+    <label class="ai-field"><span>${esc(t('mock.course'))}</span><select data-f="course">${courses.map(c => `<option${c === startCourse ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
+    <div class="ai-field"><span>${esc(t('mock.papers'))}</span><div class="ai-folders mock-papers"></div></div>
+    <div class="ai-field"><span>${esc(t('mock.chapters'))}</span><div class="ai-folders mock-chapters"></div></div>
+    <div class="study-row mock-row">
+      <label class="ai-field"><span>${esc(t('mock.count'))}</span><input type="number" data-f="count" min="3" max="30" value="${esc(last.count || 8)}"></label>
+      <label class="ai-field"><span>${esc(t('mock.minutes'))}</span><input type="number" data-f="minutes" min="20" max="300" step="10" value="${esc(last.minutes || 120)}"></label>
+    </div>
+    <div class="ai-field"><span>${esc(t('mock.mix'))}</span><div class="study-chips">${['balanced', 'past', 'new'].map(m => `<label class="study-chip"><input type="radio" name="mix" value="${m}"${(last.mix || 'balanced') === m ? ' checked' : ''}><span>${esc(t('mock.mix_' + m))}</span></label>`).join('')}</div></div>
+    <label class="ai-field"><span>${esc(t('mock.comment'))}</span><textarea data-f="comment" rows="2" placeholder="${esc(t('mock.commentPh'))}"></textarea></label>
+    <p class="ai-range-summary"></p>
+    ${engineSelect('mock')}`;
+  const courseSel = body.querySelector('[data-f=course]');
+  const papersOf = c => [...H.S.files.keys()].filter(p => top(p) === c && !OWN_RE.test(p) && /\.(pdf|md)$/i.test(p) && PAPER_RE.test(p)).sort().reverse();
+  const chaptersOf = c => [...new Set([...H.S.files.keys()].filter(p => top(p) === c && isMd(p) && p.split('/').length > 2 && !OWN_RE.test(p) && !PAPER_RE.test(p.split('/')[1])).map(p => p.split('/')[1]))].sort();
+  const notesOf = (c, chapters) => [...H.S.files.values()].filter(f => isMd(f.path) && top(f.path) === c && !SKIP.test(f.path) && !OWN_RE.test(f.path) && !hidden(f) && !PAPER_RE.test(f.path.split('/').slice(1, -1).join('/'))
+    && (f.path.split('/').length === 2 || chapters.includes(f.path.split('/')[1])));
+  const fill = () => {
+    const c = courseSel.value, papers = papersOf(c), chapters = chaptersOf(c);
+    body.querySelector('.mock-papers').innerHTML = papers.length
+      ? papers.map(p => `<label class="ai-sub"><input type="checkbox" data-paper="${esc(p)}"${!last.papers || last.course !== c || last.papers.includes(p) ? ' checked' : ''}> ${esc(p.slice(c.length + 1))}</label>`).join('')
+      : `<p class="muted">${esc(t('mock.papersNone'))}</p>`;
+    body.querySelector('.mock-chapters').innerHTML = chapters.length
+      ? chapters.map(x => `<label class="ai-sub"><input type="checkbox" data-chapter="${esc(x)}"${!last.chapters || last.course !== c || last.chapters.includes(x) ? ' checked' : ''}> ${esc(x)}</label>`).join('')
+      : `<p class="muted">${esc(t('mock.chaptersAll'))}</p>`;
+    summary();
+  };
+  const chosen = () => ({
+    papers: [...body.querySelectorAll('[data-paper]:checked')].map(x => x.dataset.paper),
+    chapters: chaptersOf(courseSel.value).length ? [...body.querySelectorAll('[data-chapter]:checked')].map(x => x.dataset.chapter) : [],
+  });
+  const summary = () => {
+    const c = courseSel.value, { papers, chapters } = chosen();
+    const n = notesOf(c, chapters).length;
+    body.querySelector('.ai-range-summary').textContent = t('mock.summary', { papers: papers.length, notes: n }) + (papers.length ? '' : ' ' + t('mock.allNew'));
+  };
+  courseSel.addEventListener('change', fill);
+  body.addEventListener('change', e => { if (e.target.matches('[data-paper],[data-chapter]')) summary(); });
+  fill();
+  actions.innerHTML = `<button class="mod-button mod-cta" data-a="go">${esc(t('mock.make'))}</button><button class="mod-button" data-a="cancel">${esc(t('review.close'))}</button>`;
+  actions.querySelector('[data-a=cancel]').onclick = close;
+  actions.querySelector('[data-a=go]').onclick = async () => {
+    const course = courseSel.value, { papers, chapters } = chosen();
+    const count = Math.max(3, Math.min(30, Number(body.querySelector('[data-f=count]').value) || 8));
+    const minutes = Math.max(20, Number(body.querySelector('[data-f=minutes]').value) || 120);
+    const mix = body.querySelector('input[name=mix]:checked')?.value || 'balanced';
+    const comment = body.querySelector('[data-f=comment]').value.trim();
+    const engine = body.querySelector('[data-f=engine]').value;
+    const notes = notesOf(course, chapters);
+    if (!notes.length) { H.toast(t('mock.noNotes')); return; }
+    H.store.set('mockForm', { course, papers, chapters, count, minutes, mix });
+    const split = { balanced: [1, 1, 1], past: [2, 1, 0.5], new: [0.5, 1, 2] }[mix];
+    const tot = split.reduce((a, b) => a + b, 0);
+    const want = papers.length ? split.map(x => Math.round(count * x / tot)) : [0, 0, count];
+    want[2] = count - want[0] - want[1];
+    // Past papers as text (API models); Claude Code reads the files itself.
+    let paperText = '', left = [];
+    if (engine !== AI.CC && papers.length) {
+      const msg = body.querySelector('.muted');
+      for (const [i, f] of papers.entries()) {
+        msg.textContent = t('mock.reading', { i: i + 1, n: papers.length });
+        let txt = '';
+        try {
+          if (/\.pdf$/i.test(f)) { const r = await pdfText('/vault/' + f.split('/').map(encodeURIComponent).join('/')); txt = r.pages.filter(x => x.text).map(x => `--- page ${x.n} ---\n${x.text}`).join('\n'); }
+          else txt = H.getNoteText(f);
+        } catch { txt = ''; }
+        if (!txt.trim()) { left.push(f); continue; }
+        const block = `<past_paper file="${f}">\n${txt}\n</past_paper>\n`;
+        if (paperText.length + block.length > MOCK_CHARS) { left.push(f); continue; }
+        paperText += block;
+      }
+    }
+    const used = papers.filter(f => !left.includes(f));
+    const mem = p => { const m = RV.noteMemory(p); return !m || !m.total ? 'no quiz questions' : m.strength == null ? 'not studied yet' : `memory ${Math.round(m.strength * 100)}%`; };
+    const noteLines = notes.map(f => `- ${base(f.path)} (${f.path.split('/').slice(0, -1).join('/')}) · ${mem(f.path)}` +
+      ((f.headings || []).length ? ' · sections: ' + (f.headings || []).map(h => h.text || h).slice(0, 6).join('; ') : '') +
+      (RV.cardsFor(f.path).length ? ' · questions: ' + RV.cardsFor(f.path).slice(0, 5).map(c => c.q.replace(/\s+/g, ' ').slice(0, 80)).join(' | ') : ''));
+    const noteSet = new Set(notes.map(f => f.path));
+    const weak = RV.items('mistake').filter(m => top(m.src || m.note || '') === course)
+      .map(m => `- mistake: ${(m.question || '').replace(/\s+/g, ' ').slice(0, 120)} — ${m.mistake || ''}`)
+      .concat(notes.filter(f => { const m = RV.noteMemory(f.path); return m?.strength != null && m.strength < 0.6; }).map(f => `- weak note: ${base(f.path)} (${mem(f.path)})`)).slice(0, 30);
+    const content = [`Course: ${course}`, `Time: ${minutes} minutes`, `Problems: ${count} (about ${want[0]} past, ${want[1]} adapted, ${want[2]} new)`,
+      `Student's wishes: ${comment || '(none)'}`, '', 'Notes in range (only these topics may be tested):', ...noteLines, '',
+      'Weak spots:', ...(weak.length ? weak : ['(none recorded)']), '', used.length ? 'Past papers:' : 'No past papers: write only new problems.', paperText].join('\n');
+    const r = await runJob('mock', 'mock', { title: course, content, path: used[0] || notes[0].path, job: { course, papers: used, notes: [...noteSet], count, minutes, mix: want, comment } }, { body, actions });
+    if (!r || !win) return;
+    await saveNote(course + '/模拟卷 Mock Papers', r.title || `${course} ${t('mock.noteSuffix')}`, mockMarkdown(r, { course, used, left, chapters, minutes, notes }));
+  };
+}
+function mockMarkdown(r, { course, used, left, chapters, minutes, notes }) {
+  const d = new Date(), stamp = `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, '0')}.${String(d.getDate()).padStart(2, '0')}`;
+  const paperSet = new Set(used);
+  const short = f => f.split('/').pop().replace(/\.(pdf|md)$/i, '');
+  const link = (f, page, label) => `[[${H.linkNameFor(f)}${page ? '#page=' + page : ''}|${label}]]`;
+  const noteFor = title => notes.find(f => base(f.path) === String(title).replace(/\.md$/i, '').split('/').pop());
+  const total = r.problems.reduce((a, p) => a + (p.marks || 0), 0);
+  const source = p => {
+    const k = t('mock.kind_' + p.kind);
+    if ((p.kind === 'past' || p.kind === 'variant') && paperSet.has(p.sourceFile)) return `${k} · ${link(p.sourceFile, p.sourcePage, (p.sourceLabel || short(p.sourceFile)) + (p.sourcePage ? ` p.${p.sourcePage}` : ''))}`;
+    const n = noteFor(p.sourceFile) || noteFor(p.sourceLabel);
+    if (n) return `${k} · [[${H.linkNameFor(n.path)}|${base(n.path)}]]`;
+    return `${k}${p.sourceLabel ? ' · ' + p.sourceLabel : ''}`;
+  };
+  const quote = txt => String(txt).trim().split('\n').map(l => '> ' + l).join('\n');
+  const problems = r.problems.map((p, i) => `### ${p.no || i + 1}. ${t('mock.marks', { n: p.marks || 0 })}${p.topic ? ' · ' + p.topic : ''}\n\n${p.question.trim()}\n\n> ${t('mock.source')}: ${source(p)}`).join('\n\n');
+  const answers = r.problems.map((p, i) => `> [!success]- ${t('mock.answerN', { no: p.no || i + 1 })}\n${quote(p.answer || '—')}`).join('\n\n');
+  const topics = r.topics.length ? `## ${t('mock.topicsH')}\n\n| ${t('mock.topicCol')} | ${t('mock.pastCol')} | ${t('mock.noteCol')} |\n| --- | --- | --- |\n${r.topics.map(x => `| ${x.topic.replace(/\|/g, '/')} | ${x.pastCount} | ${x.note.replace(/\|/g, '/')} |`).join('\n')}\n\n` : '';
+  const refs = [`> [!info] ${t('mock.refTitle')}`,
+    `> ${t('mock.refPapers')}: ${used.length ? used.map(f => link(f, 0, short(f))).join(' · ') : t('mock.refNone')}`,
+    ...(left.length ? [`> ${t('mock.refLeft')}: ${left.map(f => link(f, 0, short(f))).join(' · ')}`] : []),
+    `> ${t('mock.refRange')}: ${chapters.length ? chapters.join(' · ') : course} (${notes.length})`,
+    `> ${t('mock.refTime', { minutes, marks: total })}`];
+  const md = ['---', 'tags: [Mock paper]', `created: ${stamp}`, '---', '',
+    ...refs, `> ${t('mock.refMix', { past: r.problems.filter(p => p.kind === 'past').length, variant: r.problems.filter(p => p.kind === 'variant').length, new: r.problems.filter(p => p.kind === 'new').length })}`, '',
+    topics + `## ${t('mock.problemsH')}`, '', problems, '', `## ${t('mock.answersH')}`, '', answers, '',
+    `## ${t('mist.fromPaper')}`, '', '```graphite-problems',
+    JSON.stringify({ src: '', problems: r.problems.map((p, i) => ({ no: p.no || String(i + 1), page: paperSet.has(p.sourceFile) ? p.sourcePage : 0, topic: p.topic, question: p.question, myAnswer: '', mistake: '', ...(paperSet.has(p.sourceFile) ? { src: p.sourceFile } : {}) })) }, null, 1),
+    '```', ''];
+  return md.join('\n');
+}
+
 const BATCH_CHARS = 60000;
 async function pdfPageCount(path) {
   const lib = await import('/pdfview.js');

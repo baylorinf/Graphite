@@ -584,6 +584,7 @@ export function renderReviewPage(el) {
       <button class="mod-button mod-cta" data-start ${todayN ? '' : 'disabled'}>${escapeHtml(todayN ? t('review.startN', { n: todayN }) : t('review.nothing'))}</button>
       <button class="mod-button" data-cmd-run="revision-plan">${escapeHtml(t('cmd.revision-plan'))}</button>
       <button class="mod-button" data-cmd-run="exam-analysis">${escapeHtml(t('cmd.exam-analysis'))}</button>
+      <button class="mod-button" data-cmd-run="mock-paper">${escapeHtml(t('cmd.mock-paper'))}</button>
     </div>
     <div class="review-stats">
       ${[['dueToday', s.due], ['newCards', s.newToday], ['reviewedToday', s.reviewedToday], ['streak', s.streak], ['total', s.total], ['mature', s.mature]]
