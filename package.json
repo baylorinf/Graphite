@@ -1,7 +1,7 @@
 {
   "name": "myobsidian",
   "productName": "Graphite",
-  "version": "1.1.30",
+  "version": "1.1.31",
   "description": "Graphite: a local Markdown knowledge base for studying",
   "main": "electron/main.js",
   "scripts": {
@@ -87,6 +87,10 @@
     "updateFolder": "D:\\MyObsidian\\dist"
   },
   "graphite": {
-    "updateRepo": ""
+    "updateRepo": "baylorinf/Graphite"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/baylorinf/Graphite.git"
   }
 }
