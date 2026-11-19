@@ -19,6 +19,7 @@ const LIBS = {
   '/lib/marked.js': path.join(NM, 'marked', 'lib', 'marked.esm.js'),
   '/lib/moment.js': path.join(NM, 'moment', 'min', 'moment-with-locales.min.js'),
   '/lib/js-yaml.js': path.join(NM, 'js-yaml', 'dist', 'js-yaml.mjs'),
+  '/lib/mammoth.js': path.join(NM, 'mammoth', 'mammoth.browser.min.js'), // shows .docx files as pages
 };
 const LUCIDE = path.join(NM, 'lucide-static', 'icons');
 const COMMUNITY_LIST = 'https://raw.githubusercontent.com/obsidianmd/obsidian-releases/master/community-plugins.json';
@@ -286,6 +287,65 @@ async function aiTask(req) {
   return compatTask(provider, key, body);
 }
 
+/* ---------- Word and PowerPoint files as PDF ----------
+   .doc, .docx, .ppt and .pptx files are turned into a PDF by Word or PowerPoint (if installed), so they show in
+   the PDF viewer looking exactly like the original. The PDF is cached in .obsidian/graphite/pdf-copies/ (hidden
+   from the file list) and made again only when the file changes. "save" also puts a copy next to the original. */
+const OFFICE = /\.(docx?|pptx?)$/i;
+const PDF_CACHE = '.obsidian/graphite/pdf-copies';
+// PowerPoint runs as one shared copy: if the user already has presentations open, it is left running.
+const OFFICE_PS = `$ErrorActionPreference = 'Stop'
+$src = $env:GRAPHITE_SRC; $out = $env:GRAPHITE_OUT
+if ($src -match '\\.pptx?$') {
+  $pp = New-Object -ComObject PowerPoint.Application
+  $wasOpen = $pp.Presentations.Count -gt 0
+  try { $p = $pp.Presentations.Open($src, -1, 0, 0); $p.SaveAs($out, 32); $p.Close() }
+  finally { if (-not $wasOpen) { $pp.Quit() }; [Runtime.InteropServices.Marshal]::ReleaseComObject($pp) | Out-Null }
+} else {
+  $wd = New-Object -ComObject Word.Application; $wd.Visible = $false; $wd.DisplayAlerts = 0
+  try { $d = $wd.Documents.Open($src, $false, $true); $d.ExportAsFixedFormat($out, 17); $d.Close(0) }
+  finally { $wd.Quit(); [Runtime.InteropServices.Marshal]::ReleaseComObject($wd) | Out-Null }
+}`;
+let officeQueue = Promise.resolve();
+function officeToPdf(srcAbs, outAbs) {
+  const job = officeQueue.then(() => new Promise((resolve, reject) => {
+    const { spawn } = require('child_process');
+    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', OFFICE_PS],
+      { env: { ...process.env, GRAPHITE_SRC: srcAbs, GRAPHITE_OUT: outAbs }, windowsHide: true });
+    let err = '';
+    ps.stderr.on('data', d => { err += d; });
+    const timer = setTimeout(() => { ps.kill(); reject(new HttpError(504, 'Office took too long to make the PDF')); }, 180000);
+    ps.on('error', e => { clearTimeout(timer); reject(new HttpError(501, 'Could not start PowerShell: ' + e.message)); });
+    ps.on('close', code => {
+      clearTimeout(timer);
+      if (code === 0 && fs.existsSync(outAbs)) return resolve();
+      const noOffice = /80040154|Class not registered|ComObject/i.test(err);
+      reject(new HttpError(noOffice ? 501 : 500, noOffice
+        ? 'Microsoft Office (Word or PowerPoint) is needed to show this file here. Use “Open with default app”.'
+        : 'Office could not convert this file: ' + (err.split(/\r?\n/).find(l => l.trim()) || 'unknown error').trim()));
+    });
+  }));
+  officeQueue = job.catch(() => {});
+  return job;
+}
+async function officePdf(rel, save) {
+  if (process.platform !== 'win32') throw new HttpError(501, 'Showing Word and PowerPoint files needs Windows with Microsoft Office.');
+  if (!OFFICE.test(rel)) throw new HttpError(400, 'Not a Word or PowerPoint file');
+  const src = inVault(rel);
+  const st = await fsp.stat(src).catch(() => null);
+  if (!st) throw new HttpError(404, 'Not found');
+  const cacheRel = `${PDF_CACHE}/${hash(rel + '|' + st.size + '|' + st.mtimeMs)}.pdf`;
+  const cacheAbs = inVault(cacheRel);
+  if (!(await exists(cacheAbs))) {
+    await fsp.mkdir(path.dirname(cacheAbs), { recursive: true });
+    await officeToPdf(src, cacheAbs);
+  }
+  if (!save) return { pdf: cacheRel };
+  const dest = await uniquePath(src.replace(OFFICE, '.pdf'));
+  await fsp.copyFile(cacheAbs, dest);
+  return { pdf: cacheRel, saved: toRel(dest) };
+}
+
 function inVault(rel) {
   if (typeof rel !== 'string' || !rel.trim()) throw new HttpError(400, 'Missing path');
   const abs = path.resolve(VAULT, rel.replace(/^[/\\]+/, ''));
@@ -470,6 +530,7 @@ async function api(req, res, u) {
   // Which cloud service (if any) the vault lives in, and which ones exist on this PC.
   if (route === 'sync-info' && m === 'GET') return send(res, 200, await syncInfo());
   if (route === 'ai' && m === 'POST') return send(res, 200, await aiTask(req));
+  if (route === 'office-pdf' && m === 'POST') return send(res, 200, await officePdf(q.get('path'), q.get('save') === '1'));
 
   // Open a vault folder in the system file manager.
   if (route === 'reveal' && m === 'POST') {

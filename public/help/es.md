@@ -137,6 +137,8 @@ Graphite te ayuda a recordar lo que escribes. Tus notas se convierten en pregunt
 
 **Páginas de estudio:** las páginas de repaso interactivas están en la carpeta `学习页面 Study Pages` de cada curso. Haz clic en una en la lista de archivos (o en un enlace) para abrirla en una pestaña 🎓.
 
+**Word y PowerPoint:** los archivos `.docx` se abren como una página legible (**Diseño exacto** los muestra tal como Word los imprime). Los `.doc`, `.ppt` y `.pptx` se abren como un PDF creado por tu Word o PowerPoint, con números de página, zoom, búsqueda y «Enlace a una página…»; la primera vez tarda unos segundos y después es instantáneo. **Guardar copia en PDF** deja un PDF junto al original.
+
 **Repaso diario:** el botón del cerebro en la cinta izquierda (`Alt+R`) muestra cuántas preguntas tocan. Valora cada respuesta con **Otra vez**, **Difícil**, **Bien** o **Fácil**. La aplicación programa el siguiente repaso justo antes de que lo olvides (repetición espaciada).
 
 **Notas relacionadas:** el panel derecho sugiere notas de temas parecidos que aún no están enlazadas. Pulsa **Enlazar** para unirlas.

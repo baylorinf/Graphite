@@ -137,6 +137,8 @@ Graphite helps you remember what you write. Your notes turn into questions autom
 
 **Study pages:** the interactive review pages are in each course's `学习页面 Study Pages` folder. Click one in the file list (or a link to it) to open it as a 🎓 tab.
 
+**Word and PowerPoint:** `.docx` files open as a readable page (press **Exact layout** to see them exactly as Word prints them). `.doc`, `.ppt` and `.pptx` files open as a PDF made by your installed Word or PowerPoint, with page numbers, zoom, search and "Link to a page…"; the first time takes a few seconds, after that they open instantly. **Save PDF copy** puts a PDF next to the original.
+
 **Daily review:** the brain button in the left ribbon (`Alt+R`) shows how many questions are due. Rate each answer **Again**, **Hard**, **Good** or **Easy**. The app then schedules the next review just before you would forget (spaced repetition).
 
 **Related notes:** the right sidebar suggests notes on similar topics that aren’t linked yet. Click **Link** to connect them.

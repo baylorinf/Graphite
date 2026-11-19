@@ -1902,6 +1902,8 @@ function applyRibbonExtras() {
 /* ---------- Attachments: shown inside the app instead of another program ---------- */
 const FILE_KIND = [
   ['pdf', /\.pdf$/i],
+  ['docx', /\.docx$/i],            // shown as a page (mammoth); "Exact layout" makes a PDF with Word
+  ['office', /\.(doc|ppt|pptx)$/i], // shown as a PDF made by Word / PowerPoint
   ['image', IMG_EXT],
   ['video', /\.(mp4|webm|ogv|mov|m4v)$/i],
   ['audio', /\.(mp3|wav|ogg|oga|m4a|flac|aac|opus)$/i],
@@ -1939,14 +1941,18 @@ async function showFile(path, { push = true, at = '' } = {}) {
       <span class="fv-name">${esc(fileName(path))}</span>
       <span class="fv-meta">${esc(fmtSize(f.size))}</span>
       <span class="spacer"></span>
-      ${kind === 'pdf' ? pdfControls() : ''}
-      ${kind === 'pdf' ? `<button class="fv-btn" data-fv="link-page" title="${esc(t('file.linkPageTitle'))}">${esc(t('file.linkPage'))}</button>` : ''}
+      ${kind === 'pdf' || kind === 'office' ? pdfControls() : ''}
+      ${kind === 'docx' ? `<button class="fv-btn" data-fv="as-pdf" title="${esc(t('office.exactTitle'))}">${esc(t('office.exact'))}</button>` : ''}
+      ${kind === 'docx' || kind === 'office' ? `<button class="fv-btn" data-fv="save-pdf" title="${esc(t('office.savePdfTitle'))}">${esc(t('office.savePdf'))}</button>` : ''}
+      ${kind === 'pdf' || kind === 'office' ? `<button class="fv-btn" data-fv="link-page" title="${esc(t('file.linkPageTitle'))}">${esc(t('file.linkPage'))}</button>` : ''}
       ${kind === 'video' || kind === 'audio' ? `<button class="fv-btn" data-fv="link-time" title="${esc(t('file.linkTimeTitle'))}">${esc(t('file.linkTime'))}</button>` : ''}
       <button class="fv-btn" data-fv="external" title="${esc(t('file.openExternalTitle'))}">${esc(t('file.openExternal'))}</button>
     </div>
     <div class="fv-body fv-${kind}"></div>`;
   const body = box.querySelector('.fv-body');
   if (kind === 'pdf') openPdf(box, body, path, src, page);
+  else if (kind === 'office') showOfficeAsPdf(box, body, path, page);
+  else if (kind === 'docx') showDocx(box, body, path, src);
   else if (kind === 'image') body.innerHTML = `<img class="fv-img" src="${src}" alt="${esc(fileName(path))}">`;
   else if (kind === 'video') body.innerHTML = `<video class="fv-media" src="${src}" controls preload="metadata"></video>`;
   else if (kind === 'audio') body.innerHTML = `<div class="fv-audio"><div class="fv-audio-name">${esc(fileName(path))}</div><audio src="${src}" controls preload="metadata"></audio></div>`;
@@ -1976,10 +1982,64 @@ async function showFile(path, { push = true, at = '' } = {}) {
     copyLink(`[[${name}#t=${s}|${short} ${fmtTime(s)}]]`, t('file.linkCopied'));
   });
   box.querySelector('[data-fv="external"]').onclick = () => window.open(src, '_blank');
+  box.querySelector('[data-fv="as-pdf"]')?.addEventListener('click', e => {
+    e.currentTarget.remove();
+    const bar = box.querySelector('.fv-bar'), ext = bar.querySelector('[data-fv="save-pdf"]');
+    bar.insertAdjacentHTML('afterbegin', ''); ext?.insertAdjacentHTML('beforebegin', pdfControls());
+    body.className = 'fv-body fv-office';
+    showOfficeAsPdf(box, body, path, 0);
+  });
+  box.querySelector('[data-fv="save-pdf"]')?.addEventListener('click', async e => {
+    const b = e.currentTarget; b.disabled = true;
+    toast(t('office.making', { app: /\.pptx?$/i.test(path) ? 'PowerPoint' : 'Word' }));
+    try { const r = await api('POST', 'office-pdf', { path, save: '1' }); toast(t('office.saved', { path: r.saved })); }
+    catch (err) { toast(err.message); }
+    b.disabled = false;
+  });
   for (const el of $$('.tree-item.file')) el.classList.toggle('active', el.dataset.path === path);
   document.title = `${fileName(path)} - Graphite`;
   updateTopbar();
   syncActiveTab();
+}
+/* ---------- Word and PowerPoint ----------
+   .docx: converted to a page with mammoth (headings, lists, tables, images); no Office needed.
+   .doc / .ppt / .pptx (and .docx on request): Word or PowerPoint makes a PDF (cached, see server.js), shown in
+   the PDF viewer below, so it looks exactly like the original. */
+let mammothLoad = null;
+const loadMammoth = () => (mammothLoad ||= new Promise((res, rej) => {
+  if (window.mammoth) return res(window.mammoth);
+  const sc = Object.assign(document.createElement('script'), { src: '/lib/mammoth.js', onload: () => res(window.mammoth), onerror: () => rej(new Error('mammoth')) });
+  document.head.append(sc);
+}));
+async function showDocx(box, body, path, src) {
+  body.innerHTML = `<div class="fv-wait"><span class="spinner"></span>${esc(t('office.reading'))}</div>`;
+  try {
+    const [m, buf] = await Promise.all([loadMammoth(), fetch(src).then(r => { if (!r.ok) throw new Error(r.statusText); return r.arrayBuffer(); })]);
+    const r = await m.convertToHtml({ arrayBuffer: buf });
+    if (S.filePath !== path) return;
+    body.innerHTML = '<div class="fv-docx scroll"><div class="col markdown"></div></div>';
+    const col = body.querySelector('.col');
+    col.innerHTML = r.value || `<p class="muted">${esc(t('office.empty'))}</p>`;
+    for (const a of col.querySelectorAll('a[href]')) { a.target = '_blank'; a.rel = 'noopener'; }
+  } catch (e) {
+    if (S.filePath !== path) return;
+    // Couldn't read it as a page (e.g. an unusual file): try Word instead.
+    body.className = 'fv-body fv-office';
+    showOfficeAsPdf(box, body, path, 0);
+  }
+}
+async function showOfficeAsPdf(box, body, path, page) {
+  const appName = /\.pptx?$/i.test(path) ? 'PowerPoint' : 'Word';
+  body.innerHTML = `<div class="fv-wait"><span class="spinner"></span>${esc(t('office.making', { app: appName }))}</div>`;
+  try {
+    const r = await api('POST', 'office-pdf', { path });
+    if (S.filePath !== path) return;
+    body.innerHTML = '';
+    openPdf(box, body, path, '/vault/' + encPath(r.pdf), page);
+  } catch (e) {
+    if (S.filePath !== path) return;
+    body.innerHTML = `<div class="fv-none"><p>${esc(e.message)}</p></div>`;
+  }
 }
 /* ---------- PDFs (PDF.js): page box, zoom, fit width, find; reopens at the page you were on ---------- */
 const PDF_POS_MAX = 300;

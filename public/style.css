@@ -769,3 +769,18 @@ details.ai-provider[open] > summary::before { transform: rotate(90deg); }
 
 /* Update button while the new version downloads: the button fills up */
 #update-btn.downloading { background: linear-gradient(to top, var(--accent-bg) var(--p, 0%), transparent var(--p, 0%)); }
+
+/* Word and PowerPoint files: shown as a PDF made by Office, or (.docx) as a page */
+.fv-body.fv-office { overflow: hidden; background: var(--bg-3); }
+.fv-body.fv-docx { overflow: hidden; }
+.fv-docx { height: 100%; overflow: auto; }
+.fv-docx .col { padding-top: 36px; }
+.fv-docx table { border-collapse: collapse; margin: 1em 0; }
+.fv-docx td, .fv-docx th { border: 1px solid var(--border); padding: 4px 8px; vertical-align: top; }
+.fv-docx img { max-width: 100%; height: auto; }
+.fv-wait { display: flex; align-items: center; justify-content: center; gap: 10px; height: 100%; color: var(--text-muted); }
+/* File toolbar: keep controls from overlapping when space is short; extra buttons wrap to a second line */
+.fv-bar { flex-wrap: wrap; row-gap: 6px; overflow: visible; }
+.fv-bar .pdf-ctl { flex: none; }
+.fv-bar .fv-btn { flex: none; }
+.fv-bar .fv-name { flex: 0 1 auto; max-width: 30%; }

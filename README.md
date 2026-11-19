@@ -37,6 +37,7 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 - **Maths:** `$inline$` and `$$display$$` LaTeX rendered offline with KaTeX, including `\ce{…}` chemistry.
 - **Obsidian Markdown:** frontmatter properties, `#tags`, `==highlights==`, `%%comments%%`, callouts and task lists.
 - **Files in tabs:** notes, PDFs (with search, zoom and links to a page), images, audio and video open as tabs.
+- **Word and PowerPoint:** `.docx` opens as a readable page; `.doc`, `.ppt` and `.pptx` (and `.docx` in exact layout) open as a PDF made by your installed Office, cached so it opens instantly next time.
 - **Built-in help (F1)** in 7 languages, with a Markdown cheatsheet and a LaTeX cheatsheet of about 160 commands.
 
 ### Connect

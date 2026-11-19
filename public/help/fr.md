@@ -137,6 +137,8 @@ Graphite vous aide à retenir ce que vous écrivez. Vos notes deviennent automat
 
 **Pages d’étude :** les pages de révision interactives sont dans le dossier `学习页面 Study Pages` de chaque cours. Cliquez sur l’une d’elles dans la liste des fichiers (ou sur un lien) pour l’ouvrir dans un onglet 🎓.
 
+**Word et PowerPoint :** les fichiers `.docx` s’ouvrent comme une page lisible (**Mise en page exacte** les montre comme Word les imprime). Les fichiers `.doc`, `.ppt` et `.pptx` s’ouvrent en PDF créé par votre Word ou PowerPoint, avec numéros de page, zoom, recherche et « Lien vers une page… » ; la première fois prend quelques secondes, ensuite c’est instantané. **Enregistrer une copie PDF** place un PDF à côté de l’original.
+
 **Révision quotidienne :** le bouton cerveau du ruban de gauche (`Alt+R`) indique le nombre de questions à revoir. Notez chaque réponse **À revoir**, **Difficile**, **Bien** ou **Facile**. L’application programme alors la révision suivante juste avant l’oubli (répétition espacée).
 
 **Notes liées par le sujet :** le panneau de droite suggère des notes sur des sujets proches qui ne sont pas encore liées. Cliquez sur **Lier** pour les relier.
