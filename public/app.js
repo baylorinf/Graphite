@@ -2060,7 +2060,7 @@ addEventListener('keydown', e => {
 }, true);
 
 /* ---------- Selection bar in the file view (PDF text and text files) ----------
-   Add to note, Ask Claude, Not familiar / Interesting (Claude Capture), Copy. */
+   Add to note, Ask Graphie, Not familiar / Interesting (Claude Capture), Copy. */
 const selSvg = n => `<svg class="i" viewBox="0 0 24 24">${SEL_ICON[n]}</svg>`;
 let selBar = null, selCtx = null;
 function hideSelBar() { if (selBar) selBar.hidden = true; }

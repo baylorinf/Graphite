@@ -1,5 +1,5 @@
 // PDF viewer built on PDF.js, so PDFs show inside the app with text you can select (for the selection bar:
-// Add to note, Ask Claude, …), fit the pane width as it changes size, zoom, and reopen where you left off.
+// Add to note, Ask Graphie, …), fit the pane width as it changes size, zoom, and reopen where you left off.
 // PDF.js is loaded the first time a PDF is opened.
 
 let lib = null;

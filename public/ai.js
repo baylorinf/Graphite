@@ -14,7 +14,7 @@ const listeners = new Set();
 export function initAI(host) {
   H = host;
   // For plugins (the chat panel): window.myobsidianAI
-  window.myobsidianAI = { FEATURES, options, choice, setChoice, label, request, ccListening, onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  window.myobsidianAI = { FEATURES, options, choice, setChoice, label, parts, request, ccListening, openSettings: () => H.openSettings('ai'), onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
 }
 
 export const FEATURES = ['check', 'quiz', 'chat', 'plan', 'exam', 'format'];
@@ -75,6 +75,24 @@ function pickModel(p, list) {
   const ok = list.filter(m => !SKIP.test(m));
   const pref = ok.filter(m => PROVIDERS[p].prefer.test(m));
   return (pref.length ? pref : ok).sort().pop() || list[0] || '';
+}
+
+// Short, readable names for menus: { name: 'DeepSeek', model: 'Flash' }, { name: 'Claude', model: 'Opus 5.5' }.
+const SHORT = { anthropic: 'Claude', openai: 'OpenAI', gemini: 'Gemini', deepseek: 'DeepSeek', qwen: 'Qwen', kimi: 'Kimi', glm: 'GLM', custom: 'Custom' };
+function prettyModel(p, m) {
+  if (!m) return '';
+  let s = m.replace(/^models\//, '');
+  if (p === 'anthropic') s = s.replace(/^claude-/, '').replace(/-(\d+)-(\d+)$/, ' $1.$2');
+  if (p === 'deepseek') s = s.replace(/^deepseek-/, '');
+  if (p === 'gemini') s = s.replace(/^gemini-/, '');
+  if (p === 'kimi') s = s.replace(/^kimi-/, '');
+  s = s.replace(/[-_]+/g, ' ').replace(/\b([a-z])/g, c => c.toUpperCase()).replace(/\bGpt\b/g, 'GPT').replace(/\bGlm\b/g, 'GLM').replace(/\bQwen(\d)/g, 'Qwen $1');
+  return s.trim();
+}
+export function parts(v) {
+  if (v === CC) return { name: 'Claude Code', model: '' };
+  if (!PROVIDERS[v]) return { name: v, model: '' };
+  return { name: SHORT[v], model: prettyModel(v, modelOf(v)) };
 }
 
 export function label(v) {

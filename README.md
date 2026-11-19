@@ -66,7 +66,7 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 | **Revision plan** | From an exam date and range, a day-by-day checklist that puts your weakest and due topics first. |
 | **Exam analysis** | From an exam paper or a graded exam: every problem, its topic and your matching note, what went wrong, and a plan. |
 | **Tidy format** (`Ctrl+Shift+Y`) | Makes a note follow the format of the other notes in its folder, with a before/after preview. |
-| **Chat panel** | Ask about the note or the text you're reading; answers render Markdown and maths. |
+| **Graphie** (chat panel) | Ask Graphie, the study assistant, about the note or the text you're reading; pick who answers from the menu next to its name. |
 
 ![A revision plan in light mode](docs/screenshot-plan.png)
 

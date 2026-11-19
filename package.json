@@ -1,8 +1,8 @@
 {
   "name": "myobsidian",
   "productName": "Graphite",
-  "version": "1.1.31",
-  "description": "Graphite: a local Markdown knowledge base for studying",
+  "version": "1.1.32",
+  "description": "Graphite: a local-first notebook for studying",
   "main": "electron/main.js",
   "scripts": {
     "start": "node server.js",
