@@ -55,6 +55,7 @@
       "code-assistant.js",
       "code-projects.js",
       "new-file.js",
+      "note-links.js",
       "canvas-*.js",
       "agent.js",
       "extensions/**",

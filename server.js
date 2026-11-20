@@ -723,6 +723,11 @@ async function api(req, res, u) {
   if (route === 'list' && m === 'GET') return send(res, 200, await walk(VAULT, { folders: [], files: [] }, false));
 
   if (route === 'source') return sourceFile(req, res, q.get('path'));
+  if (route === 'note-links' && m === 'POST') {
+    let selection;
+    try { selection = JSON.parse(await readBody(req, 1024 * 1024)); } catch (e) { if (e.status) throw e; throw new HttpError(400, 'Invalid JSON'); }
+    return send(res, 200, await connectNotes(selection));
+  }
 
   if (route === 'file') {
     const abs = inVault(q.get('path'));
@@ -1000,6 +1005,8 @@ const frameworks = require('./frameworks')({ HttpError });
 // Study settings: one file every AI job reads its folders, courses and languages from (profile.js).
 const PROFILE = require('./profile');
 const study = PROFILE({ atomicWrite, withFileLock, vault: () => VAULT, claudeDir: () => CLAUDE_DIR() });
+const connectNotes = require('./note-links')({ vault: () => VAULT, study, atomicWrite, withFileLock,
+  listNotes: async () => (await walk(VAULT, {folders: [], files: []}, false)).files.filter(f => isMd(f.path)).map(f => f.path) });
 const agent = require('./agent')({
   HttpError, hash, inVault, toRel, exists, uniquePath, atomicWrite, withFileLock, officeToPdf, readBody, LANG_NAMES, COMPAT, ANTHROPIC_DEFAULT,
   parseJsonReply, compatCaller, anthropicClient, anthropicError, vault: () => VAULT, frameworks, study, PROFILE,
@@ -1096,7 +1103,7 @@ const server = http.createServer(async (req, res) => {
     if (!abs.startsWith(PUBLIC + path.sep)) throw new HttpError(404, 'Not found');
     return serveFile(res, abs);
   } catch (e) {
-    if (!res.headersSent) send(res, e.status || 500, { error: e.message || String(e), ...(e.code ? { code: e.code } : {}), ...(e.openUrl ? { openUrl:e.openUrl } : {}), ...(e.framework ? { framework: e.framework, detail: e.detail || '' } : {}) });
+    if (!res.headersSent) send(res, e.status || 500, { error: e.message || String(e), ...(e.code ? { code: e.code } : {}), ...(Array.isArray(e.paths) ? {paths:e.paths} : {}), ...(e.openUrl ? { openUrl:e.openUrl } : {}), ...(e.framework ? { framework: e.framework, detail: e.detail || '' } : {}) });
     if (!e.status) console.error(e);
   }
 });

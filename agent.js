@@ -33,7 +33,7 @@ module.exports = function createAgent(h) {
   const INBOX = 'Claude Inbox.md'; // file name kept from earlier versions, so existing captures stay where they are
   // The study record folder and the read-only folders come from Study settings (set per job in handle()).
   let BRAIN = 'Claude Brain';
-  const BUILTIN_NO_WRITE = ['My Brain', '我的大脑知识库'];
+  const BUILTIN_NO_WRITE = require('./profile').BUILTIN_READ_ONLY;
   let readOnly = BUILTIN_NO_WRITE.slice();
   const NO_WRITE = { test: rel => /^\.|\/\./.test(rel) || readOnly.some(f => { const a = low(rel), b = low(f.replace(/\/+$/, '')); return a === b || a.startsWith(b + '/'); }) };
   const MAX_BYTES = 300 * 1024 * 1024;

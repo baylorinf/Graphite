@@ -246,3 +246,4 @@ module.exports.profileFor = profileFor;
 module.exports.promptBlock = promptBlock;
 module.exports.outputLanguage = outputLanguage;
 module.exports.TASK_FIELDS = TASK_FIELDS;
+module.exports.BUILTIN_READ_ONLY = Object.freeze(['My Brain', '我的大脑知识库']);
