@@ -20,6 +20,7 @@ import { initSettings, openSettings, closeSettings, settingsOpen, refreshSetting
 import { mountPdf } from '/pdfview.js';
 import { createReferencePane } from '/reference.js';
 import { createCanvasView } from '/canvas-view.js';
+import { createCodeWorkbench, workbenchAvailable, newCodeFileDialog } from '/code-workbench.js';
 import { createCodeEditor, sourceFormat } from '/code-editor.js';
 // The bundled plugins write English and ask the app for the text in your language.
 window.graphiteT = (s, v) => fillVars((PLUG[getLang()] || {})[s] ?? s, v);
@@ -1636,6 +1637,15 @@ const codeEditor = createCodeEditor({
 });
 async function newCodeFile() {
   const folder = S.selectedFolder ?? (S.view==='file' && S.filePath ? dirName(S.filePath) : currentFolder());
+  // In the desktop app: choose any folder of this vault, or a project folder elsewhere on this computer; the new
+  // file opens in the code workbench (folder tree, run and debug). The browser version keeps the simple prompt.
+  if (workbenchAvailable()) {
+    const choice = await newCodeFileDialog({ wb: codeWorkbench, vaultFolders: () => [...S.folders].filter(f => !/^\./.test(f)).sort(), startFolder: folder });
+    if (!choice) return;
+    await openCustomTab('code-workbench', 'workbench');
+    if (await codeWorkbench.createFile(choice) && choice.where === 'vault') await sync().catch(() => {});
+    return;
+  }
   const name=await askText(t('code.name'),'main.cpp',folder);
   if (!name) return;
   if (!sourceFormat(name) || name !== safeName(name) || /[\\/]/.test(name)) { toast(t('code.badName')); return; }
@@ -1650,6 +1660,7 @@ async function newCodeFile() {
 const COMMANDS = [
   { id: 'sjtu-canvas', name: 'SJTU Canvas courses, files and deadlines', run: () => openCustomTab('sjtu-canvas', 'courses', {here:true}) },
   { id:'new-code-file', name:'Create a code file', run:newCodeFile },
+  { id:'code-workbench', name:'Open the code workbench (project folder, run and debug C++)', available: () => workbenchAvailable(), run: () => openCustomTab('code-workbench', 'workbench') },
   { id: 'study-reference', name: 'Study PDF beside a note', available: () => (S.view === 'note' && !!S.current) || (S.view === 'file' && /\.pdf$/i.test(S.filePath || '')), run: openStudyReference },
   { id: 'new-note', name: 'Create new note', kbd: 'Alt+N', run: () => newNote() },
   { id: 'new-folder', name: 'Create new folder', run: () => newFolder() },
@@ -1764,6 +1775,7 @@ function changeLanguage(code) {
   window.myobsidianDesktop?.setLanguage(code);
   refreshSettings();
   canvasWorkspace.relabel();
+  codeWorkbench.relabel();
   renderTabs();
   if (activeTab()?.kind === 'empty') renderStartPage();
   if (S.view === 'graph') { readGraphColors(); drawGraph(); }
@@ -2737,6 +2749,12 @@ const canvasWorkspace = createCanvasView($('#canvas-view'), {
   openFile: async path => { await sync(); await openInTab(path, {where:'new', keep:true}); },
 });
 TABS.providers.set(canvasWorkspace.id, canvasWorkspace);
+// The code workbench: a project folder (this vault or any folder), its tree, several files, C++ build/run/debug.
+const codeWorkbench = createCodeWorkbench($('#code-workbench'), {
+  toast, askText: (ph, v, hint) => askText(ph, v, hint), vaultRoot: () => S.vault || '',
+  vaultFolders: () => [...S.folders].sort(), onShowTab: () => openCustomTab('code-workbench', 'workbench'),
+});
+TABS.providers.set(codeWorkbench.id, codeWorkbench);
 const tabById = id => TABS.list.find(x => x.id === id) || null;
 const activeTab = () => tabById(TABS.active);
 const newTabObj = (o = {}) => ({ id: 't' + (++TABS.seq), kind: 'empty', path: null, preview: false, history: [], hIdx: -1, ...o });
@@ -3337,6 +3355,7 @@ window.__moFlush = async () => {
   await retryDrafts().catch(() => {});
   const unsaved = [...drafts].map(([path, d]) => ({ path, text: d.text }));
   unsaved.push(...await codeEditor.flush());
+  codeWorkbench.flush(); // project files: their unsaved text is kept as drafts and comes back next time
   return { ok: !unsaved.length, unsaved };
 };
 // Ask once more on startup for drafts left from last time.

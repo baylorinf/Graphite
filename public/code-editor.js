@@ -16,7 +16,7 @@ function script(file) {
   }));
   return assets.get(file);
 }
-async function editorFor(format) {
+export async function editorFor(format) {
   await script('lib/codemirror.js');
   if (format.module === 'rust') await script('addon/mode/simple.js');
   if (format.module === 'jsx') await Promise.all(['xml','javascript'].map(m => script('mode/' + m + '/' + m + '.js')));
