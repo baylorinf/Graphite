@@ -55,8 +55,6 @@ function saveConfig(strict = false) {
 }
 const tr = () => strings(cfg.lang || pickLang(app.getLocale()));
 
-function isEmptyDir(p) { try { return fs.readdirSync(p).filter(n => !n.startsWith('.')).length === 0; } catch { return true; } }
-
 /* ---------- Updates ----------
    Two places are checked for a newer version:
    - GitHub: the latest release of the repo in package.json → graphite.updateRepo ("owner/name"). Its asset
@@ -191,8 +189,10 @@ async function askForVault(parent) {
     });
     if (p.canceled || !p.filePath) return askForVault(parent);
     fs.mkdirSync(p.filePath, { recursive: true });
-    // Fill a brand-new vault with the starter notes and the example plugin.
-    if (isEmptyDir(p.filePath) && fs.existsSync(SAMPLE_VAULT)) fs.cpSync(SAMPLE_VAULT, p.filePath, { recursive: true });
+    // A directory containing only .obsidian already belongs to an existing vault.
+    if (fs.readdirSync(p.filePath).length === 0 && fs.existsSync(SAMPLE_VAULT)) {
+      fs.cpSync(SAMPLE_VAULT, p.filePath, { recursive: true, force: false });
+    }
     return p.filePath;
   }
   return null;
