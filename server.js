@@ -662,6 +662,37 @@ async function moveToTrash(abs) {
   });
 }
 
+async function savePluginRelease(dir, files) {
+  // Downloads have all finished. Update just the release files, leaving data.json and
+  // any other user files in place. The manifest is written last.
+  await withFileLock(dir,async()=>{
+    const created=await fsp.mkdir(dir,{recursive:true});
+    const old = new Map();
+    async function read(file) {
+      try {return await fsp.readFile(file);}
+      catch (e) {if (e.code === 'ENOENT') return null; throw e;}
+    }
+    for (const name of Object.keys(files)) old.set(name,await read(path.join(dir,name)));
+    const changed=[];
+    try {
+      for (const [name,bytes] of Object.entries(files)) {
+        const previous=old.get(name), target=path.join(dir,name);
+        if (bytes===null ? previous===null : previous?.equals(bytes)) continue;
+        if (bytes===null) await fsp.unlink(target); else await atomicWrite(target,bytes);
+        changed.push(name);
+      }
+    } catch (err) {
+      for (const name of changed.reverse()) {
+        const target=path.join(dir,name), current=await read(target), published=files[name], previous=old.get(name);
+        if (published===null ? current!==null : !current?.equals(published)) continue;
+        if (previous===null) await fsp.unlink(target); else await atomicWrite(target,previous);
+      }
+      if (created) await fsp.rmdir(dir).catch(()=>{});
+      throw err;
+    }
+  });
+}
+
 async function api(req, res, u) {
   const route = u.pathname.slice('/api/'.length), m = req.method, q = u.searchParams;
   if (route.startsWith('canvas/')) {
@@ -843,7 +874,7 @@ async function api(req, res, u) {
     const base = `https://github.com/${repo}/releases/latest/download/`;
     const get = async (file, optional) => {
       const r = await fetch(base + file, { redirect: 'follow' });
-      if (!r.ok) { if (optional) return null; throw new HttpError(502, `${file}: HTTP ${r.status}`); }
+      if (!r.ok) { if (optional && (r.status===404 || r.status===410)) return null; throw new HttpError(502, `${file}: HTTP ${r.status}`); }
       return Buffer.from(await r.arrayBuffer());
     };
     const manifestBuf = await get('manifest.json');
@@ -852,10 +883,7 @@ async function api(req, res, u) {
     const mainJs = await get('main.js');
     const styles = await get('styles.css', true);
     const dir = path.join(PLUGIN_DIR, manifest.id);
-    await fsp.mkdir(dir, { recursive: true });
-    await fsp.writeFile(path.join(dir, 'manifest.json'), manifestBuf);
-    await fsp.writeFile(path.join(dir, 'main.js'), mainJs);
-    if (styles) await fsp.writeFile(path.join(dir, 'styles.css'), styles);
+    await savePluginRelease(dir,{'main.js':mainJs,'styles.css':styles,'manifest.json':manifestBuf});
     return send(res, 200, { id: manifest.id, manifest });
   }
 
