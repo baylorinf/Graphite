@@ -7,6 +7,7 @@ const { createHash, randomUUID } = require('node:crypto');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
 const { courseContent } = require('./canvas-course-content');
+const { submissionEvidence } = require('./canvas-submission');
 
 const ORIGIN = 'https://oc.sjtu.edu.cn';
 const MAX_BYTES = 512 * 1024 * 1024;
@@ -116,7 +117,7 @@ async function verifiedSubdirectory(parent, name) {
   return real;
 }
 
-function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vault }) {
+function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vault, getAccountId }) {
   let refreshing = null;
   async function request(url, options = {}) {
     try { return await fetchImpl(url.href, { redirect: 'manual', signal: AbortSignal.timeout(45000), ...options }); }
@@ -194,15 +195,21 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
       };
       async function section(key, label, loadRows) {
         try { out[key] = await loadRows(); }
-        catch (e) { warning(label, e); out[key] = arr(old[key]).slice(); }
+        catch (e) {
+          warning(label, e);
+          out[key] = key==='assignments' ? arr(old[key]).map(row=>({...row,submissionEvidence:submissionEvidence(null)})) : arr(old[key]).slice();
+        }
       }
       await section('assignments', '作业', async () => (await list(route + 'assignments', { 'include[]': 'submission' }))
         .filter(shown).map(x => {
           const sub = x.submission;
+          const owner=getAccountId?.();
+          const matches=sub && (!sub.assignment_id || sameId(sub.assignment_id,x.id)) && (!sub.course_id || sameId(sub.course_id,id)) &&
+            (!owner || !sub.user_id || sameId(sub.user_id,owner));
           const submitted = sub ? Boolean(sub.submitted_at || (!sub.missing && ['submitted', 'graded', 'pending_review'].includes(sub.workflow_state))) : null;
           const details = courseContent(x.locked_for_user ? '' : x.description, id);
           return { ...resource(x, 'assignments'), description: details.text, attachments: details.attachments,
-            dueAt: date(x.due_at), submitted, excused: Boolean(sub?.excused),
+            dueAt: date(x.due_at), submitted, excused: Boolean(sub?.excused), submissionEvidence:submissionEvidence(matches ? sub : null),
             submittedAt: date(sub?.submitted_at), attempt: Number(sub?.attempt) || 0,
             allowedAttempts: x.allowed_attempts == null ? null : Number(x.allowed_attempts),
             extraAttempts: Number(sub?.extra_attempts) || 0,

@@ -95,6 +95,21 @@ test('expired authorization leaves the calendar usable', async () => {
   const result=await f.handle('sync');
   assert.equal(result.connected,false); assert.equal(result.calendar.events.length,2); assert.ok(result.snapshot.warnings.length);
 });
+test('checking a submission requires this signed-in account and reads a fresh record without replaying a pending request', async () => {
+  let state={portalSyncEnabled:true,webVerified:true,user:'同名同学',snapshot:{webIdentity:'31',courses:[{id:'7',
+    assignments:[{id:'10',submitted:true,attempt:3,submissionEvidence:{status:'submitted',attempt:3}}]}]},
+    requests:{previous:{pending:true}}};
+  const calls=[],unknown={status:'unknown',attempt:null,submittedAt:null};
+  const svc=createCanvasService({storage:{load:async()=>structuredClone(state),save:async next=>{state=next;}},
+    desktop:{verifyWebSubmission:async args=>{calls.push(args);if(calls.length===1)throw Error('offline');return unknown;}}});
+  const accountKey=(await svc.handle('GET','status')).accountKey, form={courseId:'7',assignmentId:'10',accountKey};
+  await assert.rejects(svc.handle('POST','verify-submission',{...form,accountKey:'other'}),{status:409});
+  await assert.rejects(svc.handle('POST','verify-submission',{...form,assignmentId:'bad'}),{status:400});assert.equal(calls.length,0);
+  await assert.rejects(svc.handle('POST','verify-submission',form),{status:502});
+  assert.deepEqual(await svc.handle('POST','verify-submission',form),{...form,...unknown});
+  assert.deepEqual(calls,[1,2].map(()=>({courseId:'7',assignmentId:'10',expectedIdentity:'31'})));
+  assert.equal(state.requests.previous.pending,true);assert.equal(state.snapshot.courses[0].assignments[0].attempt,3);
+});
 test('draft owner survives an expired OAuth session and a new authorization for the same person', async () => {
   const f = fake();
   assert.equal((await f.handle('status')).accountKey,null);

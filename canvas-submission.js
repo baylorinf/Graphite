@@ -14,6 +14,19 @@ const WRITE_SCOPES = [
 const validId = value => /^[1-9]\d*$/.test(String(value ?? ''));
 const error = (status, code, message) => Object.assign(new Error(message), { status, code });
 const unknown = () => error(502, 'submission_unknown', 'Canvas 的提交结果尚未确认。请在原作业查看最新记录，再决定是否重交。');
+function submissionEvidence(row) {
+  const unclear={status:'unknown',attempt:null,submittedAt:null};
+  if (!row || row.excused) return unclear;
+  const raw=row.attempt;
+  const attempt=(typeof raw==='number' || (typeof raw==='string' && /^\d+$/.test(raw))) &&
+    Number.isSafeInteger(Number(raw)) && Number(raw)>=0 ? Number(raw) : null;
+  if (raw!=null && attempt===null) return unclear;
+  const stamp=typeof row.submitted_at==='string' && Number.isFinite(Date.parse(row.submitted_at)) ? row.submitted_at : null;
+  if(row.workflow_state==='unsubmitted') return row.submitted_at || (attempt!==null && attempt>0) ? unclear : {status:'unsubmitted',attempt,submittedAt:null};
+  if(row.missing || attempt===0) return unclear;
+  const receipt=stamp || ['submitted','pending_review'].includes(row.workflow_state) || (row.workflow_state==='graded' && attempt>0);
+  return receipt ? {status:'submitted',attempt,submittedAt:stamp} : unclear;
+}
 const escapeText = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
 async function readJson(response) {
@@ -119,13 +132,22 @@ function createSubmissionClient({ fetch: fetchImpl = globalThis.fetch, accessTok
   }
   async function read(pathOrUrl) {
     const url = new URL(pathOrUrl, SITE);
-    const get = async force => request(url.href, { headers: {
+    const get = async force => request(url.href, { cache:'no-store', headers: {
       Accept: 'application/json+canvas-string-ids', Authorization: 'Bearer ' + await accessToken(force),
     } });
     let res = await get(false);
     if (res.status === 401 && res.headers.has('www-authenticate')) { await discard(res); res = await get(true); }
     if (!res.ok) throw await rejected(res, '无法读取学校记录');
     return readJson(res);
+  }
+
+  // Used after an uncertain upload; a list row or cached course snapshot cannot establish delivery.
+  async function verify(courseId,assignmentId,owner) {
+    if (![courseId,assignmentId,owner].every(validId)) return submissionEvidence(null);
+    const row=await read('/api/v1/courses/'+courseId+'/assignments/'+assignmentId+'/submissions/self');
+    if (String(row?.user_id)!==String(owner) || String(row?.assignment_id)!==String(assignmentId) ||
+        (row.course_id!=null && String(row.course_id)!==String(courseId))) return submissionEvidence(null);
+    return submissionEvidence(row);
   }
 
   async function upload(route, file) {
@@ -216,7 +238,7 @@ function createSubmissionClient({ fetch: fetchImpl = globalThis.fetch, accessTok
       submittedAt: receipt.submitted_at, url: SITE + '/courses/' + input.courseId + '/assignments/' + input.assignmentId,
       ...(fileList.length ? { files: fileList } : {}) };
   }
-  return { submit };
+  return { submit, verify };
 }
 
-module.exports = { createSubmissionClient, WRITE_SCOPES, validateMaterial };
+module.exports = { createSubmissionClient, WRITE_SCOPES, validateMaterial, submissionEvidence };

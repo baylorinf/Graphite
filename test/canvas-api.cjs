@@ -47,6 +47,8 @@ test('enumerates the current courses through opaque pages and synchronizes stude
   const c = result.courses[0];
   assert.equal(c.assignments[0].dueAt, '2026-11-22T15:59:00Z');
   assert.equal(c.assignments[0].submitted, true);
+  assert.deepEqual(c.assignments[0].submissionEvidence,{status:'submitted',attempt:null,submittedAt:null});
+  assert.deepEqual(c.assignments[1].submissionEvidence,{status:'unknown',attempt:null,submittedAt:null});
   assert.equal(c.assignments[1].dueAt, null);
   assert.deepEqual(c.files.map(f => [f.id, f.url]), [['52', origin + '/courses/37/files/52']]);
   assert.equal(c.modules[0].items[0].contentId, '52');
@@ -62,6 +64,19 @@ test('enumerates the current courses through opaque pages and synchronizes stude
   assert.equal(calls[0].url.searchParams.get('enrollment_state'), 'active');
   assert(calls.some(c => c.url.searchParams.get('include[]') === 'submission'));
   assert(SCOPES.every(s => s.startsWith('url:GET|')));
+});
+test('partial synchronization preserves display rows without reusing old submission verification',async t=>{
+  const cached={id:'9',title:'Cached',attempt:0,submitted:false,submissionEvidence:{status:'unsubmitted',attempt:0,submittedAt:null}};
+  const {api}=await fixture(t,url=>{
+    if(url.pathname==='/api/v1/courses')return json([{id:'1',name:'Course'}]);
+    if(url.pathname.endsWith('/assignments'))return json({}, {}, 503);
+    return json([]);
+  });
+  const result=await api.sync({courses:[{id:'1',assignments:[cached]}]});
+  const item=result.courses[0].assignments[0];
+  assert.equal(item.title,cached.title);assert.equal(item.submitted,false);assert.equal(item.attempt,0);
+  assert.deepEqual(item.submissionEvidence,{status:'unknown',attempt:null,submittedAt:null});
+  assert.equal(cached.submissionEvidence.status,'unsubmitted');
 });
 
 test('does not use a partial course index or follow an unexpected pagination target', async t => {

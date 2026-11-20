@@ -32,6 +32,27 @@ function harness(handler) {
   return { client: createSubmissionClient({ fetch, accessToken }), calls, posts: () => calls.filter(c => c.u.pathname === route && c.opts.method === 'POST') };
 }
 
+test('verification reads only the fresh self submission for the same user and assignment',async()=>{
+  const empty={status:'unknown',attempt:null,submittedAt:null};
+  for(const [patch,expected] of [
+    [{},empty],[{attempt:0},empty],[{workflow_state:'unsubmitted'},{status:'unsubmitted',attempt:null,submittedAt:null}],
+    [{workflow_state:'unsubmitted',attempt:'0'},{status:'unsubmitted',attempt:0,submittedAt:null}],
+    [{workflow_state:'unsubmitted',attempt:1},empty],[{workflow_state:'submitted',attempt:''},empty],
+    [{workflow_state:'graded'},empty],[{workflow_state:'submitted',user_id:'16'},empty],
+    [{workflow_state:'submitted',assignment_id:'20'},empty],[{workflow_state:'submitted',course_id:'4'},empty],
+    [{workflow_state:'submitted',attempt:1},{status:'submitted',attempt:1,submittedAt:null}],
+    [delivered,{status:'submitted',attempt:1,submittedAt:delivered.submitted_at}],
+  ]){
+    const h=harness((u,opt)=>{
+      assert.equal(u.pathname,route+'/self');assert.equal(opt.cache,'no-store');assert.equal(opt.method,undefined);
+      return response({...actual,...patch});
+    });
+    assert.deepEqual(await h.client.verify('3','19','15'),expected);assert.equal(h.calls.length,1);
+  }
+  const offline=harness(()=>{throw Error('offline')});await assert.rejects(offline.client.verify('3','19','15'));
+  assert.equal(offline.calls.length,1);
+});
+
 test('late but open text submission preserves text and lines, records before sending, returns a matching receipt', async () => {
   const h = harness();
   const out = await h.client.submit(input, { beforePost: async () => assert.equal(h.posts().length, 0) });

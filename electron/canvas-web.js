@@ -71,17 +71,24 @@ function readSchoolPage() {
   }
   function receiptInfo() {
     const candidates = document.querySelectorAll('.assignment-submission-status,[data-testid="submission-status"],.submission-details-header .submission_status,#sidebar_content .details .header');
-    let state = null;
-    for (const el of candidates) if (visible(el)) {
-      const v=reportedStatus(text(el));
-      if(v===false) return {submitted:false,attempt:null,submittedAt:null};
+    let state = null, negative=false, explicitNegative=false;
+    for (const el of candidates) if (visible(el) && !el.closest('.user_content,.description,.discussion-entry')) {
+      const label=text(el), v=reportedStatus(label);
+      if(v===false) {
+        negative=true;
+        if (/^(?:(?:not (?:yet )?submitted|has not been submitted|never submitted|unsubmitted|no submission)|(?:尚未|还未|還未|未)(?:提交|繳交|交付)|no entregad[oa]|non remis(?:e)?|pas soumis(?:e)?|未提出|미제출)[.!！。]?$/i.test(label)) explicitNegative=true;
+      }
       if(v===true) state=true;
     }
-    const stamp=[...document.querySelectorAll('.submission-details-header__time,[data-testid="submission-timestamp"],[data-testid="submitted-at"]')].find(el=>visible(el) && text(el));
+    const stamp=[...document.querySelectorAll('.submission-details-header__time,[data-testid="submission-timestamp"],[data-testid="submitted-at"]')]
+      .find(el=>visible(el) && text(el) && !el.closest('.user_content,.description,.discussion-entry'));
     // The classic official sidebar renders the date immediately after its Submitted header.
     const holder=stamp || (state===true && document.querySelector('#sidebar_content .details .content'));
     const clock=holder && (holder.matches('time[datetime]') ? holder : holder.querySelector('time[datetime],[data-datetime]'));
     const submittedAt=holder ? parseClock(clock?.getAttribute('datetime') || clock?.dataset.datetime || stamp?.textContent) : null;
+    if (negative) return {submitted:false,attempt:null,submittedAt:null,
+      verification:explicitNegative && state!==true && !stamp && !submittedAt ? 'unsubmitted' : 'unknown'};
+    const positiveLabel=state===true;
     if (stamp && reportedStatus(text(stamp))!==false && !stamp.closest('.user_content')) state=true;
     let attempt=null;
     if(state===true) {
@@ -91,7 +98,8 @@ function readSchoolPage() {
         if(visible(box) && /^(?:Attempts|已尝试次数|尝试次数|嘗試次數|提交次数|提交次數|intentos|tentatives|試行回数)$/i.test(label) && /^[1-9]\d*$/.test(number)) {attempt=Number(number);break;}
       }
     }
-    return {submitted:state,attempt,submittedAt:state===true ? submittedAt : null};
+    return {submitted:state,attempt,submittedAt:state===true ? submittedAt : null,
+      verification:state===true && (positiveLabel || submittedAt) ? 'submitted' : 'unknown'};
   }
   const links = [];
   for (const a of mainLinks) {
@@ -237,7 +245,8 @@ async function readCourses(loadPage, options = {}) {
       }
       const ref={id:tail,title:entry.title,url:u.origin+u.pathname};
       if(key==='files') c.files.push({id:tail,name:entry.title,url:SITE+prefix+tail,size:null,updatedAt:null});
-      else c[key].push({...ref, dueAt:entry.dueAt || null, dueLabel:entry.dueLabel || '', submitted:entry.submitted ?? null});
+      else c[key].push({...ref, dueAt:entry.dueAt || null, dueLabel:entry.dueLabel || '', submitted:entry.submitted ?? null,
+        ...(key==='assignments' ? {submissionEvidence:{status:'unknown',attempt:null,submittedAt:null}} : {})});
     }
     // The file detail URL is also linked from rich-text pages and course modules.
     function collect(page, key) {
@@ -353,6 +362,13 @@ async function readCourses(loadPage, options = {}) {
               if(detail.submitted===true){a.attempt=detail.attempt??a.attempt;a.submittedAt=detail.submittedAt??a.submittedAt;}
             }
           }
+          if (String(page.webIdentity || '')===String(index.webIdentity || '') && index.webIdentity && page.pageUrl &&
+              new URL(page.pageUrl).href.replace(/\/$/,'')===a.url && !page.busy && !page.denied && !page.notFound &&
+              ['submitted','unsubmitted'].includes(page.verification)) {
+            a.submissionEvidence={status:page.verification,
+              attempt:page.verification==='submitted' && Number.isSafeInteger(page.attempt) && page.attempt>0 ? page.attempt : null,
+              submittedAt:page.verification==='submitted' ? page.submittedAt || null : null};
+          }
           a.checkedAt=new Date().toISOString();
         }
         catch(e){if(e.status===401)throw e;c.warnings.push(a.title+'：'+e.message);}
@@ -361,4 +377,31 @@ async function readCourses(loadPage, options = {}) {
   }
   return { user:index.user||'', snapshot:{courses,warnings,webIdentity:index.webIdentity||null}, syncedAt:new Date().toISOString() };
 }
-module.exports={readSchoolPage,readCourses};
+async function verifyWebSubmission(loadPage,{courseId,assignmentId,expectedIdentity}) {
+  const unknown={status:'unknown',attempt:null,submittedAt:null};
+  if (![courseId,assignmentId,expectedIdentity].every(id=>/^[1-9]\d*$/.test(String(id)))) return unknown;
+  const url=SITE+'/courses/'+courseId+'/assignments/'+assignmentId;
+  function valid(page,address) {
+    if(!page?.logged || page.login || page.denied || page.notFound || page.busy || String(page.webIdentity)!==String(expectedIdentity))return false;
+    try { const u=new URL(page.pageUrl);return !u.search && !u.hash && u.origin+u.pathname.replace(/\/$/,'')===address; }
+    catch { return false; }
+  }
+  const first=await loadPage(url);
+  if(!valid(first,url))return unknown;
+  if(first.verification==='unsubmitted')return {status:'unsubmitted',attempt:null,submittedAt:null};
+  if(first.verification!=='submitted')return unknown;
+  let record=first;
+  if(!Number.isInteger(first.attempt) && first.receiptUrl){
+    const receipt=new URL(first.receiptUrl,url);
+    if(receipt.origin===SITE && !receipt.search && !receipt.hash &&
+       new RegExp('^/courses/'+courseId+'/assignments/'+assignmentId+'/submissions/(?:self|[1-9]\\d*)/?$').test(receipt.pathname)) {
+      const address=SITE+receipt.pathname.replace(/\/$/,'');
+      const detail=await loadPage(address);
+      if(!valid(detail,address) || detail.verification!=='submitted')return unknown;
+      record=detail;
+    }
+  }
+  return {status:'submitted',attempt:Number.isSafeInteger(record.attempt) && record.attempt>0 ? record.attempt : null,
+    submittedAt:record.submittedAt || first.submittedAt || null};
+}
+module.exports={readSchoolPage,readCourses,verifyWebSubmission};

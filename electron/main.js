@@ -33,6 +33,12 @@ let VAULT = ''; // the vault actually open in this window
 let quitting = false;
 let choosingVault = false;
 let closing = false;
+let codeRunner = null;
+
+async function stopProjectTasks() {
+  try { await codeRunner?.dispose(); }
+  catch (error) { console.warn('Could not stop the project tools:', error.message); }
+}
 
 function loadConfig() { carryOverOldSettings(); try { cfg = JSON.parse(fs.readFileSync(CONFIG(), 'utf8')); } catch { cfg = {}; } }
 function saveConfig(strict = false) {
@@ -84,7 +90,7 @@ const updater = createUpdater({
   },
   onReadyToQuit: () => {
     quitting = true;
-    setTimeout(() => app.exit(0), 300);
+    setTimeout(async () => { await stopProjectTasks(); app.exit(0); }, 300);
   },
 });
 const checkForUpdates = options => updater.check(options);
@@ -116,6 +122,7 @@ async function chooseVault() {
     try {
       cfg.vault = next;
       saveConfig(true);
+      await stopProjectTasks();
       app.relaunch({ args: process.argv.slice(1).filter(a => !a.startsWith('--vault=')) });
     } catch (error) {
       cfg.vault = previous;
@@ -326,14 +333,23 @@ function createWindow(url) {
   }
   async function closeSafely() {
     const t = tr();
+    async function finish() {
+      quitting = true;
+      await stopProjectTasks();
+      win.destroy();
+    }
     for (;;) {
       if (!win || win.isDestroyed()) return;
       const r = await flushPage();
-      await captureStorage(); // drafts are kept with the settings in any case
-      if (r && r.ok) { quitting = true; win.destroy(); return; }
-      if (r?.reviewUnsaved) {
+      let projectStorageFailed = false;
+      // A new server origin is used on the next launch. A project draft held in
+      // localStorage is recoverable there only after the desktop settings reach disk.
+      try { await captureStorage(!!r?.hasProjectDrafts); }
+      catch { projectStorageFailed = true; }
+      if (r?.ok && !projectStorageFailed && !r.projectUnsaved && !r.reviewUnsaved) return finish();
+      if (r?.reviewUnsaved || r?.projectUnsaved || projectStorageFailed) {
         const answer = await dialog.showMessageBox(win, { type:'warning', title:t('unsavedTitle'),
-          message:r.reviewMessage || t('unsavedTimeout'), buttons:[t('unsavedRetry'), t('cancel')], defaultId:0, cancelId:1, noLink:true });
+          message:r?.projectMessage || r?.reviewMessage || t('unsavedTimeout'), buttons:[t('unsavedRetry'), t('cancel')], defaultId:0, cancelId:1, noLink:true });
         if (answer.response === 0) continue;
         return;
       }
@@ -362,9 +378,9 @@ function createWindow(url) {
           try { fs.writeFileSync(dest, content, { flag: 'wx' }); } catch (err) { failed.push(name + ': ' + err.message); }
         }
         if (failed.length) { await dialog.showMessageBox(win, { type: 'error', title: t('unsavedTitle'), message: t('unsavedCopyFailed'), detail: failed.join('\n') }); continue; }
-        quitting = true; win.destroy(); return; // copies are safe; the drafts also stay for next start
+        return finish(); // copies are safe; the drafts also stay for next start
       }
-      if (response === 2) { quitting = true; win.destroy(); return; } // drafts stay and are retried next time
+      if (response === 2) return finish(); // drafts stay and are retried next time
       return; // Cancel: keep the window open and keep editing
     }
   }
@@ -381,12 +397,26 @@ async function main() {
   VAULT = vault;
 
   const token = crypto.randomBytes(24).toString('hex');
-  const { start } = require(path.join(ROOT, 'server.js'));
+  const { start, atomicWrite, withFileLock, readSource } = require(path.join(ROOT, 'server.js'));
   const canvasOptions = require('./canvas-desktop').createCanvasDesktop({
     app, BrowserWindow, session, safeStorage: require('electron').safeStorage, vault,
   });
   const port = await start({ vault, port: 0, token, canvasOptions });
   const url = `http://127.0.0.1:${port}/`;
+  const {createCodeProjects} = require(path.join(ROOT, 'code-projects.js'));
+  const projects = createCodeProjects({
+    stateFile: path.join(app.getPath('userData'), 'code-project.json'), getVault: () => VAULT,
+    atomicWrite, withFileLock, readSource,
+    pickDirectory: async () => {
+      const selection = await dialog.showOpenDialog(win, {properties:['openDirectory', 'createDirectory']});
+      return selection.canceled ? null : selection.filePaths[0] || null;
+    },
+  });
+  let sendCodeEvent;
+  codeRunner = require('./code-runner').createCodeRunner({projects, onEvent: data => sendCodeEvent?.(data)});
+  sendCodeEvent = require('./code-workbench').registerCodeWorkbench({
+    ipcMain, url, getWindow: () => win, projects, runner:codeRunner,
+  });
 
   // Attach the secret to every request this app makes to its own server.
   session.defaultSession.webRequest.onBeforeSendHeaders({ urls: [`http://127.0.0.1:${port}/*`] }, (details, cb) => {

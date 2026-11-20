@@ -80,7 +80,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
     })();
     try { return await refreshing; } finally { refreshing = null; }
   }
-  const api = createCanvasApi({ vault, fetch: fetchImpl, accessToken });
+  const api = createCanvasApi({ vault, fetch: fetchImpl, accessToken, getAccountId:()=>data.accountId || data.auth?.userId });
   const submissions = createSubmissionClient({fetch:fetchImpl, accessToken});
   async function syncWeb(background=false,fullMaterials=false) {
     readingSchool=true;
@@ -172,7 +172,8 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
       await update({receipt:result});
       const snapshot=structuredClone(data.snapshot);
       const assignment=snapshot.courses.find(c=>String(c.id)===courseId).assignments.find(a=>String(a.id)===assignmentId);
-      Object.assign(assignment,{submitted:true,attempt:result.attempt,submittedAt:result.submittedAt});
+      Object.assign(assignment,{submitted:true,attempt:result.attempt,submittedAt:result.submittedAt,
+        submissionEvidence:{status:'submitted',attempt:result.attempt,submittedAt:result.submittedAt}});
       await save({...data,snapshot});
     } catch { if(!data.requests?.[requestId]?.receipt)throw unknown(); }
     return result;
@@ -335,6 +336,22 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
       }
       if (action === 'download') {
         return downloadOne(body.courseId,body.fileId);
+      }
+      if (action === 'verify-submission') {
+        const current=view(),courseId=String(body.courseId || ''),assignmentId=String(body.assignmentId || '');
+        if(!current.connected || !current.accountKey || body.accountKey!==current.accountKey) throw error(409,'请先核对当前学校账户。');
+        if(!/^[1-9]\d*$/.test(courseId) || !/^[1-9]\d*$/.test(assignmentId)) throw error(400,'无效的课程或作业。');
+        let record;
+        try {
+          record=data.portalSyncEnabled
+            ? await desktop?.verifyWebSubmission?.({courseId,assignmentId,expectedIdentity:String(data.snapshot.webIdentity)})
+            : await submissions.verify(courseId,assignmentId,data.accountId || data.auth?.userId);
+        } catch (e) {
+          if(e.status)throw e;
+          throw error(502,'暂时无法核对学校的提交记录，请稍后再试。');
+        }
+        if(!record)record={status:'unknown',attempt:null,submittedAt:null};
+        return {courseId,assignmentId,accountKey:current.accountKey,...record};
       }
       if(action==='submit') return submit(body);
       if (action === 'download-course') {

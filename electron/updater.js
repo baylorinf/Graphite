@@ -116,7 +116,9 @@ async function verifyBeforeInstall(flush, remember, timeoutMs = 8000) {
       (async () => {
         const saved = await flush();
         if (expired) return issue('saveTimeout', 'Saving timed out');
-        if (saved?.ok !== true) return issue('unsaved', saved?.reviewMessage || 'The current changes could not be saved');
+        if (saved?.ok !== true || saved.projectUnsaved || saved.reviewUnsaved) {
+          return issue('unsaved', saved?.projectMessage || saved?.reviewMessage || 'The current changes could not be saved');
+        }
         await remember();
         return { ok: true };
       })(),

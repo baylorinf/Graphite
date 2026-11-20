@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const { createHash, randomUUID } = require('node:crypto');
 const fsp = fs.promises;
 const SITE = 'https://oc.sjtu.edu.cn';
-const { readSchoolPage, readCourses } = require('./canvas-web');
+const { readSchoolPage, readCourses, verifyWebSubmission } = require('./canvas-web');
 const { feedUrl } = require('../canvas-calendar');
 const { courseFolder } = require('../canvas-api');
 const { submitThroughSchool } = require('./canvas-web-submit');
@@ -150,10 +150,10 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
   }
   const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   const isolated=(w,code)=>w.webContents.executeJavaScriptInIsolatedWorld(1004,[{code}]);
-  async function loadPage(w,raw) {
+  async function loadPage(w,raw,fresh=false) {
     if(!schoolUrl(raw) || new URL(raw).origin!==SITE)throw new Error('无效的校方页面。');
     let timer;
-    try { await Promise.race([w.loadURL(raw),new Promise((_,reject)=>{timer=setTimeout(()=>{if(!w.isDestroyed())w.webContents.stop();reject(new Error('学校页面加载超时。'));},30000);})]); }
+    try { await Promise.race([w.loadURL(raw,fresh?{extraHeaders:'Cache-Control: no-cache\nPragma: no-cache'}:undefined),new Promise((_,reject)=>{timer=setTimeout(()=>{if(!w.isDestroyed())w.webContents.stop();reject(new Error('学校页面加载超时。'));},30000);})]); }
     finally {clearTimeout(timer);}
     const target = new URL(w.webContents.getURL());
     if(target.origin!==SITE || /^\/login(?:\/|$)/.test(target.pathname))return {login:true};
@@ -194,6 +194,7 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
       });
       w.loadURL(SITE+'/courses').catch(()=>{});
     },
+    verifyWebSubmission:input=>withWorker(w=>verifyWebSubmission(url=>loadPage(w,url,true),input)),
     syncWeb:(options={})=>withWorker(async w=>{
       const result=await readCourses(url=>loadPage(w,url),options);
       try{

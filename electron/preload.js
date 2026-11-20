@@ -19,6 +19,13 @@ contextBridge.exposeInMainWorld('myobsidianDesktop', {
   installUpdate: () => ipcRenderer.invoke('update-install'),
   onUpdate: cb => ipcRenderer.on('update-state', (_e, state) => cb(state)),
   copyText: text => ipcRenderer.invoke('copy-text', String(text)),
+  codeProject: (action, args = {}) => ipcRenderer.invoke('code-project', action, args),
+  codeRun: (action, args = {}) => ipcRenderer.invoke('code-run', action, args),
+  onCodeRun: cb => {
+    const listener = (_event, data) => cb(data);
+    ipcRenderer.on('code-run-event', listener);
+    return () => ipcRenderer.removeListener('code-run-event', listener);
+  },
   // Actions chosen in the right-click menu (format selection, search, run a command).
   onAppCommand: cb => ipcRenderer.on('app-command', (_e, cmd) => cb(cmd)),
 });

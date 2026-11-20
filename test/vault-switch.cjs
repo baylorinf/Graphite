@@ -70,3 +70,13 @@ test('failed review persistence keeps the window open until the review can be wr
   await close();assert.equal(state.destroyed,false);assert.equal(state.dialogs.at(-1).buttons.length,2);
   state.flush=async()=>({ok:true,unsaved:[]});await close();assert.equal(state.destroyed,true);
 });
+
+test('project drafts survive an unavailable browser store or a failed desktop settings write',async t=>{
+  const {state,api}=desktop(t);
+  async function close(){api.close();while(api.isClosing())await new Promise(setImmediate);}
+  state.flush=async()=>({ok:false,projectUnsaved:true,projectMessage:'Keep editing',unsaved:[]});
+  await close();assert.equal(state.destroyed,false);assert.equal(state.dialogs.at(-1).message,'Keep editing');
+  state.flush=async()=>({ok:true,hasProjectDrafts:true,unsaved:[]});
+  state.failStorage=true;await close();assert.equal(state.destroyed,false);
+  state.failStorage=false;await close();assert.equal(state.destroyed,true);
+});

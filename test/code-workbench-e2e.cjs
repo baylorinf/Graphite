@@ -27,12 +27,19 @@ const MAIN = [
 (async () => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'graphite-wb-e2e-'));
   const vault = path.join(tmp, 'vault'), profile = path.join(tmp, 'profile');
+  const external = path.join(tmp, 'External project');
+  fs.mkdirSync(external);
+  fs.writeFileSync(path.join(external,'outside.cpp'), MAIN);
   fs.mkdirSync(path.join(vault, 'algo'), { recursive: true });
   fs.writeFileSync(path.join(vault, 'Welcome.md'), '# Test vault\n');
   fs.writeFileSync(path.join(vault, 'algo', 'main.cpp'), MAIN);
+  const packaged = process.env.GRAPHITE_TEST_EXE;
+  const hold = path.join(tmp,'automation.js');
+  fs.writeFileSync(hold, 'new Promise(() => {})'); // Playwright owns the hidden window until the checks finish.
   const app = await _electron.launch({
-    executablePath: path.join(root, 'node_modules/electron/dist/electron.exe'),
-    args: [root, '--vault=' + vault, '--user-data-dir=' + profile],
+    executablePath: packaged || path.join(root, 'node_modules/electron/dist/electron.exe'),
+    args: [...(packaged ? [] : [root]), '--selftest', '--selftest-hidden', '--disable-background-timer-throttling',
+      '--selftest-eval-file=' + hold, '--update-folder='+tmp, '--update-repo=disabled', '--vault=' + vault, '--user-data-dir=' + profile],
     cwd: root, env: { ...process.env }, timeout: 60000,
   });
   const steps = [];
@@ -108,12 +115,35 @@ const MAIN = [
       await p.locator(`${wb} [data-wb=stop]`).click();
       await p.waitForFunction(() => /Stopped|已停止/.test(document.querySelector('#code-workbench .wb-run-state').textContent), null, { timeout: 30000 });
     });
+    await step('choose an external folder, save there, and preserve both edits on a real disk conflict', async () => {
+      await app.evaluate(({dialog}, folder) => {
+        // Replace only the native folder chooser; reads, saves and conflict detection use the actual desktop service.
+        dialog.showOpenDialog = async () => ({canceled:false, filePaths:[folder]});
+      },external);
+      await p.locator(wb+' [data-wb=choose]').click();
+      await p.locator(wb+' [data-node="outside.cpp"]').click();
+      await p.locator(wb+' .wb-tab.is-active[data-tab="outside.cpp"]').waitFor();
+      const editor = p.locator(wb+' .CodeMirror');
+      await editor.waitFor();
+      await editor.evaluate(el=>el.CodeMirror.setValue('// user save\n'));
+      await p.locator(wb+' [data-wb=save]').click();
+      const out = path.join(external,'outside.cpp');
+      await p.waitForFunction(()=>document.querySelector('#code-workbench .wb-tab.is-active[data-tab="outside.cpp"]:not(.is-dirty)'));
+      assert.equal(fs.readFileSync(out,'utf8'),'// user save\n');
+      assert.equal(fs.existsSync(path.join(vault,'outside.cpp')),false);
+      fs.writeFileSync(out,'// outside edit\n');
+      await editor.evaluate(el=>el.CodeMirror.setValue('// unsaved buffer\n'));
+      await p.locator(wb+' [data-wb=save]').click();
+      await p.locator(wb+' [data-wb=keep-mine]').waitFor();
+      assert.equal(await editor.evaluate(el=>el.CodeMirror.getValue()),'// unsaved buffer\n');
+      assert.equal(fs.readFileSync(out,'utf8'),'// outside edit\n');
+    });
     if (errors.length) throw new Error('page errors: ' + errors.join(' | '));
   } catch { failed = true; if (process.env.WB_SHOT && page) await page.screenshot({ path: process.env.WB_SHOT.replace(/.png$/, '-fail.png') }).catch(() => {}); }
   finally {
     await app.close().catch(() => {});
     fs.rmSync(tmp, { recursive: true, force: true, maxRetries: 5 });
   }
-  console.log(`\n${steps.length}/5 steps passed`);
+  console.log(`\n${steps.length}/6 steps passed`);
   process.exit(failed ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

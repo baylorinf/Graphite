@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const path = require('node:path');
 const os = require('node:os');
 const { chromium } = require(process.env.GRAPHITE_PLAYWRIGHT || path.join(os.homedir(), '.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/playwright'));
-const { readSchoolPage, readCourses } = require('../electron/canvas-web');
+const { readSchoolPage, readCourses, verifyWebSubmission } = require('../electron/canvas-web');
 const SITE='https://oc.sjtu.edu.cn';
 const url=p=>SITE+p;
 const link=(p,t)=>'<a href="'+p+'">'+t+'</a>';
@@ -26,7 +26,7 @@ async function inspect(p,markup) {
 test('dates, attempts, and receipts come from visible official fields; status labels alone never create a timestamp',async()=>{
   for(const label of ['Not yet submitted','Not Submitted!','has not been submitted','尚未提交','未繳交','No entregado']){
     const v=await inspect('/courses/7/assignments/2','<div class="assignment-submission-status">'+label+'</div>');
-    assert.equal(v.submitted,false,label);assert.equal(v.submittedAt,null);
+    assert.equal(v.submitted,false,label);assert.equal(v.verification,'unsubmitted');assert.equal(v.submittedAt,null);
   }
   for(const label of ['View submitted examples','Submission Details','In progress','准备提交']){
     assert.equal((await inspect('/courses/7/assignments/2','<div class="assignment-submission-status">'+label+'</div>')).submitted,null,label);
@@ -39,6 +39,24 @@ test('dates, attempts, and receipts come from visible official fields; status la
   assert.equal(unspecified.submitted,true);assert.equal(unspecified.submittedAt,null);assert.equal(unspecified.attempt,null);assert.deepEqual(unspecified.due,{});
   const table=await inspect('/courses/7/assignments/2','<table class="assignment_dates"><thead><tr><th>For</th><th>Due</th></tr></thead><tbody><tr><td>Everyone</td><td><time datetime="2026-12-11T17:00:00+11:00">11 December</time></td></tr></tbody></table>');
   assert.equal(table.due.dueAt,'2026-12-11T06:00:00.000Z');
+});
+test('checks one current official assignment for the expected student and treats partial pages as unknown',async()=>{
+  const href=url('/courses/7/assignments/2'), query={courseId:'7',assignmentId:'2',expectedIdentity:'43'};
+  const check=page=>verifyWebSubmission(async address=>{assert.equal(address,href);return page;},query);
+  const no=await inspect('/courses/7/assignments/2','<div class="assignment-submission-status">尚未提交</div>');
+  assert.deepEqual(await check(no),{status:'unsubmitted',attempt:null,submittedAt:null});
+  for(const patch of [{busy:true},{logged:false},{denied:true},{notFound:true},{login:true},{webIdentity:'44'},
+    {pageUrl:url('/courses/8/assignments/2')},{verification:undefined}]){
+    assert.equal((await check({...no,...patch})).status,'unknown');
+  }
+  for(const markup of ['<div class="assignment-submission-status">Not graded</div>',
+    '<div class="user_content"><div class="assignment-submission-status">Not yet submitted</div></div>',
+    '<div class="assignment-submission-status">Not yet submitted</div><div data-testid="submission-status">Submitted</div>']){
+    assert.equal((await check(await inspect('/courses/7/assignments/2',markup))).status,'unknown');
+  }
+  const yes=await inspect('/courses/7/assignments/2','<div class="assignment-submission-status">已提交</div>');
+  assert.deepEqual(await check(yes),{status:'submitted',attempt:null,submittedAt:null});
+  await assert.rejects(verifyWebSubmission(async()=>{throw Error('offline');},query));
 });
 
 test('only current published courses, same-site pagination and file links are read from the real DOM',async()=>{

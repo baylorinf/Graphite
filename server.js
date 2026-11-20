@@ -8,7 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const { exec } = require('child_process');
 
 let VAULT = '', CONFIG_DIR = '', PLUGIN_DIR = '';
@@ -563,13 +563,14 @@ async function withFileLock(abs, fn) {
 // Write to a temporary file and rename it over the original, so a failed write never leaves half a file.
 async function atomicWrite(abs, body, { mode, beforeReplace } = {}) {
   await fsp.mkdir(path.dirname(abs), { recursive: true });
-  const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.${process.pid}.${Date.now()}.tmp`);
+  const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.${randomUUID()}.tmp`);
   // Windows can refuse to replace a file another program has open for a moment (antivirus, cloud sync):
   // try the rename again for a while. Never fall back to writing over the original in place: a write that
   // fails half way (disk full) would leave half a file. If it can't be replaced, the original stays whole
   // and the save is reported as failed, so the app keeps the text and tries again.
+  const temporary = await fsp.open(tmp, 'wx', mode);
   try {
-    await fsp.writeFile(tmp, body, { mode });
+    try { await temporary.writeFile(body); } finally { await temporary.close(); }
     if (mode !== undefined && process.platform !== 'win32') await fsp.chmod(tmp, mode);
     for (let i = 0; ; i++) {
       if (beforeReplace) await beforeReplace();
@@ -1228,7 +1229,7 @@ async function start({ vault, port = 0, token = null, retry = 0, canvasOptions =
     server.listen(p, '127.0.0.1');
   });
 }
-module.exports = { start };
+module.exports = { start, atomicWrite, withFileLock, readSource };
 
 // Browser mode (node server.js).
 if (require.main === module) {

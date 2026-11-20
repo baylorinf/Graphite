@@ -36,7 +36,7 @@ async function main() {
     await fs.mkdir(path.dirname(file(name)), {recursive:true}); await fs.writeFile(file(name), contents);
   }
   const origin = 'http://127.0.0.1:' + await require(path.join(project, 'server.js')).start({vault});
-  let browser, ctx, page;
+  let browser, ctx, page, beforeRequest;
   async function launch(storageState) {
     browser = await chromium.launch({headless:true, executablePath:chrome, args:['--disable-background-networking']});
     ctx = await browser.newContext({storageState, locale:'zh-CN', viewport:{width:1450,height:850}});
@@ -45,8 +45,9 @@ async function main() {
       // Isolate the clipboard so copying a source citation cannot replace the user's clipboard contents.
       Object.defineProperty(navigator,'clipboard',{configurable:true,value:{writeText:async text=>{window.testSourceLink=text;}}});
     });
-    await ctx.route('**/*', route => {
+    await ctx.route('**/*', async route => {
       const u = route.request().url();
+      if (beforeRequest) await beforeRequest(route.request());
       return u.startsWith(origin+'/') && !u.startsWith(origin+'/api/events') ? route.continue() : route.abort();
     });
     page = await ctx.newPage(); page.setDefaultTimeout(11000);
@@ -184,12 +185,12 @@ async function main() {
     const pending = new Promise(resolve=>{signalPending=resolve;});
     const next = new Promise(resolve=>{release=resolve;});
     const slowRoute = url=>url.pathname==='/api/source' && url.searchParams.get('path')===slow;
-    await page.route(slowRoute,async route=>{if(route.request().method()==='PUT'){signalPending();await next;}await route.continue();});
+    beforeRequest=async request=>{if(slowRoute(new URL(request.url())) && request.method()==='PUT'){signalPending();await next;}};
     await page.keyboard.press('Control+s'); await pending; await page.keyboard.press('Control+z');
     assert.equal(await content(),'# base\n','undo a saving edit while its write is still pending');
     await open(python,pyChanged);
     const written=page.waitForResponse(r=>slowRoute(new URL(r.url()))&&r.request().method()==='PUT');
-    release(); await written; await page.unroute(slowRoute);
+    release(); await written; beforeRequest=null;
     await open(slow,'# base\n'); await focus(); await page.keyboard.press('Control+s');
     await diskEquals(slow,'# base\n');
     pass('Undo during a pending save survives switching to another source tab and back');
