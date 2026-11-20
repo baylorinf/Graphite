@@ -197,6 +197,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
         if (!view().connected) throw error(401,'请先连接交大 Canvas。');
         pullProgress = {done:0,total:0,name:''};
         const warnings = [];
+        let usingSnapshot = false;
         try {
           if (data.portalSyncEnabled) await syncWeb(false,true);
           else {
@@ -205,6 +206,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
           }
         } catch (e) {
           if (e.status===401 || e.status===403 || !data.snapshot?.courses?.length) throw e;
+          usingSnapshot = true;
           warnings.push('课程列表未能刷新，已采用上次同步的资料。'+e.message);
         }
         const courses=(data.snapshot?.courses || []).filter(c=>courseId===null || String(c.id)===courseId);
@@ -216,7 +218,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
         const sessionId=data.portalSyncEnabled ? (data.pullSessionId || randomBytes(16).toString('hex')) : null;
         const owner=data.portalSyncEnabled?'web:'+(data.snapshot?.webIdentity||sessionId):'api:'+data.accountId;
         const cached=data.pullCache?.owner===owner ? data.pullCache : {};
-        const { result,cache,noteCache } = await pullMaterials({vault,courses,warnings,download:downloadOne,noteWriter,
+        const { result,cache,noteCache } = await pullMaterials({vault,courses,warnings,usingSnapshot,download:downloadOne,noteWriter,
           previous:cached.files,previousNotes:cached.notes,
           onProgress:progress=>{pullProgress=progress;}});
         result.finishedAt=new Date().toISOString();

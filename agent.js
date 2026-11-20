@@ -343,7 +343,10 @@ module.exports = function createAgent(h) {
     for (const o of ops) {
       const f = path.join(stage, o.rel);
       if (!(await exists(f))) { problems.push(`missing ${o.rel}`); continue; }
-      if (o.kind === 'copy') { if ((await fileHash(f)) !== (await fileHash(o.src))) problems.push(`${o.rel} is not an exact copy`); }
+      if (o.kind === 'copy') {
+        o.sourceHash = await fileHash(f);
+        if (o.sourceHash !== await fileHash(o.src)) problems.push(`${o.rel} is not an exact copy`);
+      }
       else if (normText(await fsp.readFile(f, 'utf8')) !== normText(o.content)) problems.push(`${o.rel} does not have the confirmed text`);
     }
     const freeEdits = [];
@@ -408,33 +411,53 @@ module.exports = function createAgent(h) {
     const recentFolders = (Array.isArray(opts.recentFolders) && opts.recentFolders.length ? opts.recentFolders : ['Downloads', 'Desktop', 'Documents']).map(String);
     const manifest = await readManifest();
     const key = p => norm(p).toLowerCase();
-    const bySize = new Set(), pdfNames = new Set(), folders = [];
+    const bySize = new Map(), vaultFiles = new Map(), folders = [], digests = new Map(), duplicates = [];
+    async function digest(file) {
+      const key = low(path.resolve(file));
+      if (!digests.has(key)) digests.set(key, await fileHash(file).catch(()=>null));
+      return digests.get(key); // A file that vanished or could not be read is not evidence of a match.
+    }
     async function walkVault(dir, depth) {
       let ents = []; try { ents = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
       for (const e of ents) {
         if (e.name.startsWith('.')) continue;
         const p = path.join(dir, e.name);
         if (e.isDirectory()) { if (depth < 3) folders.push(toRel(p)); await walkVault(p, depth + 1); continue; }
+        if (!e.isFile() || (!DOC_EXT.test(e.name) && !NOTE_EXT.test(e.name))) continue;
         const ext = path.extname(e.name).toLowerCase();
         const st = await fsp.stat(p).catch(() => null);
-        if (st) bySize.add(st.size + ext);
-        if (ext === '.pdf') pdfNames.add(path.basename(e.name, ext).toLowerCase());
+        if (st) {
+          vaultFiles.set(low(toRel(p)), p);
+          const k = st.size + ext;
+          if (!bySize.has(k)) bySize.set(k, []);
+          bySize.get(k).push(p);
+        }
       }
     }
     await walkVault(VAULT(), 0);
-    const inV = (file, size) => {
-      const ext = path.extname(file).toLowerCase();
-      return bySize.has(size + ext) || (OFFICE.test(ext) && pdfNames.has(path.basename(file, ext).toLowerCase()));
-    };
     const candidates = [], counts = { scanned: 0, inVault: 0, known: 0, ignored: 0 };
     async function consider(file, st, course, rel) {
       counts.scanned++;
       const k = key(file);
       if (manifest.ignored[k]) { counts.ignored++; return; }
       const prev = manifest.imported[k];
-      if (prev && prev.size === st.size && Math.abs((prev.mtime || 0) - st.mtimeMs) < 2000) { counts.known++; return; }
-      if (inV(file, st.size)) { counts.inVault++; return; }
+      const previousCopy = typeof prev?.dest === 'string' && vaultFiles.get(low(norm(prev.dest)));
+      if (previousCopy && prev.size === st.size) {
+        // Legacy raw copies can be compared directly. A converted PDF cannot prove which
+        // Office source produced it, so a legacy conversion is offered for confirmation.
+        const expected = prev.sourceHash || (!prev.converted && !OFFICE.test(file) && await digest(previousCopy));
+        if (expected && expected === await digest(file)) { counts.known++; return; }
+      }
       const ext = path.extname(file).toLowerCase();
+      const possible = bySize.get(st.size + ext);
+      if (possible) {
+        const sourceHash = await digest(file);
+        if (sourceHash) for (const other of possible) {
+          if (sourceHash === await digest(other)) {
+            counts.inVault++; duplicates.push({src:norm(file), match:toRel(other)}); return;
+          }
+        }
+      }
       const c = { src: norm(file), name: path.basename(file), size: st.size, modified: new Date(st.mtimeMs).toISOString().slice(0, 10),
         kind: NOTE_EXT.test(ext) ? 'note' : OFFICE.test(ext) ? 'convert' : 'copy', course: course || null, rel: rel || null, changed: !!prev };
       if (!course && ext === '.pdf') { const fp = await pdfText(file, 1); if (fp) c.firstPage = fp.slice(0, 300); }
@@ -448,7 +471,7 @@ module.exports = function createAgent(h) {
           if (!SKIP_DIR.test(e.name) && !sb.skip.includes(low(e.name)) && depth < maxDepth && !inside(p, VAULT())) await walk(p, course, base, { recentOnly, depth: depth + 1, maxDepth });
           continue;
         }
-        if (SKIP_FILE.test(e.name)) continue;
+        if (!e.isFile() || SKIP_FILE.test(e.name)) continue;
         if (!DOC_EXT.test(e.name) && !(course && NOTE_EXT.test(e.name))) continue;
         const st = await fsp.stat(p).catch(() => null);
         if (!st || st.size === 0 || st.size > MAX_BYTES) continue;
@@ -475,10 +498,21 @@ module.exports = function createAgent(h) {
       for (const d of recentFolders) { progress({ step: 'scan', path: norm(path.join(home, d)) }); await walk(path.resolve(home, d), null, null, { recentOnly: true, maxDepth: 2 }); }
     }
     // The same file found twice: keep the course-folder one.
-    const seen = new Map();
+    const groups = new Map();
     for (const c of [...candidates].sort((a, b) => (b.course ? 1 : 0) - (a.course ? 1 : 0))) {
       const k = c.size + path.extname(c.name).toLowerCase();
-      if (seen.has(k)) c.duplicateOf = seen.get(k); else seen.set(k, c.src);
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(c);
+    }
+    for (const group of groups.values()) {
+      if (group.length < 2) continue;
+      const seen = new Map();
+      for (const c of group) {
+        const hash = await digest(c.src);
+        if (!hash) continue;
+        if (seen.has(hash)) c.duplicateOf = seen.get(hash);
+        else seen.set(hash, c.src);
+      }
     }
     // Where earlier imports went, by course: a strong hint for the model.
     const hints = {};
@@ -486,7 +520,7 @@ module.exports = function createAgent(h) {
       const course = sb.roots.map(r => norm(r).toLowerCase()).filter(r => src.startsWith(r + '/')).map(r => src.slice(r.length + 1).split('/')[0])[0];
       if (course && v.dest) { const f = norm(v.dest).split('/').slice(0, -1).join('/'); (hints[course] ||= new Set()).add(f); }
     }
-    return { candidates, counts, folders, hints: Object.fromEntries(Object.entries(hints).map(([k, s]) => [k, [...s].slice(0, 8)])) };
+    return { candidates, counts, folders, duplicates, hints: Object.fromEntries(Object.entries(hints).map(([k, s]) => [k, [...s].slice(0, 8)])) };
   }
 
   const IMPORT_SYSTEM = lang => `You file a university student's course files into their notes vault (Graphite, an Obsidian-style app).
@@ -504,14 +538,35 @@ Write reasons, questions and the note in ${lang}.`;
       questions: { type: 'array', items: { type: 'object', required: ['id', 'question'], properties: { id: { type: 'integer' }, question: { type: 'string' } } } },
       note: { type: 'string' } } } };
 
+  function manualImportPlan(run, scanResult, issue) {
+    const { candidates, counts, folders, duplicates } = scanResult;
+    const mapped = Object.entries(run.prof?.courses || {});
+    const items = candidates.filter(c => !c.duplicateOf).map(c => {
+      const file = c.kind === 'convert' ? c.name.slice(0, -path.extname(c.name).length) + '.pdf' : c.name;
+      const course = c.course && (mapped.find(([code]) => low(code) === low(c.course))?.[1] || c.course);
+      const sub = c.rel ? path.posix.dirname(c.rel) : '.';
+      let dest = [course, sub === '.' ? '' : sub, file].filter(Boolean).join('/');
+      try { checkManualDest(dest, file); } catch { dest = file; }
+      return {src:c.src, name:c.name, dest, kind:c.kind, course:c.course, size:c.size, selectedByDefault:!!course};
+    });
+    return {job:'import', planMode:'manual', ...(issue ? {planningIssue:issue} : {}), counts, total:candidates.length,
+      items, folders:folders.filter(folder=>!NO_WRITE.test(folder)), duplicates, ignore:[], questions:[]};
+  }
   async function importPlan(run) {
-    const { candidates, counts, folders, hints } = await scan(run.sb, !!run.body.extras, run.progress, run.body);
-    if (!candidates.length) return { job: 'import', empty: true, counts, items: [], ignore: [], questions: [] };
+    const scanResult = await scan(run.sb, !!run.body.extras, run.progress, run.body);
+    const { candidates, counts, folders, hints, duplicates } = scanResult;
+    if (!candidates.length) return { job: 'import', empty: true, counts, duplicates, items: [], ignore: [], questions: [] };
+    if (run.body.planning === 'manual') return manualImportPlan(run, scanResult);
     const shown = candidates.slice(0, 300);
     const user = `Today: ${today()}\n\n<candidates>\n${shown.map((c, i) => JSON.stringify({ id: i, ...c })).join('\n')}\n</candidates>\n` +
       (candidates.length > shown.length ? `(${candidates.length - shown.length} more not shown; they will be offered next time)\n` : '') +
       `\n<vault_folders>\n${folders.slice(0, 400).join('\n')}\n</vault_folders>\n\n<earlier_imports_by_course>\n${JSON.stringify(hints)}\n</earlier_imports_by_course>`;
-    const out = await loop(run, { system: IMPORT_SYSTEM(run.langName), user, toolNames: ['list_dir', 'read_file', 'submit_plan'], submit: IMPORT_SUBMIT, maxTurns: 10 });
+    let out;
+    try { out = await loop(run, { system: IMPORT_SYSTEM(run.langName), user, toolNames: ['list_dir', 'read_file', 'submit_plan'], submit: IMPORT_SUBMIT, maxTurns: 10 }); }
+    catch (err) {
+      if (run.signal.aborted || !run.fw || err.code !== 'outside' || err.framework !== run.fw) throw err;
+      return manualImportPlan(run, scanResult, {code:'outside', framework:run.fw});
+    }
     const items = [], used = new Set();
     for (const it of Array.isArray(out.items) ? out.items : []) {
       const c = shown[+it.id];
@@ -528,25 +583,79 @@ Write reasons, questions and the note in ${lang}.`;
     const pick = (arr, f) => (Array.isArray(arr) ? arr : []).map(x => ({ c: shown[+x.id], x })).filter(o => o.c && !used.has(shown.indexOf(o.c))).map(f);
     const ignore = pick(out.ignore, o => ({ src: o.c.src, name: o.c.name, reason: String(o.x.reason || '') }));
     const questions = pick(out.questions, o => ({ src: o.c.src, name: o.c.name, question: String(o.x.question || '') }));
-    return { job: 'import', counts, total: candidates.length, items, ignore, questions, note: String(out.note || '') };
+    return { job: 'import', counts, duplicates, total: candidates.length, items, ignore, questions, note: String(out.note || '') };
   }
   function writeTargetAny(rel) { // a copy destination: any file type, but never in hidden or mirrored folders
     if (NO_WRITE.test(rel) || rel.split('/').some(s => s === '..' || s.startsWith('.') || !s.trim())) throw new Error('Not allowed: ' + rel);
     return inVault(rel);
   }
+  function checkManualDest(dest, name) {
+    if (typeof dest !== 'string' || path.posix.isAbsolute(dest) || path.win32.isAbsolute(dest) ||
+        /[\\:\x00-\x1f]/.test(dest) || path.posix.basename(dest) !== name) {
+      throw new HttpError(400, 'Choose a vault folder and keep the original file name');
+    }
+    try { return writeTargetAny(dest); }
+    catch { throw new HttpError(400, 'Choose a writable folder inside the vault'); }
+  }
+
+  async function manualSelection(run, plan) {
+    const {accept, destinations = {}} = run.body;
+    if (!Array.isArray(accept) || accept.some(i=>!Number.isInteger(i) || i<0 || i>=plan.items.length)) {
+      throw new HttpError(400, 'Confirm the files to import first');
+    }
+    if (!destinations || typeof destinations !== 'object' || Array.isArray(destinations)) throw new HttpError(400, 'Invalid import destinations');
+    const selected = new Set(accept);
+    if (Object.keys(destinations).some(k => !selected.has(Number(k)) || String(Number(k)) !== k)) {
+      throw new HttpError(400, 'Choose a destination only for a selected file');
+    }
+    const roots = run.sb.roots.slice();
+    if (run.body.extras) {
+      const home = os.homedir();
+      for (const folder of run.body.recentFolders || ['Downloads','Desktop','Documents']) {
+        const recent = path.resolve(home, folder);
+        if (inside(recent, home) && recent !== home) roots.push(recent);
+      }
+    }
+    const items = [];
+    for (const i of selected) {
+      const it = plan.items[i], dest = Object.hasOwn(destinations,i) ? destinations[i] : it.dest;
+      const to = checkManualDest(dest, path.posix.basename(it.dest));
+      await realInVault(to);
+      const current = await fsp.realpath(it.src).catch(()=>null);
+      if (!current || low(current) !== low(path.resolve(it.src)) || !roots.some(root=>inside(current, root)) || skipped(current, run.sb) ||
+          !(await fsp.lstat(it.src)).isFile()) throw new HttpError(409, 'A source is no longer available in the approved folders; scan again');
+      items.push({...it,dest});
+    }
+    return items;
+  }
 
   // Copy a file into the vault, never overwriting (a numbered name is used instead).
   async function copyIntoVault(src, dest) {
-    const abs = await uniquePath(writeTargetAny(dest));
-    await fsp.mkdir(path.dirname(abs), { recursive: true });
-    await fsp.copyFile(src, abs, fs.constants.COPYFILE_EXCL);
-    return toRel(abs);
+    const target = writeTargetAny(dest);
+    await realInVault(target);
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    for (;;) {
+      const abs = await uniquePath(target);
+      try { await fsp.copyFile(src, abs, fs.constants.COPYFILE_EXCL); return toRel(abs); }
+      catch (e) { if (e.code !== 'EEXIST') throw e; }
+    }
   }
   async function officeIntoVault(src, dest) {
-    const abs = await uniquePath(writeTargetAny(dest));
-    await fsp.mkdir(path.dirname(abs), { recursive: true });
-    await officeToPdf(src, abs);
-    return toRel(abs);
+    const temp = await fsp.mkdtemp(path.join(os.tmpdir(), 'graphite-convert-'));
+    const pdf = path.join(temp, 'converted.pdf');
+    try { await officeToPdf(src, pdf); return await copyIntoVault(pdf, dest); }
+    finally { await fsp.rm(temp, {recursive:true, force:true}).catch(()=>{}); }
+  }
+
+  async function recordImports(imported, ignored) {
+    if (!Object.keys(imported).length && !ignored.length) return;
+    const abs = inVault(MANIFEST);
+    await withFileLock(abs, async () => {
+      const manifest = await readManifest();
+      Object.assign(manifest.imported, imported);
+      for (const ig of ignored) manifest.ignored[norm(ig.src).toLowerCase()] = {reason:ig.reason || '', at:new Date().toISOString()};
+      await atomicWrite(abs, JSON.stringify(manifest, null, 2));
+    });
   }
 
   const INDEX_SYSTEM = lang => `New course files were just copied into a student's notes vault. Make them one click away from the course's index note, in the student's own style.
@@ -556,34 +665,36 @@ Write reasons, questions and the note in ${lang}.`;
 - Use write_vault_file with the whole note. Then call finish with a two-line summary in ${lang}.`;
 
   async function importApply(run, plan) {
-    if (run.fw) return importApplyFw(run, plan);
-    const accept = new Set((Array.isArray(run.body.accept) ? run.body.accept : plan.items.map((_, i) => i)).map(Number));
-    const done = [], failed = [];
-    const manifest = await readManifest();
+    const manual = plan.planMode === 'manual';
+    if (run.fw && !manual) return importApplyFw(run, plan);
+    const accept = acceptSet(run.body.accept, plan.items);
+    const chosen = manual ? run.manualItems : plan.items.filter((_,i)=>accept.has(i));
+    const done = [], failed = [], imported = {};
     const key = p => norm(p).toLowerCase();
-    for (const [i, it] of plan.items.entries()) {
-      if (!accept.has(i)) continue;
-      run.progress({ step: 'copy', path: it.dest, i: done.length + failed.length + 1, n: accept.size });
+    for (const it of chosen) {
+      run.progress({ step: 'copy', path: it.dest, i: done.length + failed.length + 1, n: chosen.length });
       try {
         const st = await fsp.stat(it.src);
-        const dest = it.kind === 'convert' ? await officeIntoVault(it.src, it.dest) : await copyIntoVault(it.src, it.dest);
-        manifest.imported[key(it.src)] = { dest, size: st.size, mtime: st.mtimeMs, at: new Date().toISOString(), ...(it.kind === 'convert' ? { converted: true } : {}) };
+        const convert = it.kind === 'convert';
+        const before = convert && await fileHash(it.src);
+        const dest = convert ? await officeIntoVault(it.src, it.dest) : await copyIntoVault(it.src, it.dest);
+        const after = await fileHash(convert ? it.src : inVault(dest)).catch(() => undefined);
+        const sourceHash = !convert || before === after ? after : undefined;
+        imported[key(it.src)] = { dest, size: st.size, mtime: st.mtimeMs, sourceHash, at: new Date().toISOString(), ...(convert ? { converted: true } : {}) };
         done.push({ src: it.src, name: it.name, dest });
       } catch (e) { failed.push({ src: it.src, name: it.name, error: e.message }); }
     }
-    if (run.body.recordIgnore !== false) for (const ig of plan.ignore || []) manifest.ignored[key(ig.src)] = { reason: ig.reason || '', at: new Date().toISOString() };
-    const mAbs = inVault(MANIFEST);
-    await withFileLock(mAbs, () => atomicWrite(mAbs, JSON.stringify(manifest, null, 2)));
+    await recordImports(imported, run.body.recordIgnore === false ? [] : plan.ignore || []);
     let summary = '', indexError = '';
     const notes = done.filter(d => !/\.md$/i.test(d.dest));
-    if (notes.length) {
+    if (notes.length && !manual) {
       try {
         const out = await loop(run, { system: INDEX_SYSTEM(run.langName), user: `Files just added (vault paths):\n${notes.map(d => '- ' + d.dest).join('\n')}`,
           toolNames: ['list_dir', 'read_file', 'write_vault_file', 'finish'], submit: TOOL_DEFS.finish && { name: 'finish', ...TOOL_DEFS.finish }, maxTurns: 16 });
         summary = String(out.summary || '');
       } catch (e) { indexError = e.message; }
     }
-    return { job: 'import', done, failed, ignored: (plan.ignore || []).length, edited: run.edited, summary, indexError };
+    return { job: 'import', ...(manual ? {planMode:'manual'} : {}), done, failed, ignored: (plan.ignore || []).length, edited: run.edited, summary, indexError };
   }
 
   // With a local framework: it copies the confirmed files into its stage (and adds links to the course index
@@ -604,11 +715,9 @@ Write reasons, questions and the note in ${lang}.`;
     const added = chosen.filter(it => !NOTE_EXT.test(it.dest)).map(it => '- ' + it.dest).join('\n');
     const freeTask = free.length ? `Add a link to each newly added file in the index note of its course and folder section, in the style the note already uses (for example [[LA5.pdf|LA5]]). The new files (vault paths): \n${added}` : '';
     const { applied, extra } = await fwApply(run, ops, { free: free.slice(0, 40), freeTask });
-    const manifest = await readManifest(), key = p => norm(p).toLowerCase();
-    for (const o of applied) { const st = await fsp.stat(o.src); manifest.imported[key(o.src)] = { dest: o.dest, size: st.size, mtime: st.mtimeMs, at: new Date().toISOString(), by: run.fw, ...(o.convert ? { converted: true } : {}) }; }
-    if (run.body.recordIgnore !== false) for (const ig of plan.ignore || []) manifest.ignored[key(ig.src)] = { reason: ig.reason || '', at: new Date().toISOString() };
-    const mAbs = inVault(MANIFEST);
-    await withFileLock(mAbs, () => atomicWrite(mAbs, JSON.stringify(manifest, null, 2)));
+    const imported = {};
+    for (const o of applied) { const st = await fsp.stat(o.src); imported[norm(o.src).toLowerCase()] = { dest: o.dest, size: st.size, mtime: st.mtimeMs, sourceHash: o.sourceHash, at: new Date().toISOString(), by: run.fw, ...(o.convert ? { converted: true } : {}) }; }
+    await recordImports(imported, run.body.recordIgnore === false ? [] : plan.ignore || []);
     return { job: 'import', framework: run.fw, done: applied.map(o => ({ src: o.src, name: o.name, dest: o.dest })), failed: [], ignored: (plan.ignore || []).length, edited: run.edited, extra };
   }
 
@@ -809,15 +918,19 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
     const fw = body.framework && h.frameworks.ids.includes(body.framework) ? body.framework : null;
     const provider = fw ? null : body.provider || 'anthropic';
     if (!fw && provider !== 'anthropic' && !h.COMPAT[provider]) throw new HttpError(400, 'Unknown AI provider');
-    if (!fw && !key && provider !== 'custom') throw new HttpError(400, 'No API key');
     const model = fw ? '' : String(body.model || '').trim() || (provider === 'anthropic' ? h.ANTHROPIC_DEFAULT : '');
-    if (!fw && !model) throw new HttpError(400, 'Choose a model first (Settings → AI)');
     for (const [k, v] of plans) if (Date.now() - v.at > 3600e3) plans.delete(k);
     let plan = null;
     if (body.phase === 'apply') {
       plan = plans.get(String(body.planId || ''));
       if (!plan || plan.job !== body.job) throw new HttpError(410, 'This plan has expired; start again');
+      if (plan.planMode === 'manual' && (plan.owner !== (fw || provider) || plan.vault !== VAULT())) {
+        throw new HttpError(409, 'The chosen executor or vault changed; scan again');
+      }
     }
+    const manual = body.job === 'import' && (plan ? plan.planMode === 'manual' : body.planning === 'manual');
+    if (!manual && !fw && !key && provider !== 'custom') throw new HttpError(400, 'No API key');
+    if (!manual && !fw && !model) throw new HttpError(400, 'Choose a model first (Settings → AI)');
     const ctl = new AbortController();
     res.on('close', () => { if (!res.writableFinished) ctl.abort(); });
     res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -840,12 +953,19 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
       signal: ctl.signal, seen: new Map(), edited: [], progress: p => line({ progress: p }) };
     try {
       let result;
-      if (plan) { plans.delete(body.planId); result = await job[1](run, plan); }
+      if (plan) {
+        if (plan.planMode === 'manual') {
+          run.manualItems = await manualSelection(run, plan);
+          if (plans.get(body.planId) !== plan) throw new HttpError(410, 'This plan was already used');
+        }
+        plans.delete(body.planId);
+        result = await job[1](run, plan);
+      }
       else {
         result = await job[0](run);
         if (!result.empty && ['items', 'edits', 'ignore', 'questions'].some(k => result[k] && result[k].length)) {
           const planId = crypto.randomBytes(9).toString('hex');
-          plans.set(planId, { ...result, at: Date.now() });
+          plans.set(planId, { ...result, owner:fw || provider, vault:VAULT(), at: Date.now() });
           result = { ...result, planId, edits: (result.edits || []).map(({ content, base, ...e }) => e) };
           if (result.items) result.items = result.items.map(({ text, ...it }) => ({ ...it, preview: text ? text.slice(0, 600) : undefined }));
         }

@@ -31,6 +31,8 @@ let cfg = {};
 let win = null;
 let VAULT = ''; // the vault actually open in this window
 let quitting = false;
+let choosingVault = false;
+let closing = false;
 
 function loadConfig() { carryOverOldSettings(); try { cfg = JSON.parse(fs.readFileSync(CONFIG(), 'utf8')); } catch { cfg = {}; } }
 function saveConfig(strict = false) {
@@ -67,7 +69,7 @@ const updater = createUpdater({
   onState: state => { if (win && !win.isDestroyed()) win.webContents.send('update-state', state); },
   beforeInstall: async () => {
     const target = win;
-    if (!target || target.isDestroyed() || !target.isEnabled()) return { ok: false, errorCode: 'unsaved', error: 'The editor is unavailable' };
+    if (closing || choosingVault || !target || target.isDestroyed() || !target.isEnabled()) return { ok: false, errorCode: 'unsaved', error: 'The editor is unavailable' };
     // Keep editing available during the download, then freeze input for the final save and handoff.
     target.setEnabled(false);
     pausedUpdateWindow = target;
@@ -93,6 +95,48 @@ async function installUpdate() {
     pausedUpdateWindow = null;
   }
   return result;
+}
+
+async function chooseVault() {
+  const target = win;
+  if (quitting || closing || choosingVault || !target || target.isDestroyed() || !target.isEnabled()) return false;
+  choosingVault = true;
+  let paused = false;
+  try {
+    const next = await askForVault(target);
+    if (!next || path.resolve(next) === path.resolve(VAULT) || target.isDestroyed() || !target.isEnabled()) return false;
+    target.setEnabled(false);
+    paused = true;
+    const result = await verifyBeforeInstall(
+      () => target.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : null'),
+      () => captureStorage(true),
+    );
+    if (!result.ok) throw new Error(result.error);
+    const previous = cfg.vault;
+    try {
+      cfg.vault = next;
+      saveConfig(true);
+      app.relaunch({ args: process.argv.slice(1).filter(a => !a.startsWith('--vault=')) });
+    } catch (error) {
+      cfg.vault = previous;
+      saveConfig();
+      throw error;
+    }
+    quitting = true;
+    app.exit(0);
+    return true;
+  } catch (error) {
+    console.warn('Vault switch stopped:', error.message);
+    if (!target.isDestroyed()) {
+      if (paused) { target.setEnabled(true); paused = false; }
+      const t = tr();
+      await dialog.showMessageBox(target, {type:'warning', title:t('unsavedTitle'), message:t('unsavedTimeout')});
+    }
+    return false;
+  } finally {
+    if (paused && !quitting && !target.isDestroyed()) target.setEnabled(true);
+    choosingVault = false;
+  }
 }
 
 /* ---------- Remembering the page's settings ----------
@@ -260,8 +304,8 @@ function createWindow(url) {
   // Closing: save every note first. The window only closes once all text is on disk, or you chose what to do
   // with what couldn't be saved (try again, save copies somewhere else, close and keep them as drafts that are
   // retried on next start, or keep editing). A save that hangs is treated like a failed one, never as done.
-  let closing = false;
   win.on('close', e => {
+    if (!quitting && (choosingVault || pausedUpdateWindow)) { e.preventDefault(); return; }
     if (!win.isMaximized() && !win.isFullScreen()) cfg.bounds = win.getBounds();
     cfg.maximized = win.isMaximized();
     saveConfig();
@@ -271,10 +315,15 @@ function createWindow(url) {
     closing = true;
     closeSafely().catch(err => console.error(err)).finally(() => { closing = false; });
   });
-  const flushPage = () => Promise.race([
-    win.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : ({ ok: true, unsaved: [] })').catch(() => null),
-    new Promise(r => setTimeout(() => r(null), 8000)),
-  ]);
+  async function flushPage() {
+    let timer;
+    try {
+      return await Promise.race([
+        win.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : null').catch(() => null),
+        new Promise(resolve => { timer = setTimeout(() => resolve(null), 8000); }),
+      ]);
+    } finally { clearTimeout(timer); }
+  }
   async function closeSafely() {
     const t = tr();
     for (;;) {
@@ -282,6 +331,12 @@ function createWindow(url) {
       const r = await flushPage();
       await captureStorage(); // drafts are kept with the settings in any case
       if (r && r.ok) { quitting = true; win.destroy(); return; }
+      if (r?.reviewUnsaved) {
+        const answer = await dialog.showMessageBox(win, { type:'warning', title:t('unsavedTitle'),
+          message:r.reviewMessage || t('unsavedTimeout'), buttons:[t('unsavedRetry'), t('cancel')], defaultId:0, cancelId:1, noLink:true });
+        if (answer.response === 0) continue;
+        return;
+      }
       const unsaved = (r && r.unsaved) || [];
       const names = unsaved.map(u => '• ' + u.path).join('\n');
       const { response } = await dialog.showMessageBox(win, {
@@ -339,17 +394,7 @@ async function main() {
     cb({ requestHeaders: details.requestHeaders });
   });
 
-  ipcMain.handle('choose-vault', async () => {
-    const v = await askForVault(win);
-    if (!v || path.resolve(v) === path.resolve(vault)) return false;
-    cfg.vault = v; saveConfig();
-    await win.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : null').catch(() => {});
-    await captureStorage();
-    app.relaunch({ args: process.argv.slice(1).filter(a => !a.startsWith('--vault=')) });
-    quitting = true;
-    app.exit(0);
-    return true;
-  });
+  ipcMain.handle('choose-vault', chooseVault);
   ipcMain.on('set-language', (_e, code) => { if (code && code !== cfg.lang) { cfg.lang = code; saveConfig(); } });
   ipcMain.on('storage-load', e => { e.returnValue = storageForPage(); });
   ipcMain.handle('update-check', (_event, options) => checkForUpdates({ force: options?.force === true }));

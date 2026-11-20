@@ -116,7 +116,7 @@ async function verifyBeforeInstall(flush, remember, timeoutMs = 8000) {
       (async () => {
         const saved = await flush();
         if (expired) return issue('saveTimeout', 'Saving timed out');
-        if (saved?.ok !== true) return issue('unsaved', 'Save your changes before installing the update');
+        if (saved?.ok !== true) return issue('unsaved', saved?.reviewMessage || 'The current changes could not be saved');
         await remember();
         return { ok: true };
       })(),
@@ -125,7 +125,7 @@ async function verifyBeforeInstall(flush, remember, timeoutMs = 8000) {
       }),
     ]);
     return result;
-  } catch { return issue('unsaved', 'Could not save changes before installing the update'); }
+  } catch { return issue('unsaved', 'Could not save the current changes'); }
   finally { clearTimeout(timer); }
 }
 

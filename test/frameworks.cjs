@@ -110,6 +110,21 @@ async function main() {
         assert.equal(plan.error?.code, 'outside', JSON.stringify(plan.error || plan.result));
       });
     }
+    await test('codex: manual import survives a blocked planning read and confirmation never restarts the framework', async () => {
+      script.outside = path.join(outside,'SKILL.md');
+      await fsp.writeFile(script.outside,'Synthetic user instructions for this isolated test');
+      const plan = await job({job:'import',framework:'codex',phase:'plan'});
+      assert.deepEqual(plan.result?.planningIssue,{code:'outside',framework:'codex'},JSON.stringify(plan.error));
+      const i = plan.result.items.findIndex(f=>f.name==='Notes2.md');
+      assert.ok(i>=0);
+      const dest='Recovery/Notes2.md', before=srv.log.length;
+      assert.equal(fs.existsSync(path.join(vault,dest)),false);
+      const done=await job({job:'import',framework:'codex',phase:'apply',planId:plan.result.planId,accept:[i],destinations:{[i]:dest}});
+      assert.equal(done.result?.planMode,'manual',JSON.stringify(done.error));
+      assert.deepEqual(done.result.done.map(f=>f.dest),[dest]);
+      assert.equal(srv.log.length,before,'confirmation started the AI again');
+      assert.deepEqual(await fsp.readFile(path.join(vault,dest)),await fsp.readFile(path.join(courses,'Algebra/Notes2.md')));
+    });
     await test('codex: imports a course file byte for byte and adds it to the course index (writes by codex in its stage)', async () => {
       script.readFile = path.join(courses, 'Algebra/Notes2.md');
       script.plan = p => { const ids = [...p.matchAll(/\{"id":(\d+),[^\n]*?"name":"([^"]+)"/g)]; const pdf = ids.find(m => m[2] === 'Slides.pdf'); return { items: pdf ? [{ id: +pdf[1], dest: 'Algebra/Slides.pdf' }] : [], ignore: [], questions: [], note: 'read NATIVE_MARKER' }; };

@@ -88,6 +88,51 @@ test('a restricted attachment is reported while other courses and the assignment
   assert.equal((await svc.handle('POST','pull')).files.saved,1);
 });
 
+test('keeps linked jAccount attachments on an offline upgrade and preserves the school deadline label',async t=>{
+  const vault=await fs.mkdtemp(path.join(os.tmpdir(),'graphite-offline-assignment-'));
+  t.after(()=>fs.rm(vault,{recursive:true,force:true}));
+  const file={id:'27',name:'练习 #1.pdf',url:origin+'/courses/9/files/27',updatedAt:null};
+  const course={id:'9',name:'Calculus',files:[file],assignments:[{id:'10',title:'Exercises',dueAt:null,
+    dueLabel:'11月28日 23:59',description:'Work in pairs.',attachments:[file]}]};
+  let state={portalSyncEnabled:true,webVerified:true}, offline=false, fileOffline=false,downloads=0;
+  const storage={load:async()=>structuredClone(state),save:async next=>{state=structuredClone(next);}};
+  const folder='Canvas/Calculus (9)';
+  const desktop={
+    syncWeb:async()=>{if(offline)throw Error('network unavailable'); return {user:'Test student',snapshot:{webIdentity:'42',courses:[course],warnings:[]}};},
+    downloadWeb:async()=>{
+      downloads++;
+      if(offline || fileOffline)throw Error('network unavailable');
+      const relative=folder+'/练习 #1 (2).pdf'; // A name collision had already been resolved by the desktop downloader.
+      const absolute=path.join(vault,relative);
+      if (await fs.stat(absolute).catch(()=>null)) return {path:relative,unchanged:true};
+      await fs.writeFile(absolute,'official bytes');
+      return {path:relative,unchanged:false};
+    },
+  };
+  const pull=()=>createCanvasService({vault,storage,desktop}).handle('POST','pull');
+  const note=path.join(vault,folder,'作业','Exercises (10).md');
+  assert.deepEqual((await pull()).failed,[]);
+  const first=await fs.readFile(note,'utf8');
+  assert.match(first,/截止时间：11月28日 23:59/);
+  assert.match(first, /\.\.\/%E7%BB%83%E4%B9%A0%20%231%20%282%29\.pdf/);
+  // Simulate upgrading a stock 1.1.44 vault, which only cached files with a remote timestamp.
+  state.pullCache.files={}; offline=true;
+  const migrated=await pull();
+  assert.equal(downloads,1); assert.equal(migrated.files.unchanged,1); assert.deepEqual(migrated.failed,[]);
+  assert(migrated.warnings.some(w=>w.includes('本地副本')));
+  assert.equal(await fs.readFile(note,'utf8'),first);
+  assert.equal(state.pullCache.files['9/27'].path,folder+'/练习 #1 (2).pdf');
+  offline=false; fileOffline=true;
+  const failedFile=await pull();
+  assert.equal(downloads,2); assert.equal(failedFile.files.unchanged,1); assert.deepEqual(failedFile.failed,[]);
+  assert(failedFile.warnings.some(w=>w.includes('本地副本')));
+  assert.equal(await fs.readFile(note,'utf8'),first);
+  offline=true;
+  await fs.unlink(path.join(vault,state.pullCache.files['9/27'].path));
+  const missing=await pull();
+  assert.equal(missing.files.unchanged,0);assert.equal(missing.failed[0].id,file.id);
+});
+
 test('an authenticated web submission invokes the official form once and reuses its receipt',async t=>{
   const vault=await fs.mkdtemp(path.join(os.tmpdir(),'graphite-submit-web-'));
   t.after(()=>fs.rm(vault,{recursive:true,force:true}));
