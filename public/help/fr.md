@@ -4,6 +4,12 @@ Graphite est une application de prise de notes reliées entre elles. Chaque note
 
 > [!tip] Ouvrez ce guide à tout moment avec **F1**, le bouton **?** du ruban de gauche, ou la palette de commandes (`Ctrl+P`, puis tapez « aide »).
 
+## Fichiers et échéances de Canvas SJTU
+
+Depuis un nouvel onglet ou les réglages généraux, choisissez **Canvas SJTU → Se connecter avec jAccount**. L’application ouvre la page de connexion de l’université et synchronise vos cours, échéances et fichiers accessibles. Téléchargez un fichier ou tous ceux d’un cours. Les téléchargements de la fenêtre du portail vont dans `Canvas/Downloads` du coffre.
+
+Depuis **Devoirs**, ouvrez le devoir sur Canvas pour le remettre puis revenez dans Graphite pour vérifier sa réception. Une connexion API Canvas autorisée séparément permet aussi de relire et de confirmer certaines remises dans Graphite. Pour les dates seules, copiez le lien personnel du flux du calendrier Canvas dans **Abonnement au calendrier**.
+
 ## Votre coffre
 - Le **coffre** est le dossier qui contient vos notes. Son emplacement figure dans **Paramètres → Général**.
 - Pour utiliser un autre dossier, par exemple un coffre Obsidian existant, lancez l’application avec `node server.js "D:\chemin\du\coffre"`.

@@ -44,6 +44,8 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 
 ### Connect
 
+**SJTU Canvas.** Open **SJTU Canvas** on a new tab and sign in through the university's jAccount page. Graphite can collect the course pages visible to you, check deadlines, download handouts and open the correct assignment for submission. [Canvas setup and sync details](docs/sjtu-canvas.md).
+
 - **Backlinks, unlinked mentions, outgoing links, outline, tags,** and **related notes** (similar wording, not linked yet) with a one-click Link button.
 - **Search** with `#tag`, `path:folder`, `file:name` and `"exact phrase"`.
 - **Graph view that works like memory:**

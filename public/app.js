@@ -19,6 +19,7 @@ import { G, initGraph, buildGraph, drawGraph, readGraphColors, fitGraph, stopGra
 import { initSettings, openSettings, closeSettings, settingsOpen, refreshSettings } from '/settings.js';
 import { mountPdf } from '/pdfview.js';
 import { createReferencePane } from '/reference.js';
+import { createCanvasView } from '/canvas-view.js';
 import { createCodeEditor, sourceFormat } from '/code-editor.js';
 // The bundled plugins write English and ask the app for the text in your language.
 window.graphiteT = (s, v) => fillVars((PLUG[getLang()] || {})[s] ?? s, v);
@@ -1647,6 +1648,7 @@ async function newCodeFile() {
    Commands & shortcuts
    ===================================================================== */
 const COMMANDS = [
+  { id: 'sjtu-canvas', name: 'SJTU Canvas courses, files and deadlines', run: () => openCustomTab('sjtu-canvas', 'courses', {here:true}) },
   { id:'new-code-file', name:'Create a code file', run:newCodeFile },
   { id: 'study-reference', name: 'Study PDF beside a note', available: () => (S.view === 'note' && !!S.current) || (S.view === 'file' && /\.pdf$/i.test(S.filePath || '')), run: openStudyReference },
   { id: 'new-note', name: 'Create new note', kbd: 'Alt+N', run: () => newNote() },
@@ -1761,6 +1763,9 @@ function changeLanguage(code) {
   PM.setMomentLocale(code);
   window.myobsidianDesktop?.setLanguage(code);
   refreshSettings();
+  canvasWorkspace.relabel();
+  renderTabs();
+  if (activeTab()?.kind === 'empty') renderStartPage();
   if (S.view === 'graph') { readGraphColors(); drawGraph(); }
   if (S.view === 'help') showHelp();
 }
@@ -1769,7 +1774,7 @@ function changeLanguage(code) {
 document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey;
   if (!mod || e.altKey) return;
-  if (!$('#modal').classList.contains('hidden') || document.querySelector('.plugin-modal') || settingsOpen()) return;
+  if (!$('#modal').classList.contains('hidden') || document.querySelector('.plugin-modal, #cv-submit-dialog[open]') || settingsOpen()) return;
   const k = e.key.toLowerCase();
   let done = true;
   if (e.key === 'Tab') cycleTab(e.shiftKey ? -1 : 1);
@@ -1824,7 +1829,7 @@ document.querySelectorAll('iframe').forEach(bridgeFrameKeys);
 
 document.addEventListener('keydown', e => {
   const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
-  if (!$('#modal').classList.contains('hidden') || document.querySelector('.plugin-modal') || settingsOpen()) return;
+  if (!$('#modal').classList.contains('hidden') || document.querySelector('.plugin-modal, #cv-submit-dialog[open]') || settingsOpen()) return;
   if (e.key === 'F1') { e.preventDefault(); runCommand('help'); return; }
   if (mod && !e.shiftKey && e.key === ',') { e.preventDefault(); openSettings(); return; }
   if (e.key === 'Escape' && S.view === 'help') { showNoteView(); return; }
@@ -2727,6 +2732,11 @@ const host = {
    - Plugins can add their own tabs (the 🎓 study pages do) through window.moTabs.
    ===================================================================== */
 const TABS = { list: [], active: null, closed: [], seq: 0, providers: new Map(), restoring: false };
+const canvasWorkspace = createCanvasView($('#canvas-view'), {
+  api,
+  openFile: async path => { await sync(); await openInTab(path, {where:'new', keep:true}); },
+});
+TABS.providers.set(canvasWorkspace.id, canvasWorkspace);
 const tabById = id => TABS.list.find(x => x.id === id) || null;
 const activeTab = () => tabById(TABS.active);
 const newTabObj = (o = {}) => ({ id: 't' + (++TABS.seq), kind: 'empty', path: null, preview: false, history: [], hIdx: -1, ...o });
@@ -2905,7 +2915,11 @@ async function closeTab(id, { activate = true } = {}) {
   if (tab.id === TABS.active) { if (S.dirty) await saveNow(); saveTabView(tab); }
   if (tab.kind !== 'empty') TABS.closed.push({ ...tab, at: i });
   if (TABS.closed.length > 20) TABS.closed.shift();
-  if (tab.kind === 'custom') { const pr = TABS.providers.get(tab.provider); pr?.hide?.(tab.key); pr?.close?.(tab.key); $('#main').classList.remove('tab-custom'); }
+  if (tab.kind === 'custom') {
+    const pr = TABS.providers.get(tab.provider);
+    if (tab.id === TABS.active) { pr?.hide?.(tab.key); $('#main').classList.remove('tab-custom'); }
+    pr?.close?.(tab.key);
+  }
   TABS.list.splice(i, 1);
   if (tab.id === TABS.active) {
     TABS.active = null;
@@ -2983,6 +2997,7 @@ function renderStartPage() {
         ${item('data-cmd="daily"', tabSvg('note'), t('ribbon.daily'), 'Alt+D')}
         ${item('data-cmd="graph"', tabSvg('graph'), t('graph.title'), 'Ctrl+G')}
         ${item('data-cmd="review"', tabSvg('review'), t('review.title'), 'Alt+R')}
+        ${item('data-cmd="sjtu-canvas"', icon('calendar'), t('cmd.sjtu-canvas'), '')}
         ${item('data-cmd="help"', tabSvg('help'), t('empty.help'), 'F1')}
       </div>
       <p class="sp-tip">${esc(t('tabs.tip'))}</p>

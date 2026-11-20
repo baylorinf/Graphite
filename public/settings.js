@@ -94,6 +94,10 @@ function heading(text) { content.createEl('h2', { cls: 'settings-h', text }); }
 
 function renderGeneral() {
   heading(t('settings.general'));
+  new PM.Setting(content).setName(t('cmd.sjtu-canvas')).setDesc(t('canvas.settings')).addButton(button => {
+    button.buttonEl.id = 'settings-canvas-open';
+    button.setButtonText(t('canvas.open')).onClick(() => { closeSettings(); H.runCommand('sjtu-canvas'); });
+  });
   new PM.Setting(content).setName(t('settings.language')).setDesc(t('settings.languageDesc')).addDropdown(d => {
     for (const l of LANGS) d.addOption(l.code, `${l.name}  ·  ${l.english}`);
     d.setValue(getLang()).onChange(v => H.changeLanguage(v));

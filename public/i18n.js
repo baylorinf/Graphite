@@ -2382,6 +2382,9 @@ for (const [key, labels] of Object.entries({
   // The feature manual (F1)
   'empty.help': ['Feature manual and guide', 'Manuel et guide', 'Manual y guía', '機能ガイドと使い方', '기능 안내서와 가이드', '功能手册与指南', '功能手冊與指南'],
   'cmd.feature-handbook': ['Search the feature manual', 'Rechercher dans le manuel', 'Buscar en el manual', '機能ガイドを検索', '기능 안내서 검색', '搜索功能手册', '搜尋功能手冊'],
+  'cmd.sjtu-canvas': ['SJTU Canvas', 'Canvas SJTU', 'Canvas SJTU', '上海交通大学 Canvas', '상하이교통대 Canvas', '交大 Canvas', '交大 Canvas'],
+  'canvas.settings': ['Course materials, assignments and calendar subscriptions.', 'Supports de cours, devoirs et abonnements au calendrier.', 'Materiales de clase, tareas y suscripciones al calendario.', '授業資料、課題、カレンダーの購読。', '강좌 자료, 과제 및 캘린더 구독.', '查看课程资料、作业和日历订阅。', '查看課程資料、作業和行事曆訂閱。'],
+  'canvas.open': ['Open', 'Ouvrir', 'Abrir', '開く', '열기', '打开', '開啟'],
   'cmd.study-settings': ['Open Study settings', 'Ouvrir Réglages d’étude', 'Abrir Ajustes de estudio', '学習設定を開く', '학습 설정 열기', '打开学习设置', '開啟學習設定'],
   'cmd.ai-settings': ['Choose who does each AI job', 'Choisir qui fait chaque tâche IA', 'Elegir quién hace cada tarea de IA', '各 AI ジョブの実行者を選ぶ', 'AI 작업별 실행자 선택', '选择各项 AI 任务的执行者', '選擇各項 AI 任務的執行者'],
   'hb.run': ['Open', 'Ouvrir', 'Abrir', '開く', '열기', '打开', '開啟'],

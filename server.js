@@ -13,6 +13,7 @@ const { exec } = require('child_process');
 
 let VAULT = '', CONFIG_DIR = '', PLUGIN_DIR = '';
 let TOKEN = null; // desktop app: every request must carry this secret, so other programs can't use the server
+let canvas;
 const VERSION = require('./package.json').version;
 const PUBLIC = path.join(__dirname, 'public');
 const NM = path.join(__dirname, 'node_modules');
@@ -653,6 +654,30 @@ async function moveToTrash(abs) {
 
 async function api(req, res, u) {
   const route = u.pathname.slice('/api/'.length), m = req.method, q = u.searchParams;
+  if (route.startsWith('canvas/')) {
+    let body = {};
+    if (route === 'canvas/submit' && m === 'POST') {
+      const limit=64*1024*1024;
+      const mime=req.headers['content-type']||'';
+      if(!mime.toLowerCase().startsWith('multipart/form-data;'))throw new HttpError(415,'请从作业预览页提交。');
+      if(Number(req.headers['content-length'])>limit+512*1024)throw new HttpError(413,'一次最多提交 64 MiB。');
+      const raw=await readBody(req,limit+512*1024);
+      let parts;
+      try{parts=await new Response(raw,{headers:{'Content-Type':mime}}).formData();}
+      catch{throw new HttpError(400,'附件内容不完整，请重新选择。');}
+      const files=parts.getAll('files');
+      if(files.length>20 || files.some(f=>typeof f.arrayBuffer!=='function') || files.reduce((sum,f)=>sum+f.size,0)>limit)throw new HttpError(413,'一次最多 20 个附件，共 64 MiB。');
+      const field=name=>typeof parts.get(name)==='string'?parts.get(name):'';
+      body={files,courseId:field('courseId'),assignmentId:field('assignmentId'),type:field('type'),text:field('text'),url:field('url'),
+        requestId:field('requestId'),expectedAttempt:/^\d+$/.test(field('expectedAttempt'))?Number(field('expectedAttempt')):null,confirmed:field('confirmed')==='true'};
+    } else if (m === 'POST') {
+      const raw = await readBody(req, 16 * 1024);
+      try { body = JSON.parse(raw.toString('utf8') || '{}'); }
+      catch { throw new HttpError(400, 'Invalid JSON'); }
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new HttpError(400, 'Invalid request');
+    }
+    return send(res, 200, await canvas.handle(m, route.slice(7), body));
+  }
 
   if (route === 'all' && m === 'GET') return send(res, 200, { vault: VAULT, version: VERSION, ...(await walk(VAULT, { folders: [], files: [] }, true)) });
   if (route === 'list' && m === 'GET') return send(res, 200, await walk(VAULT, { folders: [], files: [] }, false));
@@ -1002,14 +1027,23 @@ const server = http.createServer(async (req, res) => {
     }
     const icon = u.pathname.match(/^\/lib\/lucide\/([a-z0-9-]+)\.svg$/);
     if (icon) return serveFile(res, path.join(LUCIDE, icon[1] + '.svg'));
-    if (u.pathname.startsWith('/vault/')) return serveFile(res, inVault(decodeURIComponent(u.pathname.slice(7))), req);
+    if (u.pathname.startsWith('/vault/')) {
+      const abs = inVault(decodeURIComponent(u.pathname.slice(7)));
+      const rel = path.relative(VAULT, abs).split(path.sep);
+      if (rel[0]?.toLowerCase() === 'canvas' && /\.(html?|xhtml|xml|svg|js|mjs)$/i.test(abs)) {
+        // Downloaded course materials are third-party documents, served outside the app's execution context.
+        res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'");
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+      }
+      return serveFile(res, abs, req);
+    }
     let p = decodeURIComponent(u.pathname);
     if (p === '/') p = '/index.html';
     const abs = path.resolve(PUBLIC, '.' + p);
     if (!abs.startsWith(PUBLIC + path.sep)) throw new HttpError(404, 'Not found');
     return serveFile(res, abs);
   } catch (e) {
-    if (!res.headersSent) send(res, e.status || 500, { error: e.message || String(e), ...(e.code ? { code: e.code } : {}), ...(e.framework ? { framework: e.framework, detail: e.detail || '' } : {}) });
+    if (!res.headersSent) send(res, e.status || 500, { error: e.message || String(e), ...(e.code ? { code: e.code } : {}), ...(e.openUrl ? { openUrl:e.openUrl } : {}), ...(e.framework ? { framework: e.framework, detail: e.detail || '' } : {}) });
     if (!e.status) console.error(e);
   }
 });
@@ -1137,8 +1171,9 @@ async function installClaudeKit(input) {
   return { ...done, config };
 }
 
-async function start({ vault, port = 0, token = null, retry = 0 } = {}) {
+async function start({ vault, port = 0, token = null, retry = 0, canvasOptions = {} } = {}) {
   VAULT = path.resolve(vault);
+  canvas = require('./canvas-service').createCanvasService({ ...canvasOptions, vault: VAULT });
   CONFIG_DIR = path.join(VAULT, '.obsidian');
   PLUGIN_DIR = path.join(CONFIG_DIR, 'plugins');
   TOKEN = token;

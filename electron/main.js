@@ -356,7 +356,10 @@ async function main() {
 
   const token = crypto.randomBytes(24).toString('hex');
   const { start } = require(path.join(ROOT, 'server.js'));
-  const port = await start({ vault, port: 0, token });
+  const canvasOptions = require('./canvas-desktop').createCanvasDesktop({
+    app, BrowserWindow, session, safeStorage: require('electron').safeStorage, vault,
+  });
+  const port = await start({ vault, port: 0, token, canvasOptions });
   const url = `http://127.0.0.1:${port}/`;
 
   // Attach the secret to every request this app makes to its own server.

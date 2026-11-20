@@ -57,6 +57,7 @@ export function handbookWords(language) {
 
 // [student task, entry point, prerequisite, English description, Simplified Chinese description, search terms]
 export const COMMAND_HELP = {
+  'sjtu-canvas': ['reading','tabs','','Use the new-tab page to open SJTU Canvas. Download course materials, subscribe to assignment dates, or authorize course sync.', '在新标签页打开交大 Canvas，用 jAccount 登录学校网站下载课件，订阅截止日期或授权同步课程。', '上海交通大学 课件 下载 教学平台 作业 截止时间 日历 交大 Canvas jAccount deadline calendar subscription assignments files course sync'],
   'new-code-file': ['coding','tree','','Create a source file in the vault using an extension such as .cpp or .py.', '在笔记库选定的目录里新建 .cpp、.py 等源文件。', 'C++ Python VS Code VSCode programming IDE 编程 源码 作业'],
   'study-reference': ['reading','topbar','pdfNote','Keep a PDF at its current page beside an editable note.', '固定讲义页码，在旁边的笔记里写题解。', 'split side by side lecture reference 分屏 分栏 并排 讲义 对照'],
   'new-note': ['writing','tree','','Create an editable Markdown file in your vault.', '在笔记库中新建可编辑的 Markdown 文件。', 'create markdown 新建文档'],
