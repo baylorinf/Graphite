@@ -401,57 +401,27 @@ async function aiTask(req) {
    from the file list) and made again only when the file changes. "save" also puts a copy next to the original. */
 const OFFICE = /\.(docx?|pptx?)$/i;
 const PDF_CACHE = '.obsidian/graphite/pdf-copies';
-// PowerPoint runs as one shared copy: if the user already has presentations open, it is left running.
-const OFFICE_PS = `$ErrorActionPreference = 'Stop'
-$src = $env:GRAPHITE_SRC; $out = $env:GRAPHITE_OUT
-if ($src -match '\\.pptx?$') {
-  $pp = New-Object -ComObject PowerPoint.Application
-  $wasOpen = $pp.Presentations.Count -gt 0
-  try { $p = $pp.Presentations.Open($src, -1, 0, 0); $p.SaveAs($out, 32); $p.Close() }
-  finally { if (-not $wasOpen) { $pp.Quit() }; [Runtime.InteropServices.Marshal]::ReleaseComObject($pp) | Out-Null }
-} else {
-  $wd = New-Object -ComObject Word.Application; $wd.Visible = $false; $wd.DisplayAlerts = 0
-  try { $d = $wd.Documents.Open($src, $false, $true); $d.ExportAsFixedFormat($out, 17); $d.Close(0) }
-  finally { $wd.Quit(); [Runtime.InteropServices.Marshal]::ReleaseComObject($wd) | Out-Null }
-}`;
-let officeQueue = Promise.resolve();
-function officeToPdf(srcAbs, outAbs) {
-  const job = officeQueue.then(() => new Promise((resolve, reject) => {
-    const { spawn } = require('child_process');
-    const ps = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', OFFICE_PS],
-      { env: { ...process.env, GRAPHITE_SRC: srcAbs, GRAPHITE_OUT: outAbs }, windowsHide: true });
-    let err = '';
-    ps.stderr.on('data', d => { err += d; });
-    const timer = setTimeout(() => { ps.kill(); reject(new HttpError(504, 'Office took too long to make the PDF')); }, 180000);
-    ps.on('error', e => { clearTimeout(timer); reject(new HttpError(501, 'Could not start PowerShell: ' + e.message)); });
-    ps.on('close', code => {
-      clearTimeout(timer);
-      if (code === 0 && fs.existsSync(outAbs)) return resolve();
-      const noOffice = /80040154|Class not registered|ComObject/i.test(err);
-      reject(new HttpError(noOffice ? 501 : 500, noOffice
-        ? 'Microsoft Office (Word or PowerPoint) is needed to show this file here. Use “Open with default app”.'
-        : 'Office could not convert this file: ' + (err.split(/\r?\n/).find(l => l.trim()) || 'unknown error').trim()));
-    });
-  }));
-  officeQueue = job.catch(() => {});
-  return job;
-}
+const { officeToPdf, isPdf, copyPdfNew, error: officeError } = require('./extensions/claude-code/skills/obsidian-import/scripts/office-pdf.cjs');
+const officePreviews = new Map();
 async function officePdf(rel, save) {
-  if (process.platform !== 'win32') throw new HttpError(501, 'Showing Word and PowerPoint files needs Windows with Microsoft Office.');
   if (!OFFICE.test(rel)) throw new HttpError(400, 'Not a Word or PowerPoint file');
   const src = inVault(rel);
-  const st = await fsp.stat(src).catch(() => null);
-  if (!st) throw new HttpError(404, 'Not found');
-  const cacheRel = `${PDF_CACHE}/${hash(rel + '|' + st.size + '|' + st.mtimeMs)}.pdf`;
+  let st;
+  try { st = await fsp.stat(src); }
+  catch(e) { throw officeError(['ENOENT','ENOTDIR'].includes(e.code) ? 'officeSourceMissing' : 'officeSourceUnreadable',src); }
+  if (!st.isFile() || !st.size) throw officeError('officeInvalidDocument',src);
+  const cacheRel = PDF_CACHE + '/' + hash(toRel(src) + '|' + st.size + '|' + st.mtimeMs) + '.pdf';
   const cacheAbs = inVault(cacheRel);
-  if (!(await exists(cacheAbs))) {
-    await fsp.mkdir(path.dirname(cacheAbs), { recursive: true });
-    await officeToPdf(src, cacheAbs);
+  if (!await isPdf(cacheAbs)) {
+    if (!officePreviews.has(cacheAbs)) {
+      const fill = officeToPdf(src, cacheAbs).finally(() => officePreviews.delete(cacheAbs));
+      officePreviews.set(cacheAbs, fill);
+    }
+    await officePreviews.get(cacheAbs);
   }
   if (!save) return { pdf: cacheRel };
-  const dest = await uniquePath(src.replace(OFFICE, '.pdf'));
-  await fsp.copyFile(cacheAbs, dest);
-  return { pdf: cacheRel, saved: toRel(dest) };
+  const saved = await copyPdfNew(cacheAbs, src.replace(OFFICE, '.pdf'));
+  return { pdf: cacheRel, saved: toRel(saved) };
 }
 
 function inVault(rel) {
@@ -687,7 +657,9 @@ async function uniquePath(abs) {
 async function moveToTrash(abs) {
   const trash = path.join(VAULT, '.trash');
   await fsp.mkdir(trash, { recursive: true });
-  await fsp.rename(abs, await uniquePath(path.join(trash, path.basename(abs))));
+  await withFileLock(path.join(trash,'.entries'),async()=>{
+    await fsp.rename(abs,await uniquePath(path.join(trash,path.basename(abs))));
+  });
 }
 
 async function api(req, res, u) {
@@ -762,6 +734,7 @@ async function api(req, res, u) {
       });
     }
     if (m === 'DELETE') {
+      if (abs === VAULT) throw new HttpError(400,'Choose a file or folder inside the vault');
       if (!(await exists(abs))) throw new HttpError(404, 'Not found');
       await moveToTrash(abs);
       return send(res, 200, { ok: true });
@@ -779,20 +752,36 @@ async function api(req, res, u) {
     const a = inVault(from), b = inVault(to);
     if (a === VAULT || b === VAULT) throw new HttpError(400, 'Cannot rename the vault root');
     if (!(await exists(a))) throw new HttpError(404, 'Source not found');
-    if (await exists(b) && a.toLowerCase() !== b.toLowerCase()) throw new HttpError(409, 'Something already exists at ' + to);
     if (b.startsWith(a + path.sep)) throw new HttpError(400, 'Cannot move a folder into itself');
-    await fsp.mkdir(path.dirname(b), { recursive: true });
-    await fsp.rename(a, b);
+    await withFileLock(b,async()=>{
+      const samePath = a === b || (process.platform === 'win32' && a.toLowerCase() === b.toLowerCase());
+      if (!samePath && await exists(b)) throw new HttpError(409, 'Something already exists at ' + to);
+      await fsp.rename(a,b);
+    });
     return send(res, 200, { path: toRel(b) });
   }
 
   if (route === 'upload' && m === 'POST') {
-    const abs = await uniquePath(inVault(q.get('path')));
+    const requested = inVault(q.get('path'));
+    if (requested === VAULT) throw new HttpError(400,'Choose an attachment name');
     const body = await readBody(req);
-    await fsp.mkdir(path.dirname(abs), { recursive: true });
-    await fsp.writeFile(abs, body);
-    const st = await fsp.stat(abs);
-    return send(res, 200, { path: toRel(abs), mtime: st.mtimeMs, size: st.size });
+    await fsp.mkdir(path.dirname(requested),{recursive:true});
+    for (;;) {
+      const abs = await uniquePath(requested);
+      let file;
+      try { file = await fsp.open(abs,'wx'); }
+      catch (e) { if (e.code === 'EEXIST') continue; throw e; }
+      try {
+        await file.writeFile(body);
+        const st = await file.stat();
+        await file.close();
+        return send(res,200,{path:toRel(abs),mtime:st.mtimeMs,size:st.size});
+      } catch (e) {
+        await file.close().catch(()=>{});
+        await fsp.unlink(abs).catch(()=>{});
+        throw e;
+      }
+    }
   }
 
   // ---- Study settings (shared by every AI): read, save, and the one-time move from the two old places
@@ -985,7 +974,7 @@ async function serveFile(res, abs, req) {
 const frameworks = require('./frameworks')({ HttpError });
 // Study settings: one file every AI job reads its folders, courses and languages from (profile.js).
 const PROFILE = require('./profile');
-const study = PROFILE({ atomicWrite, vault: () => VAULT, claudeDir: () => CLAUDE_DIR() });
+const study = PROFILE({ atomicWrite, withFileLock, vault: () => VAULT, claudeDir: () => CLAUDE_DIR() });
 const agent = require('./agent')({
   HttpError, hash, inVault, toRel, exists, uniquePath, atomicWrite, withFileLock, officeToPdf, readBody, LANG_NAMES, COMPAT, ANTHROPIC_DEFAULT,
   parseJsonReply, compatCaller, anthropicClient, anthropicError, vault: () => VAULT, frameworks, study, PROFILE,

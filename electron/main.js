@@ -413,9 +413,18 @@ async function main() {
     },
   });
   let sendCodeEvent;
+  const folderProfile = require(path.join(ROOT,'profile.js'))({
+    atomicWrite, withFileLock, vault:() => VAULT, claudeDir:() => process.env.GRAPHITE_CLAUDE_DIR || path.join(require('node:os').homedir(),'.claude'),
+  });
+  const agentFolders = require('./agent-folder-grants').createAgentFolderGrants({
+    profile:folderProfile, getVault:() => VAULT, pickDirectory:async () => {
+      const pick=await dialog.showOpenDialog(win,{properties:['openDirectory']});
+      return pick.canceled ? null : pick.filePaths[0] || null;
+    },
+  });
   codeRunner = require('./code-runner').createCodeRunner({projects, onEvent: data => sendCodeEvent?.(data)});
   sendCodeEvent = require('./code-workbench').registerCodeWorkbench({
-    ipcMain, url, getWindow: () => win, projects, runner:codeRunner,
+    ipcMain, url, getWindow: () => win, projects, runner:codeRunner, agentFolders,
   });
 
   // Attach the secret to every request this app makes to its own server.

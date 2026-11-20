@@ -159,7 +159,7 @@ module.exports = function createFrameworks({ HttpError }) {
     const outFile = path.join(os.tmpdir(), `graphite-${id}-${crypto.randomBytes(6).toString('hex')}.txt`);
     const child = launch(info.path, F.args({ outFile, mode }), { cwd, env: { ...process.env, ...F.env({ key }) }, stdio: ['pipe', 'pipe', 'pipe'] });
     const st = { text: '', final: '', failure: '', reads: [], completed: null };
-    let err = '', buf = '', timedOut = false, aborted = false, outside = '';
+    let err = '', buf = '', timedOut = false, aborted = false, outside = '', operation = '';
     // Every path the framework touches must be inside the allowed folders (and not in a left-out folder).
     const check = p => {
       if (!allow || outside) return;
@@ -170,13 +170,15 @@ module.exports = function createFrameworks({ HttpError }) {
         // Programs it runs (python.exe, powershell) and its own temp files are not the user's data.
         const tool = /\.(exe|com|cmd|bat)$/i.test(abs) || (process.env.SystemRoot && inside(abs, process.env.SystemRoot)) || inside(abs, os.tmpdir());
         const ok = !leftOut && (tool || allow.roots.some(r => inside(abs, r)));
-        if (!ok) { outside = abs; killTree(child); return; }
+        if (!ok) { outside = abs; operation = p.command ? 'commandPath' : p.step; killTree(child); return; }
       }
     };
     const stop = () => { aborted = true; killTree(child); };
     signal?.addEventListener('abort', stop, { once: true });
     const timer = setTimeout(() => { timedOut = true; killTree(child); }, timeoutMs);
     onProgress?.({ step: 'framework', framework: id, name: F.name, version: info.version });
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
     child.stdout.on('data', d => {
       buf += d;
       let i;
@@ -193,11 +195,12 @@ module.exports = function createFrameworks({ HttpError }) {
     const code = await new Promise(resolve => { child.on('error', e => { err += e.message; resolve(-1); }); child.on('close', resolve); });
     clearTimeout(timer);
     signal?.removeEventListener('abort', stop);
-    if (buf.trim()) F.onLine(buf.trim(), st);
+    if (buf.trim()) { const lastEvent = F.onLine(buf.trim(),st); if (lastEvent) check(lastEvent); }
     let last = '';
     try { last = await fsp.readFile(outFile, 'utf8'); } catch { /* not written */ }
     fsp.unlink(outFile).catch(() => {});
-    if (outside) throw Object.assign(new HttpError(403, `${F.name}: ${outside}`), { code: 'outside', framework: id, detail: outside });
+    if (outside) throw Object.assign(new HttpError(403, `${F.name}: ${outside}`), { code: 'outside', framework: id, detail: outside,
+      access: {source:'graphite',operation,path:outside,driveRoot:path.parse(outside).root === outside} });
     if (aborted) throw Object.assign(new HttpError(499, 'Stopped'), { code: 'stopped', framework: id });
     if (timedOut) throw Object.assign(new HttpError(504, `${F.name}: timeout`), { code: 'timeout', framework: id });
     const text = last || st.final || st.text;
@@ -205,6 +208,11 @@ module.exports = function createFrameworks({ HttpError }) {
     // Done only when the program exited with 0 and its own final event says the task completed. A failure is a
     // failure even if some JSON was printed before it.
     if (code !== 0 || st.failure || st.completed === false) {
+      if (/\bEACCES\b|\bEPERM\b|\bpermission denied\b|\baccess (?:is )?denied\b|未经授权的访问|拒绝访问/i.test(tail) &&
+          !/\b(?:HTTP|API|OAuth|401|403|token|API key)\b/i.test(tail)) {
+        throw Object.assign(new HttpError(403,`${F.name}: ${tail}`),{code:'agentPermission',framework:id,detail:tail,
+          access:{source:'agent',operation:'fileAccess'}});
+      }
       const auth = /\b(401|403)\b|api[ _-]?key|unauthori[sz]ed|authentication|not logged in|login|credential/i.test(tail + ' ' + (st.failCode || ''));
       throw Object.assign(new HttpError(502, `${F.name}: ${tail || 'exit ' + code}`), { code: auth ? 'auth' : 'failed', framework: id, detail: (tail || 'exit ' + code) + (code !== 0 ? ` (exit ${code})` : '') });
     }

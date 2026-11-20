@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld('myobsidianDesktop', {
   copyText: text => ipcRenderer.invoke('copy-text', String(text)),
   codeProject: (action, args = {}) => ipcRenderer.invoke('code-project', action, args),
   codeRun: (action, args = {}) => ipcRenderer.invoke('code-run', action, args),
+  agentFolders: (action, args = {}) => ipcRenderer.invoke('agent-folders', action, args),
   onCodeRun: cb => {
     const listener = (_event, data) => cb(data);
     ipcRenderer.on('code-run-event', listener);

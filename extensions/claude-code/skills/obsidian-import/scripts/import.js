@@ -10,8 +10,7 @@
 // Prints JSON: { done: [{src, dest}], failed: [{src, error}], ignored: n }
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
-const { execFileSync } = require('child_process');
+const { officeToPdf } = require('./office-pdf.cjs');
 
 // Settings: ~/.claude/graphite.json (or the file GRAPHITE_CONFIG points to). Graphite writes it from
 // Settings → Claude Code; graphite.example.json shows every field.
@@ -46,38 +45,31 @@ const done = [], failed = [], toConvert = [];
 for (const it of plan.items || []) {
   try {
     const src = path.resolve(it.src), st = fs.statSync(src);
-    const dest = freeName(vaultPath(it.dest));
+    const target = vaultPath(it.dest);
+    const office = /\.(pptx?|docx?)$/i.test(src);
+    const dest = office ? target : freeName(target);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
-    if (/\.(pptx?|docx?)$/i.test(src)) { toConvert.push({ src, dest, st }); continue; }
+    if (office) { toConvert.push({ src, dest, st }); continue; }
     fs.copyFileSync(src, dest, fs.constants.COPYFILE_EXCL);
     manifest.imported[key(src)] = { dest: norm(path.relative(VAULT, dest)), size: st.size, mtime: st.mtimeMs, at: new Date().toISOString() };
     done.push({ src: norm(src), dest: norm(path.relative(VAULT, dest)) });
   } catch (e) { failed.push({ src: it.src, error: e.message }); }
 }
 
-if (toConvert.length) {
-  const list = path.join(os.tmpdir(), `myobsidian-convert-${Date.now()}.txt`);
-  fs.writeFileSync(list, toConvert.map(c => `${c.src}|${c.dest.replace(/\.(pptx?|docx?)$/i, '.pdf')}`).join('\n'), 'utf8');
-  let out = '';
-  try {
-    out = execFileSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', path.join(__dirname, 'office2pdf.ps1'), '-List', list],
-      { encoding: 'utf8', timeout: 20 * 60000, windowsHide: true });
-  } catch (e) { out = (e.stdout || '') + '\n' + (e.message || ''); }
-  try { fs.unlinkSync(list); } catch { /* ignore */ }
-  for (const c of toConvert) {
-    const pdf = c.dest.replace(/\.(pptx?|docx?)$/i, '.pdf');
-    if (fs.existsSync(pdf)) {
-      manifest.imported[key(c.src)] = { dest: norm(path.relative(VAULT, pdf)), size: c.st.size, mtime: c.st.mtimeMs, at: new Date().toISOString(), converted: true };
-      done.push({ src: norm(c.src), dest: norm(path.relative(VAULT, pdf)) });
-    } else {
-      const line = out.split(/\r?\n/).find(l => l.includes(c.src)) || 'conversion failed';
-      failed.push({ src: norm(c.src), error: line.replace(/^FAIL\s*/, '') });
-    }
+async function finish() {
+  for (const item of toConvert) {
+    try {
+      const target = item.dest.replace(/\.(pptx?|docx?)$/i, '.pdf');
+      if (path.extname(target).toLowerCase() !== '.pdf') throw new Error('Choose a PDF destination for Office files.');
+      const pdf = await officeToPdf(item.src, target, { asNew: true });
+      const dest = norm(path.relative(VAULT, pdf));
+      manifest.imported[key(item.src)] = { dest, size: item.st.size, mtime: item.st.mtimeMs, at: new Date().toISOString(), converted: true };
+      done.push({ src: norm(item.src), dest });
+    } catch (e) { failed.push({ src: norm(item.src), error: e.message }); }
   }
+  for (const ig of plan.ignore || []) manifest.ignored[key(ig.src)] = { reason: ig.reason || '', at: new Date().toISOString() };
+  fs.mkdirSync(path.dirname(MANIFEST), { recursive: true });
+  fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2));
+  process.stdout.write(JSON.stringify({ done, failed, ignored: (plan.ignore || []).length }, null, 2) + '\n');
 }
-
-for (const ig of plan.ignore || []) manifest.ignored[key(ig.src)] = { reason: ig.reason || '', at: new Date().toISOString() };
-
-fs.mkdirSync(path.dirname(MANIFEST), { recursive: true });
-fs.writeFileSync(MANIFEST, JSON.stringify(manifest, null, 2));
-process.stdout.write(JSON.stringify({ done, failed, ignored: (plan.ignore || []).length }, null, 2) + '\n');
+finish().catch(e => { console.error(e.message); process.exitCode = 1; });

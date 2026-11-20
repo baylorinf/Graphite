@@ -1,27 +1,114 @@
-# Makes PDF copies of PowerPoint and Word files with Office itself. Originals are opened read-only.
-#   office2pdf.ps1 -List <file with one "source|destination.pdf" pair per line>
-# Prints "ok <src>" or "FAIL <src>: <reason>" per line.
-param([Parameter(Mandatory)][string]$List)
-$pairs = Get-Content -LiteralPath $List -Encoding UTF8 | Where-Object { $_ -match '\|' }
-$pp = $null; $wd = $null
-try {
-  foreach ($line in $pairs) {
-    $src, $out = $line.Split('|', 2)
-    New-Item -ItemType Directory -Force -Path (Split-Path $out) | Out-Null
+# Windows PowerShell 5.1: keep this script ASCII; pass all Unicode paths through environment variables or a UTF-8 list.
+param([string]$List)
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+
+function Release-OfficeObject($item) {
+    if ($null -ne $item -and [Runtime.InteropServices.Marshal]::IsComObject($item)) {
+        [void][Runtime.InteropServices.Marshal]::ReleaseComObject($item)
+    }
+}
+
+function Convert-One([string]$source, [string]$dest) {
+    $app = $null
+    $document = $null
+    $ownApplication = $false
+    $stage = 'source'
+    $code = ''
     try {
-      if ($src -match '\.pptx?$') {
-        if (-not $pp) { $pp = New-Object -ComObject PowerPoint.Application }
-        $p = $pp.Presentations.Open($src, -1, 0, 0)   # ReadOnly, Untitled=false, WithWindow=false
-        $p.SaveAs($out, 32); $p.Close()                # 32 = ppSaveAsPDF
-      } elseif ($src -match '\.docx?$') {
-        if (-not $wd) { $wd = New-Object -ComObject Word.Application; $wd.Visible = $false; $wd.DisplayAlerts = 0 }
-        $d = $wd.Documents.Open($src, $false, $true)  # ConfirmConversions=false, ReadOnly=true
-        $d.ExportAsFixedFormat($out, 17); $d.Close(0)  # 17 = wdExportFormatPDF, 0 = don't save
-      } else { throw "not a PowerPoint or Word file" }
-      "ok $src"
-    } catch { "FAIL ${src}: $($_.Exception.Message)" }
-  }
-} finally {
-  if ($pp) { $pp.Quit(); [Runtime.InteropServices.Marshal]::ReleaseComObject($pp) | Out-Null }
-  if ($wd) { $wd.Quit(); [Runtime.InteropServices.Marshal]::ReleaseComObject($wd) | Out-Null }
+        $source = [IO.Path]::GetFullPath($source.Replace('/', '\'))
+        $dest = [IO.Path]::GetFullPath($dest.Replace('/', '\'))
+        $item = Get-Item -LiteralPath $source
+        if ($item.PSIsContainer -or $item.Length -eq 0) { $code = 'officeInvalidDocument'; throw 'Empty file or directory.' }
+        $ext = $item.Extension.ToLowerInvariant()
+        $slides = @('.ppt','.pptx') -contains $ext
+        if (!$slides -and @('.doc','.docx') -notcontains $ext) { $code = 'officeInvalidDocument'; throw 'Unsupported extension.' }
+        if ($ext -eq '.docx' -or $ext -eq '.pptx') {
+            # Password-encrypted OOXML uses an OLE container. Do not open a blocking password dialog.
+            $stream = [IO.File]::Open($source, 'Open', 'Read', 'ReadWrite, Delete')
+            try {
+                $signature = New-Object byte[] 8
+                [void]$stream.Read($signature,0,8)
+                if ([BitConverter]::ToString($signature) -eq 'D0-CF-11-E0-A1-B1-1A-E1') {
+                    $code = 'officeProtected'; throw 'Encrypted document or legacy container.'
+                }
+                $stage = 'validate'
+                Add-Type -AssemblyName System.IO.Compression
+                $stream.Position = 0
+                $zip = New-Object IO.Compression.ZipArchive($stream, [IO.Compression.ZipArchiveMode]::Read, $true)
+                try {
+                    if (!$zip.GetEntry('[Content_Types].xml') -or !$zip.GetEntry('_rels/.rels')) {
+                        throw 'Invalid Office Open XML package.'
+                    }
+                } finally { $zip.Dispose() }
+            } finally { $stream.Dispose() }
+        }
+        $stage = 'output'
+        [void][IO.Directory]::CreateDirectory([IO.Path]::GetDirectoryName($dest))
+        $stage = 'start'
+        if ($slides) {
+            # PowerPoint can reuse an existing process even when it has no open presentations.
+            $alreadyRunning = @(Get-Process -Name POWERPNT -ErrorAction SilentlyContinue).Count -gt 0
+            $app = New-Object -ComObject PowerPoint.Application
+            $ownApplication = !$alreadyRunning -and $app.Presentations.Count -eq 0 -and $app.Windows.Count -eq 0
+            $stage = 'open'
+            # Untitled opens a new copy, even if the user already has this exact source open.
+            $document = $app.Presentations.Open($source, -1, -1, 0)
+            $stage = 'export'
+            $document.SaveAs($dest, 32)
+        } else {
+            $app = New-Object -ComObject Word.Application
+            $ownApplication = $true
+            $app.Visible = $false
+            $app.DisplayAlerts = 0
+            $app.AutomationSecurity = 3
+            $stage = 'open'
+            # ConfirmConversions=false, ReadOnly=true, AddToRecentFiles=false.
+            $document = $app.Documents.Open($source, $false, $true, $false)
+            $stage = 'export'
+            $document.ExportAsFixedFormat($dest, 17)
+        }
+        return @{ ok = $true }
+    } catch {
+        $reason = $_.Exception.GetBaseException()
+        $hr = '0x{0:X8}' -f $reason.HResult
+        if (!$code) {
+            if ($stage -eq 'source' -and $_.CategoryInfo.Category -eq 'ObjectNotFound') { $code = 'officeSourceMissing' }
+            elseif ($stage -eq 'source') { $code = 'officeSourceUnreadable' }
+            elseif ($stage -eq 'validate') { $code = 'officeInvalidDocument' }
+            elseif ($stage -eq 'start') { $code = 'officeUnavailable' }
+            elseif ($stage -eq 'open') { $code = 'officeOpenFailed' }
+            else { $code = 'officeExportFailed' }
+        }
+        return @{ ok = $false; code = $code; hresult = $hr; detail = $reason.Message }
+    } finally {
+        if ($null -ne $document) {
+            try { if ($slides) { $document.Close() } else { $document.Close(0) } } catch {}
+            Release-OfficeObject $document
+        }
+        if ($null -ne $app) {
+            try {
+                if ($ownApplication) {
+                    if ($slides) { if ($app.Presentations.Count -eq 0 -and $app.Windows.Count -eq 0) { $app.Quit() } }
+                    else { if ($app.Documents.Count -eq 0) { $app.Quit() } }
+                }
+            } catch {}
+            Release-OfficeObject $app
+        }
+    }
+}
+
+if ($List) {
+    # Older installed import.js reads this text protocol.
+    foreach ($pair in (Get-Content -LiteralPath $List -Encoding UTF8)) {
+        if ($pair -notmatch '\|') { continue }
+        $source, $dest = $pair.Split('|',2)
+        $result = Convert-One $source $dest
+        if ($result.ok) { [Console]::WriteLine("ok $source") }
+        else { [Console]::WriteLine("FAIL $source - " + $result.code + ': ' + $result.detail) }
+    }
+} else {
+    $result = Convert-One $env:GRAPHITE_SRC $env:GRAPHITE_OUT
+    [Console]::WriteLine(($result | ConvertTo-Json -Compress))
+    if (!$result.ok) { exit 1 }
 }

@@ -58,22 +58,36 @@ function clean(input = {}) {
   return out;
 }
 
-module.exports = function createProfile({ atomicWrite, vault, claudeDir }) {
+const pendingWrites = new Map();
+const rootKey = value => slash(value).toLowerCase();
+module.exports = function createProfile({ atomicWrite, withFileLock, vault, claudeDir }) {
   const home = () => process.env.GRAPHITE_HOME || path.join(os.homedir(), '.graphite');
   const file = () => path.join(home(), 'study.json');
   const claudeFile = () => path.join(claudeDir(), 'graphite.json');
   const readJson = async f => { try { return JSON.parse(await fsp.readFile(f, 'utf8')); } catch { return null; } };
-  let cache = null; // { at, value } — the file is small; read again when it changes on disk
+  // Multiple browser windows and desktop pickers can be editing the same small profile.
+  async function rawProfile() {
+    try { return JSON.parse(await fsp.readFile(file(), 'utf8')); }
+    catch(e) { if(e.code === 'ENOENT') return null; throw e; }
+  }
+  function snapshot(raw) {
+    if(!raw) return null;
+    const value = { ...DEFAULTS, ...clean(raw) };
+    // Sent back by Settings when a form saves. It distinguishes an explicit edit from a stale copy of the roots.
+    return { ...value, courseRootsBeforeEdit: value.courseRoots.slice() };
+  }
+  async function locked(fn) {
+    const target = file();
+    await fsp.mkdir(path.dirname(target), { recursive: true });
+    const prev = pendingWrites.get(target) || Promise.resolve();
+    const task = prev.catch(() => {}).then(() => withFileLock ? withFileLock(target,fn) : fn());
+    pendingWrites.set(target,task);
+    try { return await task; } finally { if(pendingWrites.get(target)===task)pendingWrites.delete(target); }
+  }
 
   // The settings, or null when they were never saved (then the app migrates the old ones first).
   async function load() {
-    const st = await fsp.stat(file()).catch(() => null);
-    if (!st) return null;
-    if (cache && cache.at === st.mtimeMs) return cache.value;
-    const raw = await readJson(file());
-    const value = raw ? { ...DEFAULTS, ...clean(raw) } : null;
-    cache = { at: st.mtimeMs, value };
-    return value;
+    return snapshot(await rawProfile());
   }
   // Settings for a job, never null (defaults when nothing was saved).
   async function get() { return (await load()) || { ...DEFAULTS }; }
@@ -111,35 +125,76 @@ module.exports = function createProfile({ atomicWrite, vault, claudeDir }) {
     const sources = [cc ? 'claude' : null, ag ? 'ai' : null].filter(Boolean);
     // Only the new file is written here: Claude Code's own copy is left exactly as it was until the user saves
     // Study settings (or installs the Claude Code kit), so an update alone never changes what Claude Code does.
-    await save(value, { migratedFrom: sources }, { mirror: false });
-    return { profile: await get(), migratedFrom: sources, differences };
+    return locked(async () => {
+      const previous=await rawProfile();
+      if(previous) return {profile:snapshot(previous),migratedFrom:previous.migratedFrom || [],differences:previous.differences || []};
+      const profile=await write(value,{},[],{migratedFrom:sources},false);
+      return {profile,migratedFrom:sources,differences};
+    });
   }
 
-  async function save(input, extra = {}, { mirror = true } = {}) {
-    const value = clean(input);
-    const body = { version: 1, vault: slash(vault()), ...value, ...extra, savedAt: new Date().toISOString() };
-    await fsp.mkdir(home(), { recursive: true });
+  function grants(raw = {}) {
+    const roots = new Set(clean(raw).courseRoots.map(rootKey));
+    return (Array.isArray(raw.agentFolderGrants) ? raw.agentFolderGrants : []).filter(g =>
+      g && typeof g.id === 'string' && typeof g.path === 'string' && roots.has(rootKey(g.path)));
+  }
+  async function write(value, previous, owned, extra = {}, mirror = true) {
+    const body = { ...previous, ...extra, version:1, vault:slash(vault()), ...value, savedAt:new Date().toISOString() };
+    if(!value.differences)delete body.differences;
+    if(owned.length) body.agentFolderGrants=owned; else delete body.agentFolderGrants;
     await atomicWrite(file(), JSON.stringify(body, null, 2) + '\n');
-    cache = null;
-    if (mirror) await mirrorClaude(value).catch(() => {});
-    return get();
+    if (mirror) await mirrorClaude(value, mirror === 'courseSources').catch(() => {});
+    return snapshot(body);
+  }
+  async function save(input, extra = {}, { mirror = true } = {}) {
+    return locked(async () => {
+      const previous=(await rawProfile()) || {};
+      const value=clean(input), owned=grants(previous);
+      if (Array.isArray(input.courseRootsBeforeEdit)) {
+        const base=new Set(input.courseRootsBeforeEdit.map(rootKey)), submitted=new Set(value.courseRoots.map(rootKey));
+        const current=clean(previous).courseRoots;
+        const currentKeys=new Set(current.map(rootKey));
+        value.courseRoots=uniq([...value.courseRoots.filter(r=>!base.has(rootKey(r)) || currentKeys.has(rootKey(r))),
+          ...current.filter(r=>!base.has(rootKey(r)) && !submitted.has(rootKey(r)))]);
+      } else {
+        // Settings from an older client have no baseline. Keep grants made by the native picker.
+        value.courseRoots=uniq([...value.courseRoots,...owned.map(g=>g.path)]);
+      }
+      const retained=new Set(value.courseRoots.map(rootKey));
+      return write(value,previous,owned.filter(g=>retained.has(rootKey(g.path))),extra,mirror);
+    });
+  }
+  async function folderState() {
+    const raw=(await rawProfile()) || await fromClaude() || {};
+    return {roots:clean(raw).courseRoots,skip:clean(raw).skipFolders,grants:grants(raw)};
+  }
+  // Only the native picker changes ownership. A normal Settings payload cannot claim an existing course root.
+  async function changeFolders(update) {
+    return locked(async () => {
+      const raw=(await rawProfile()) || await fromClaude() || {};
+      const profile=clean(raw), state={roots:profile.courseRoots.slice(),skip:profile.skipFolders.slice(),grants:grants(raw)};
+      const changed=await update(state);
+      if(changed) await write({...profile,courseRoots:state.roots},raw,state.grants,{},'courseSources');
+      return state;
+    });
   }
 
   // Keep the Claude Code skills' copy in step, if Claude Code is set up on this computer (its folder exists).
   // Only the fields the skills read are written; anything else in that file stays. Its "vault" is Claude Code's
   // own choice (set when the kit is installed) and is never changed here: saving settings while another vault is
   // open must not point Claude Code at that vault.
-  async function mirrorClaude(p) {
+  async function mirrorClaude(p, sourcesOnly = false) {
     if (!fs.existsSync(claudeDir())) return;
     const prev = (await readJson(claudeFile())) || {};
     const next = { ...prev, vault: prev.vault || slash(vault()), studyRoot: p.courseRoots[0] || '', studyRoots: p.courseRoots, courses: p.courses, skipFolders: p.skipFolders,
-      recentFolders: p.lookElsewhere ? p.recentFolders : [], recentDays: p.recentDays, brainFolder: p.brainFolder, readOnlyFolders: p.readOnlyFolders,
-      studyPagesFolder: p.studyPagesFolder, chatLanguage: p.chatLanguage, readingLanguages: p.readingLanguages, noteLanguage: p.noteLanguage, about: p.about,
+      recentFolders: p.lookElsewhere ? p.recentFolders : [], recentDays: p.recentDays,
       studySettings: file().split(path.sep).join('/') };
+    if (!sourcesOnly) Object.assign(next, { brainFolder:p.brainFolder, readOnlyFolders:p.readOnlyFolders, studyPagesFolder:p.studyPagesFolder,
+      chatLanguage:p.chatLanguage, readingLanguages:p.readingLanguages, noteLanguage:p.noteLanguage, about:p.about });
     await atomicWrite(claudeFile(), JSON.stringify(next, null, 2) + '\n');
   }
 
-  return { file, load, get, save, migrate, fromClaude, DEFAULTS, FIELDS };
+  return { file, load, get, save, migrate, fromClaude, folderState, changeFolders, DEFAULTS, FIELDS };
 };
 
 /* ---------- which settings each job uses ---------- */

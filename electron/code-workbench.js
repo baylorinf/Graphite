@@ -2,7 +2,7 @@
 
 // Only the main Graphite page can operate a project. Preview frames and school
 // windows share none of the file or process actions exposed to the editor.
-function registerCodeWorkbench({ipcMain, url, getWindow, projects, runner}) {
+function registerCodeWorkbench({ipcMain, url, getWindow, projects, runner, agentFolders}) {
   const startUrl = new URL(url);
   function isEditorFrame(frame, contents) {
     if (!frame || frame !== contents?.mainFrame) return false;
@@ -30,6 +30,7 @@ function registerCodeWorkbench({ipcMain, url, getWindow, projects, runner}) {
   }
   register('code-project', projects, ['status', 'choose', 'useVault', 'list', 'read', 'write', 'create', 'mkdir']);
   register('code-run', runner, ['tools', 'start', 'stop', 'debug']);
+  if (agentFolders) register('agent-folders', agentFolders, ['list', 'choose', 'revoke']);
   return data => {
     const win = getWindow();
     if (win && !win.isDestroyed() && isEditorFrame(win.webContents.mainFrame, win.webContents)) {

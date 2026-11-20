@@ -3,7 +3,7 @@
 //   node scan.js            -> JSON on stdout: { candidates: [...], counts: {...} }
 //
 // Where it looks:
-//   - one folder per course under "studyRoot" (folder name = course code from "courses"; "skipFolders" are left out)
+//   - course files in each chosen source, and course subfolders (course codes use the configured names)
 //   - recent files (last "recentDays" days) in the "recentFolders" of your home folder, course unknown
 // What counts: PDFs, PowerPoint and Word files, and Markdown notes inside course folders.
 // What is skipped: code/video/build folders, Office temp files, files over 300 MB, anything already in the
@@ -33,7 +33,7 @@ const RECENT_DAYS = graphite.recentDays || 180;
 const MAX_BYTES = 300 * 1024 * 1024;
 const DOC_EXT = /\.(pdf|pptx?|docx?)$/i;
 const NOTE_EXT = /\.md$/i;
-const SKIP_DIR = /^(\.git|\.vscode|node_modules|Videos?|Practice|artifacts|build|dist|out|bin|obj|__pycache__|\.venv|venv|env|\.idea|\.obsidian)$/i;
+const SKIP_DIR = /^(\.git|\.vscode|node_modules|Videos?|Practice|artifacts|build|dist|out|bin|obj|__pycache__|\.venv|venv|env|\.idea|\.obsidian|\.trash)$/i;
 const SKIP_FILE = /^(~\$|\.~lock|desktop\.ini$|thumbs\.db$)/i;
 
 const norm = p => p.replace(/\\/g, '/');
@@ -64,10 +64,13 @@ function inVault(file, size) {
 
 const candidates = [];
 const counts = { scanned: 0, inVault: 0, known: 0, ignored: 0 };
+const seenSources = new Set();
 
 function consider(file, st, course, rel) {
-  counts.scanned++;
   const k = key(file);
+  if (seenSources.has(k)) return;
+  seenSources.add(k);
+  counts.scanned++;
   if (manifest.ignored[k]) { counts.ignored++; return; }
   const prev = manifest.imported[k];
   if (prev && prev.size === st.size && Math.abs((prev.mtime || 0) - st.mtimeMs) < 2000) { counts.known++; return; }
@@ -85,12 +88,23 @@ function consider(file, st, course, rel) {
   candidates.push(c);
 }
 
+function scanAllowed(dir) {
+  const relative = path.relative(VAULT, dir);
+  const outsideVault = relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative);
+  return outsideVault && !dir.split(/[\\/]/).some(part => SKIP.has(part.toLowerCase()) || SKIP_DIR.test(part));
+}
+
+function courseName(folder) {
+  return Object.hasOwn(COURSES, folder) ? COURSES[folder] : folder;
+}
+
 function walk(dir, course, base, { recentOnly = false, depth = 0, maxDepth = 8 } = {}) {
+  if (!scanAllowed(dir)) return;
   let ents = []; try { ents = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
   for (const e of ents) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) { if (!SKIP_DIR.test(e.name) && depth < maxDepth) walk(p, course, base, { recentOnly, depth: depth + 1, maxDepth }); continue; }
-    if (SKIP_FILE.test(e.name)) continue;
+    if (!e.isFile() || SKIP_FILE.test(e.name)) continue;
     const isDoc = DOC_EXT.test(e.name), isNote = course && NOTE_EXT.test(e.name);
     if (!isDoc && !isNote) continue;
     let st; try { st = fs.statSync(p); } catch { continue; }
@@ -102,9 +116,24 @@ function walk(dir, course, base, { recentOnly = false, depth = 0, maxDepth = 8 }
 
 // Every course folder from Study settings (studyRoots; older files only have studyRoot).
 const ROOTS = [...new Set([STUDY_ROOT, ...(Array.isArray(graphite.studyRoots) ? graphite.studyRoots : [])].filter(Boolean))];
-for (const root of ROOTS) for (const [code, course] of Object.entries(COURSES)) {
-  const dir = path.join(root, code);
-  if (fs.existsSync(dir) && !SKIP.has(code.toLowerCase())) walk(dir, course, dir);
+for (const configured of ROOTS) {
+  if (!path.isAbsolute(configured) || !scanAllowed(configured)) continue;
+  let root, entries;
+  try {
+    root = fs.realpathSync(configured);
+    if (root === path.parse(root).root || !scanAllowed(root)) continue;
+    entries = fs.readdirSync(root, { withFileTypes: true });
+  } catch { continue; }
+  for (const entry of entries) {
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory() && !entry.name.startsWith('.')) {
+      walk(full, courseName(entry.name), full);
+    } else if (entry.isFile() && !SKIP_FILE.test(entry.name) && (DOC_EXT.test(entry.name) || NOTE_EXT.test(entry.name))) {
+      let stat;
+      try { stat = fs.statSync(full); } catch { continue; }
+      if (stat.size && stat.size <= MAX_BYTES) consider(full, stat, courseName(path.basename(root)), entry.name);
+    }
+  }
 }
 for (const dir of EXTRA_ROOTS) walk(dir, null, dir, { recentOnly: true, maxDepth: 2 });
 
