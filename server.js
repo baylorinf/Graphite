@@ -663,7 +663,7 @@ async function moveToTrash(abs) {
 }
 
 async function savePluginRelease(dir, files) {
-  // Downloads have all finished. Update just the release files, leaving data.json and
+  // The release files are all available. Update just those files, leaving data.json and
   // any other user files in place. The manifest is written last.
   await withFileLock(dir,async()=>{
     const created=await fsp.mkdir(dir,{recursive:true});
@@ -1132,6 +1132,10 @@ const PLUGINS_SHIP = path.join(EXT, 'obsidian-plugins');
 const CLAUDE_SHIP = path.join(EXT, 'claude-code');
 const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
 const readJsonFile = async (f, def) => { try { return JSON.parse(await fsp.readFile(f, 'utf8')); } catch { return def; } };
+async function readPluginJson(file, fallback) {
+  try { return JSON.parse(await fsp.readFile(file, 'utf8')); }
+  catch (error) { if (error.code === 'ENOENT') return fallback; throw error; }
+}
 // Copy by reading and writing (works out of the packaged app's archive too).
 async function copyOut(from, to) { await fsp.mkdir(path.dirname(to), { recursive: true }); await fsp.writeFile(to, await fsp.readFile(from)); }
 let BUILTIN_IDS = new Set();
@@ -1140,20 +1144,33 @@ async function installBuiltinPlugins() {
   BUILTIN_IDS = new Set(ids);
   if (!ids.length) return;
   const stateFile = path.join(CONFIG_DIR, 'graphite-builtins.json');
-  const state = await readJsonFile(stateFile, { offered: [] });
-  const offered = new Set(state.offered || []);
+  const state = await readPluginJson(stateFile, { offered: [] });
+  if (!Array.isArray(state?.offered)) throw new Error('Invalid built-in plugin history: ' + stateFile);
+  const offered = new Set(state.offered);
   const enabledFile = path.join(CONFIG_DIR, 'community-plugins.json');
-  const enabled = await readJsonFile(enabledFile, []);
+  const enabled = await readPluginJson(enabledFile, []);
+  if (!Array.isArray(enabled)) throw new Error('Invalid enabled plugin list: ' + enabledFile);
   let enabledChanged = false;
   for (const id of ids) {
-    const ship = await readJsonFile(path.join(PLUGINS_SHIP, id, 'manifest.json'), {});
+    const sourceDir = path.join(PLUGINS_SHIP, id);
+    const manifestBytes = await fsp.readFile(path.join(sourceDir, 'manifest.json'));
+    const ship = JSON.parse(manifestBytes);
     const mine = path.join(PLUGIN_DIR, id);
-    const have = await readJsonFile(path.join(mine, 'manifest.json'), null);
+    let have;
+    try { have = await readPluginJson(path.join(mine, 'manifest.json'), undefined); }
+    catch (error) { console.warn('Skipping unreadable plugin manifest:', id, error.message); continue; }
+    if (have !== undefined && (!have || typeof have.id !== 'string')) {
+      console.warn('Skipping invalid plugin manifest:', id);
+      continue;
+    }
     const fresh = !have && !offered.has(id);
     if (have && (have.id !== ship.id || !newer(ship.version, have.version || '0'))) { offered.add(id); continue; }
     if (!have && !fresh) continue; // you removed it: leave it out
-    for (const f of ['main.js', 'styles.css', 'manifest.json']) if (fs.existsSync(path.join(PLUGINS_SHIP, id, f))) await copyOut(path.join(PLUGINS_SHIP, id, f), path.join(mine, f));
-    if (fresh && Array.isArray(enabled) && !enabled.includes(id)) { enabled.push(id); enabledChanged = true; }
+    let styles = null;
+    try { styles = await fsp.readFile(path.join(sourceDir, 'styles.css')); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    await savePluginRelease(mine, {'main.js':await fsp.readFile(path.join(sourceDir,'main.js')), 'styles.css':styles, 'manifest.json':manifestBytes});
+    if (fresh && !enabled.includes(id)) { enabled.push(id); enabledChanged = true; }
     offered.add(id);
   }
   if (enabledChanged) await atomicWrite(enabledFile, JSON.stringify(enabled, null, 2));
