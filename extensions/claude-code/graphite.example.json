@@ -1,0 +1,19 @@
+{
+  "_help": "Copy this file to ~/.claude/graphite.json (or point GRAPHITE_CONFIG at it) and fill in your own values. Use forward slashes in paths.",
+  "vault": "C:/Users/you/Documents/Graphite Vault",
+  "studyRoot": "C:/Users/you/University",
+  "courses": {
+    "CALC": "Calculus",
+    "PHYS": "Physics"
+  },
+  "skipFolders": [],
+  "recentFolders": ["Downloads", "Desktop", "Documents"],
+  "recentDays": 180,
+  "brainFolder": "Claude Brain",
+  "readOnlyFolders": [],
+  "studyPagesFolder": "Study Pages",
+  "chatLanguage": "English",
+  "readingLanguages": "English",
+  "noteLanguage": "English",
+  "about": "One line about you as a learner, e.g. second-year engineering student."
+}

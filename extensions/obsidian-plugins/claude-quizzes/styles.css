@@ -1,0 +1,86 @@
+/* Browser-style tab strip on top of the note area: [📄 note] [🎓 LA review ×] … [+] */
+.cq-tabs {
+  display: flex; align-items: flex-end; gap: 2px; padding: 6px 8px 0; min-height: 38px;
+  background: var(--bg-2); border-bottom: 1px solid var(--border); overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none; flex: none;
+}
+.cq-tabs::-webkit-scrollbar { display: none; }
+.cq-tab {
+  position: relative; display: flex; align-items: center; gap: 7px; flex: 0 1 220px; min-width: 96px;
+  height: 32px; padding: 0 8px 0 12px; margin-bottom: -1px; cursor: pointer; user-select: none;
+  border: 1px solid transparent; border-bottom: 0; border-radius: 9px 9px 0 0; color: var(--text-muted);
+  font-size: 13px; white-space: nowrap;
+}
+.cq-tab:hover { background: var(--bg-hover); color: var(--text); }
+.cq-tab.is-active {
+  background: var(--bg); color: var(--text); border-color: var(--border); font-weight: 600;
+  box-shadow: 0 1px 0 var(--bg); /* hides the strip's bottom border under the active tab */
+}
+/* thin separators between inactive tabs, like a browser */
+.cq-tab:not(.is-active) + .cq-tab:not(.is-active)::before {
+  content: ""; position: absolute; left: -2px; top: 9px; bottom: 9px; width: 1px; background: var(--border);
+}
+.cq-tab .cq-ico { font-size: 13px; flex: none; }
+.cq-tab .cq-label { overflow: hidden; text-overflow: ellipsis; min-width: 3.5em; flex: 0 1 auto; }
+/* progress gives way first when tabs get narrow */
+.cq-tab .cq-prog { font-size: 11px; font-weight: 500; color: var(--text-muted); flex: 0 1000 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: clip; }
+.cq-tab .cq-x {
+  margin-left: auto; flex: none; width: 20px; height: 20px; display: grid; place-items: center;
+  border-radius: 50%; font-size: 15px; line-height: 1; color: var(--text-muted);
+}
+.cq-tab .cq-x:hover { background: var(--bg-3); color: var(--text); }
+.cq-notetab { flex-basis: 240px; }
+.cq-tabs button.cq-add {
+  flex: none; width: 28px; height: 28px; margin: 0 0 3px 4px; border-radius: 50%; font-size: 18px; line-height: 1;
+  color: var(--text-muted); display: grid; place-items: center;
+}
+.cq-tabs button.cq-add:hover { background: var(--bg-hover); color: var(--text); }
+
+/* A study tab in front is laid OVER the note area (between the tab strip and the status bar). Nothing
+   underneath is removed, so the note keeps its scroll position, and background study tabs are only made
+   invisible (not display:none), so they keep theirs too. --cq-top / --cq-bottom are set by the plugin. */
+#main { position: relative; }
+.cq-view {
+  position: absolute; left: 0; right: 0; top: var(--cq-top, 38px); bottom: var(--cq-bottom, 24px); z-index: 5;
+  background: var(--bg); visibility: hidden; pointer-events: none;
+}
+#main.cq-study > .cq-view { visibility: visible; pointer-events: auto; }
+.cq-frame {
+  position: absolute; inset: 0; width: 100%; height: 100%; border: 0; background: #fff;
+  visibility: hidden; pointer-events: none;
+}
+#main.cq-study .cq-frame.is-active { visibility: visible; pointer-events: auto; }
+:root[data-theme="dark"] .cq-frame { background: #0e1617; }
+
+/* "+" menu: compact, one line per study page */
+.cq-pop {
+  position: fixed; z-index: 60; width: 230px; padding: 4px; border-radius: 10px;
+  background: var(--bg-2); border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgba(0,0,0,.16), 0 1px 4px rgba(0,0,0,.08);
+  animation: cq-pop-in .1s ease-out;
+}
+@keyframes cq-pop-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+.cq-pop button.cq-pop-item {
+  display: flex; align-items: center; gap: 8px; width: 100%; height: 32px; padding: 0 8px; text-align: left;
+  border-radius: 7px; background: transparent; border: 0; cursor: pointer; font-size: 13px;
+}
+.cq-pop button.cq-pop-item:hover, .cq-pop button.cq-pop-item:focus-visible { background: var(--bg-hover); outline: none; }
+.cq-pop-key { flex: none; width: 14px; font: 600 11px/1 var(--font-code, monospace); color: var(--text-muted); opacity: .7; }
+.cq-pop-badge {
+  flex: none; width: 24px; height: 18px; border-radius: 5px; display: grid; place-items: center;
+  font: 700 9.5px/1 var(--font-code, monospace); letter-spacing: .03em;
+}
+.cq-c-la { background: #e6e8ff; color: #3b3fb5; }
+.cq-c-ma { background: #dff0ed; color: #0d6b62; }
+:root[data-theme="dark"] .cq-c-la { background: #262a5a; color: #aab0ff; }
+:root[data-theme="dark"] .cq-c-ma { background: #183a37; color: #5fcfc1; }
+.cq-pop-title { flex: 1; min-width: 0; color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cq-pop-prog { flex: none; font-size: 11px; color: var(--text-muted); }
+.cq-pop-state { flex: none; width: 12px; font-size: 12px; font-weight: 700; color: var(--accent); text-align: right; }
+
+/* Reading progress: % on the tab and a thin line along its bottom edge */
+.cq-tab .cq-read {
+  position: absolute; left: 10px; bottom: 0; height: 2px; width: 0; max-width: calc(100% - 20px);
+  border-radius: 2px; background: linear-gradient(90deg, #7b5cff, #4f86ff); opacity: .55; transition: width .3s ease;
+}
+.cq-tab.is-active .cq-read { opacity: 1; }

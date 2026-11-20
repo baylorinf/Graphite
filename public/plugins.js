@@ -1115,6 +1115,8 @@ export async function refreshInstalled() {
 export const getInstalled = () => installed;
 export const getPluginDir = () => pluginDirPath;
 export const isEnabled = id => enabled.has(id);
+// Plugins that ship with Graphite (extensions/obsidian-plugins): they run in restricted mode too.
+export const isBuiltin = id => installed.some(p => p.manifest?.id === id && p.builtin);
 export const isLoaded = id => loaded.has(id);
 export const getError = id => errors.get(id);
 export const getSettingTabs = () => settingTabs.filter(r => loaded.has(r.plugin.manifest.id));
@@ -1171,7 +1173,7 @@ function unloadPlugin(id) {
 export async function enablePlugin(id) {
   enabled.add(id); await saveEnabled();
   const info = installed.find(p => p.manifest?.id === id);
-  if (info && pluginsOn()) await loadPlugin(info);
+  if (info && (pluginsOn() || info.builtin)) await loadPlugin(info);
 }
 export async function disablePlugin(id) {
   enabled.delete(id); await saveEnabled();
@@ -1194,7 +1196,7 @@ export async function fetchCommunity() { return H.api('GET', 'plugins/community'
 export async function setPluginsOn(on) {
   try { localStorage.setItem(PLUGINS_ON_KEY, on ? '1' : '0'); } catch { /* ignore */ }
   if (on) await loadEnabled();
-  else for (const id of [...loaded.keys()]) unloadPlugin(id);
+  else for (const id of [...loaded.keys()]) if (!isBuiltin(id)) unloadPlugin(id);
 }
 export async function reloadAll() {
   for (const id of [...loaded.keys()]) unloadPlugin(id);
@@ -1202,10 +1204,9 @@ export async function reloadAll() {
   await loadEnabled();
 }
 async function loadEnabled() {
-  if (!pluginsOn()) return;
   for (const id of enabled) {
     const info = installed.find(p => p.manifest?.id === id);
-    if (info) await loadPlugin(info);
+    if (info && (pluginsOn() || info.builtin)) await loadPlugin(info);
   }
 }
 

@@ -597,6 +597,14 @@ async function api(req, res, u) {
     return send(res, 200, { path: toRel(abs), mtime: st.mtimeMs, size: st.size });
   }
 
+  // ---- Claude Code kit (Settings → Claude Code)
+  if (route === 'claude-kit' && m === 'GET') return send(res, 200, await claudeKitStatus());
+  if (route === 'claude-kit' && m === 'POST') {
+    const input = JSON.parse((await readBody(req, 1024 * 1024)).toString('utf8') || '{}');
+    const r = await installClaudeKit(input);
+    return send(res, 200, { ...r, status: await claudeKitStatus() });
+  }
+
   // ---- Obsidian-compatible plugins: <vault>/.obsidian/plugins/<id>/{manifest.json, main.js, styles.css, data.json}
   if (route === 'plugins' && m === 'GET') {
     let dirs = [];
@@ -607,7 +615,7 @@ async function api(req, res, u) {
       const dir = path.join(PLUGIN_DIR, d.name);
       try {
         const manifest = JSON.parse(await fsp.readFile(path.join(dir, 'manifest.json'), 'utf8'));
-        plugins.push({ dir: d.name, manifest, hasStyles: await exists(path.join(dir, 'styles.css')), hasMain: await exists(path.join(dir, 'main.js')) });
+        plugins.push({ dir: d.name, manifest, builtin: BUILTIN_IDS.has(manifest.id), hasStyles: await exists(path.join(dir, 'styles.css')), hasMain: await exists(path.join(dir, 'main.js')) });
       } catch { plugins.push({ dir: d.name, error: 'Missing or invalid manifest.json' }); }
     }
     let enabled = [];
@@ -858,36 +866,126 @@ function openBrowser(url) {
   else exec(`${process.platform === 'darwin' ? 'open' : 'xdg-open'} "${url}"`);
 }
 
-// Start serving a vault. port 0 picks a free port. Resolves to the port actually used.
-// Graphite ships its own plugins (Graphie chat, Claude Capture) in the sample vault that new vaults start from.
-// When an existing vault has an older copy of one of them, its code (main.js, manifest.json, styles.css) is
-// updated; its settings (data.json), chat history and import records are kept. Plugins a vault doesn't have are
-// not added, and the vault's list of enabled plugins is not changed.
-function sampleVaultDir() {
-  for (const d of [path.join(__dirname, 'sample-vault'), process.resourcesPath && path.join(process.resourcesPath, 'sample-vault')]) if (d && fs.existsSync(d)) return d;
-  return null;
-}
+/* ---------- Built-in extensions (extensions/ in the app) ----------
+   obsidian-plugins/: Graphie chat, 🎓 study pages, ✦ Claude Capture. Every vault gets them: a plugin the vault
+   has never had is installed and enabled once (so turning it off or deleting it sticks); an older copy gets the
+   new code (main.js, manifest.json, styles.css) while its settings (data.json), chat history and import records
+   stay. claude-code/: the skills, hooks and settings example that Settings → Claude Code installs. */
+const EXT = path.join(__dirname, 'extensions');
+const PLUGINS_SHIP = path.join(EXT, 'obsidian-plugins');
+const CLAUDE_SHIP = path.join(EXT, 'claude-code');
 const newer = (a, b) => { const x = String(a).split('.').map(Number), y = String(b).split('.').map(Number); for (let i = 0; i < 3; i++) { if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) > (y[i] || 0); } return false; };
-async function updateBundledPlugins() {
-  const sample = sampleVaultDir();
-  if (!sample) return;
-  const from = path.join(sample, '.obsidian', 'plugins');
-  for (const id of await fsp.readdir(from).catch(() => [])) {
+const readJsonFile = async (f, def) => { try { return JSON.parse(await fsp.readFile(f, 'utf8')); } catch { return def; } };
+// Copy by reading and writing (works out of the packaged app's archive too).
+async function copyOut(from, to) { await fsp.mkdir(path.dirname(to), { recursive: true }); await fsp.writeFile(to, await fsp.readFile(from)); }
+let BUILTIN_IDS = new Set();
+async function installBuiltinPlugins() {
+  const ids = (await fsp.readdir(PLUGINS_SHIP).catch(() => [])).filter(id => fs.existsSync(path.join(PLUGINS_SHIP, id, 'manifest.json')));
+  BUILTIN_IDS = new Set(ids);
+  if (!ids.length) return;
+  const stateFile = path.join(CONFIG_DIR, 'graphite-builtins.json');
+  const state = await readJsonFile(stateFile, { offered: [] });
+  const offered = new Set(state.offered || []);
+  const enabledFile = path.join(CONFIG_DIR, 'community-plugins.json');
+  const enabled = await readJsonFile(enabledFile, []);
+  let enabledChanged = false;
+  for (const id of ids) {
+    const ship = await readJsonFile(path.join(PLUGINS_SHIP, id, 'manifest.json'), {});
     const mine = path.join(PLUGIN_DIR, id);
-    if (!fs.existsSync(path.join(mine, 'manifest.json'))) continue;
-    const have = JSON.parse(await fsp.readFile(path.join(mine, 'manifest.json'), 'utf8').catch(() => '{}'));
-    const ship = JSON.parse(await fsp.readFile(path.join(from, id, 'manifest.json'), 'utf8').catch(() => '{}'));
-    if (have.id !== ship.id || !newer(ship.version, have.version || '0')) continue;
-    for (const f of ['main.js', 'styles.css', 'manifest.json']) if (fs.existsSync(path.join(from, id, f))) await fsp.copyFile(path.join(from, id, f), path.join(mine, f));
+    const have = await readJsonFile(path.join(mine, 'manifest.json'), null);
+    const fresh = !have && !offered.has(id);
+    if (have && (have.id !== ship.id || !newer(ship.version, have.version || '0'))) { offered.add(id); continue; }
+    if (!have && !fresh) continue; // you removed it: leave it out
+    for (const f of ['main.js', 'styles.css', 'manifest.json']) if (fs.existsSync(path.join(PLUGINS_SHIP, id, f))) await copyOut(path.join(PLUGINS_SHIP, id, f), path.join(mine, f));
+    if (fresh && Array.isArray(enabled) && !enabled.includes(id)) { enabled.push(id); enabledChanged = true; }
+    offered.add(id);
   }
+  if (enabledChanged) await atomicWrite(enabledFile, JSON.stringify(enabled, null, 2));
+  await atomicWrite(stateFile, JSON.stringify({ offered: [...offered] }, null, 2));
 }
+
+/* ---------- Claude Code kit: skills, hooks and the settings they read ---------- */
+const CLAUDE_DIR = () => process.env.GRAPHITE_CLAUDE_DIR || path.join(require('os').homedir(), '.claude');
+const KIT_HOOKS = [
+  { file: 'obsidian-inbox.js', events: ['SessionStart', 'UserPromptSubmit'], timeout: 10 },
+  { file: 'brain-autoupdate.js', events: ['Stop'], timeout: 15 },
+];
+const isKitHook = cmd => /(obsidian-inbox|brain-autoupdate)\.js/i.test(String(cmd || ''));
+async function listFiles(dir, base = dir) {
+  const out = [];
+  for (const e of await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+    const full = path.join(dir, e.name);
+    if (e.isDirectory()) out.push(...await listFiles(full, base)); else out.push(path.relative(base, full));
+  }
+  return out;
+}
+async function claudeKitStatus() {
+  const dir = CLAUDE_DIR();
+  const config = await readJsonFile(path.join(dir, 'graphite.json'), null);
+  // New users start from empty fields (the example file's values are only shown as placeholders).
+  const defaults = { studyRoot: '', courses: {}, skipFolders: [], recentFolders: ['Downloads', 'Desktop', 'Documents'], recentDays: 180, brainFolder: 'Claude Brain', readOnlyFolders: [], studyPagesFolder: 'Study Pages', chatLanguage: '', readingLanguages: '', noteLanguage: '', about: '' };
+  const skills = [];
+  for (const name of await fsp.readdir(path.join(CLAUDE_SHIP, 'skills')).catch(() => [])) {
+    let same = true, present = fs.existsSync(path.join(dir, 'skills', name, 'SKILL.md'));
+    if (present) for (const f of await listFiles(path.join(CLAUDE_SHIP, 'skills', name))) {
+      const a = await fsp.readFile(path.join(CLAUDE_SHIP, 'skills', name, f)).catch(() => null), b = await fsp.readFile(path.join(dir, 'skills', name, f)).catch(() => null);
+      if (!a || !b || !a.equals(b)) { same = false; break; }
+    }
+    skills.push({ name, installed: present, upToDate: present && same });
+  }
+  const settings = await readJsonFile(path.join(dir, 'settings.json'), {});
+  const cmds = Object.values(settings.hooks || {}).flat().flatMap(g => (g.hooks || []).map(h => h.command));
+  const hooks = KIT_HOOKS.map(h => ({ file: h.file, registered: cmds.some(c => String(c).includes('graphite') && String(c).includes(h.file)) }));
+  return { claudeDir: dir, claudeFound: fs.existsSync(dir), vault: VAULT, config: { ...defaults, ...(config || {}), vault: VAULT }, hasConfig: !!config, skills, hooks };
+}
+async function installClaudeKit(input) {
+  const dir = CLAUDE_DIR();
+  await fsp.mkdir(dir, { recursive: true });
+  // 1. Settings the skills and hooks read. The vault is always the one this app has open.
+  const allowed = ['studyRoot', 'courses', 'skipFolders', 'recentFolders', 'recentDays', 'brainFolder', 'readOnlyFolders', 'studyPagesFolder', 'chatLanguage', 'readingLanguages', 'noteLanguage', 'about'];
+  const prev = await readJsonFile(path.join(dir, 'graphite.json'), {});
+  const config = { ...prev, vault: VAULT.split(path.sep).join('/') };
+  for (const k of allowed) if (input && k in input) config[k] = input[k];
+  if (config.studyRoot) config.studyRoot = String(config.studyRoot).trim().replace(/\\/g, '/');
+  await atomicWrite(path.join(dir, 'graphite.json'), JSON.stringify(config, null, 2) + '\n');
+  // 2. Skills (each file the app ships is copied over; your own extra files are left alone).
+  const done = { skills: [], hooks: [] };
+  for (const name of await fsp.readdir(path.join(CLAUDE_SHIP, 'skills')).catch(() => [])) {
+    for (const f of await listFiles(path.join(CLAUDE_SHIP, 'skills', name))) await copyOut(path.join(CLAUDE_SHIP, 'skills', name, f), path.join(dir, 'skills', name, f));
+    done.skills.push(name);
+  }
+  await copyOut(path.join(CLAUDE_SHIP, 'graphite.example.json'), path.join(dir, 'skills', 'graphite.example.json'));
+  // 3. Hooks: copied to ~/.claude/hooks/graphite/ and registered in Claude Code's settings.json. Only Graphite's
+  //    own entries are replaced; every other hook stays as it is. A backup of settings.json is kept.
+  for (const h of KIT_HOOKS) await copyOut(path.join(CLAUDE_SHIP, 'hooks', h.file), path.join(dir, 'hooks', 'graphite', h.file));
+  const settingsFile = path.join(dir, 'settings.json');
+  let settings = {};
+  if (fs.existsSync(settingsFile)) {
+    try { settings = JSON.parse(await fsp.readFile(settingsFile, 'utf8')); }
+    catch { done.hooksError = 'settings.json could not be read, so the hooks were not registered'; return { ...done, config }; }
+    await fsp.copyFile(settingsFile, settingsFile + '.before-graphite');
+  }
+  settings.hooks = settings.hooks || {};
+  for (const ev of Object.keys(settings.hooks)) {
+    settings.hooks[ev] = (settings.hooks[ev] || []).map(g => ({ ...g, hooks: (g.hooks || []).filter(h => !isKitHook(h.command)) })).filter(g => g.hooks.length);
+    if (!settings.hooks[ev].length) delete settings.hooks[ev];
+  }
+  for (const h of KIT_HOOKS) {
+    const command = `node "${path.join(dir, 'hooks', 'graphite', h.file)}"`;
+    for (const ev of h.events) (settings.hooks[ev] = settings.hooks[ev] || []).push({ hooks: [{ type: 'command', command, timeout: h.timeout }] });
+    done.hooks.push(h.file);
+  }
+  await atomicWrite(settingsFile, JSON.stringify(settings, null, 2) + '\n');
+  return { ...done, config };
+}
+
 async function start({ vault, port = 0, token = null, retry = 0 } = {}) {
   VAULT = path.resolve(vault);
   CONFIG_DIR = path.join(VAULT, '.obsidian');
   PLUGIN_DIR = path.join(CONFIG_DIR, 'plugins');
   TOKEN = token;
   await fsp.mkdir(VAULT, { recursive: true });
-  await updateBundledPlugins().catch(e => console.warn('bundled plugins:', e.message));
+  await installBuiltinPlugins().catch(e => console.warn('built-in plugins:', e.message));
   startWatcher();
   return new Promise((resolve, reject) => {
     let p = port;

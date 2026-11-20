@@ -21,7 +21,7 @@ export function openSettings(tab) {
   if (!root) build();
   root.classList.remove('hidden');
   document.addEventListener('keydown', onKey, true);
-  show(tab ? (tab.startsWith('plugin:') || ['general', 'appearance', 'review', 'ai', 'sync', 'plugins'].includes(tab) ? tab : 'plugin:' + tab) : current);
+  show(tab ? (tab.startsWith('plugin:') || ['general', 'appearance', 'review', 'ai', 'claude', 'sync', 'plugins'].includes(tab) ? tab : 'plugin:' + tab) : current);
 }
 export function closeSettings() {
   if (!root || root.classList.contains('hidden')) return;
@@ -53,6 +53,7 @@ function drawNav() {
   item('appearance', t('settings.appearance'));
   item('review', t('settings.review'));
   item('ai', t('settings.ai'));
+  item('claude', t('claude.title'));
   item('sync', t('settings.sync'));
   item('plugins', t('settings.plugins'));
   const tabs = PM.getSettingTabs();
@@ -73,6 +74,7 @@ async function show(id) {
   if (id === 'appearance') return renderAppearance(token);
   if (id === 'review') return renderReview();
   if (id === 'ai') return renderAI();
+  if (id === 'claude') return renderClaude(token);
   if (id === 'sync') return renderSync(token);
   if (id === 'plugins') return renderPlugins(token);
   if (id === 'browse') return renderBrowse(token);
@@ -392,8 +394,86 @@ async function renderSync(token) {
   content.createEl('p', { cls: 'setting-note', text: t('sync.tip') });
 }
 
+/* ---------- Claude Code: the skills and hooks that let a Claude Code window answer Graphie, file ✦ captures,
+   import course files and keep the Claude Brain. They ship with Graphite; this page fills in your paths
+   (~/.claude/graphite.json) and installs them. ---------- */
+async function renderClaude(token) {
+  heading(t('claude.title'));
+  content.createEl('p', { cls: 'setting-note', text: t('claude.intro') });
+  let st;
+  try { st = await H.api('GET', 'claude-kit'); } catch (e) { content.createEl('p', { cls: 'mod-error', text: e.message }); return; }
+  if (token !== renderToken) return;
+  const c = { ...st.config };
+  const lines = o => Object.entries(o || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
+  const parseLines = txt => Object.fromEntries(String(txt).split(/\r?\n/).map(l => l.split('=')).filter(x => x.length >= 2 && x[0].trim()).map(([k, ...v]) => [k.trim(), v.join('=').trim()]));
+  const list = v => String(v || '').split(',').map(x => x.trim()).filter(Boolean);
+
+  const installed = st.skills.length && st.skills.every(x => x.upToDate) && st.hooks.every(h => h.registered) && st.hasConfig;
+  const box = content.createDiv('settings-callout');
+  box.createEl('h3', { text: installed ? t('claude.ready') : st.hasConfig ? t('claude.outdated') : t('claude.notYet') });
+  box.createEl('p', { cls: 'muted', text: t('claude.where', { dir: st.claudeDir }) });
+  if (!st.claudeFound) box.createEl('p', { text: t('claude.noClaude') });
+
+  new PM.Setting(content).setName(t('claude.vault')).setDesc(st.vault);
+  new PM.Setting(content).setName(t('claude.studyRoot')).setDesc(t('claude.studyRootDesc'))
+    .addText(x => x.setPlaceholder('C:/Users/you/University').setValue(c.studyRoot || '').onChange(v => { c.studyRoot = v; }));
+  new PM.Setting(content).setName(t('claude.courses')).setDesc(t('claude.coursesDesc'))
+    .addTextArea(x => { x.setPlaceholder('CALC = Calculus\nPHYS = Physics').setValue(lines(c.courses)).onChange(v => { c.courses = parseLines(v); }); x.inputEl.rows = 6; });
+  new PM.Setting(content).setName(t('claude.skip')).setDesc(t('claude.skipDesc'))
+    .addText(x => x.setPlaceholder('OLD, Archive').setValue((c.skipFolders || []).join(', ')).onChange(v => { c.skipFolders = list(v); }));
+  new PM.Setting(content).setName(t('claude.recent')).setDesc(t('claude.recentDesc'))
+    .addText(x => x.setValue((c.recentFolders || []).join(', ')).onChange(v => { c.recentFolders = list(v); }));
+  new PM.Setting(content).setName(t('claude.about')).setDesc(t('claude.aboutDesc'))
+    .addText(x => x.setPlaceholder('second-year engineering student').setValue(c.about || '').onChange(v => { c.about = v; }));
+  new PM.Setting(content).setName(t('claude.chatLang')).setDesc(t('claude.chatLangDesc'))
+    .addText(x => x.setPlaceholder('English').setValue(c.chatLanguage || '').onChange(v => { c.chatLanguage = v; }));
+  new PM.Setting(content).setName(t('claude.readLang')).setDesc(t('claude.readLangDesc'))
+    .addText(x => x.setPlaceholder('English').setValue(c.readingLanguages || '').onChange(v => { c.readingLanguages = v; }));
+  new PM.Setting(content).setName(t('claude.noteLang')).setDesc(t('claude.noteLangDesc'))
+    .addText(x => x.setPlaceholder('English').setValue(c.noteLanguage || '').onChange(v => { c.noteLanguage = v; }));
+  new PM.Setting(content).setName(t('claude.brain')).setDesc(t('claude.brainDesc'))
+    .addText(x => x.setValue(c.brainFolder || 'Claude Brain').onChange(v => { c.brainFolder = v.trim() || 'Claude Brain'; }));
+  new PM.Setting(content).setName(t('claude.pages')).setDesc(t('claude.pagesDesc'))
+    .addText(x => x.setValue(c.studyPagesFolder || '').onChange(v => { c.studyPagesFolder = v.trim(); }));
+  new PM.Setting(content).setName(t('claude.readOnly')).setDesc(t('claude.readOnlyDesc'))
+    .addText(x => x.setValue((c.readOnlyFolders || []).join(', ')).onChange(v => { c.readOnlyFolders = list(v); }));
+
+  const out = content.createDiv('setting-note');
+  new PM.Setting(content).setName(t('claude.install')).setDesc(t('claude.installDesc')).addButton(b => b.setButtonText(t('claude.installBtn')).setCta().onClick(async () => {
+    b.buttonEl.disabled = true; b.setButtonText(t('claude.installing'));
+    try {
+      const r = await H.api('POST', 'claude-kit', {}, c);
+      out.setText(t('claude.done', { skills: r.skills.length, hooks: r.hooks.length }) + (r.hooksError ? ' ' + r.hooksError : ''));
+      H.toast(t('claude.doneShort'));
+      setTimeout(() => { if (current === 'claude') show('claude'); }, 1500);
+    } catch (e) { out.setText(e.message); b.buttonEl.disabled = false; b.setButtonText(t('claude.installBtn')); }
+  }));
+  const det = content.createEl('details', { cls: 'setting-note' });
+  det.createEl('summary', { text: t('claude.whatTitle') });
+  for (const k of ['claude.what1', 'claude.what2', 'claude.what3', 'claude.what4']) det.createEl('p', { text: t(k) });
+  det.createEl('p', { cls: 'muted', text: st.skills.map(x => `${x.name}: ${x.upToDate ? '✓' : x.installed ? t('claude.old') : '—'}`).join(' · ') + ' · ' + st.hooks.map(h => `${h.file}: ${h.registered ? '✓' : '—'}`).join(' · ') });
+}
+
 async function renderPlugins(token) {
   heading(t('settings.plugins'));
+  let all = [];
+  try { all = await PM.refreshInstalled(); } catch { /* listed below */ }
+  if (token !== renderToken) return;
+  const builtin = all.filter(p => p.builtin && p.manifest);
+  if (builtin.length) {
+    new PM.Setting(content).setName(t('plugins.builtin')).setDesc(t('plugins.builtinDesc')).setHeading();
+    for (const p of builtin) {
+      const m = p.manifest, id = m.id;
+      const s = new PM.Setting(content).setName(m.name).setDesc(m.description || '');
+      s.nameEl.createSpan({ cls: 'plugin-version', text: ` v${m.version || '?'}` });
+      const err = PM.getError(id);
+      if (err) s.descEl.createDiv({ cls: 'mod-error', text: t('plugins.loadFailed', { name: m.name, msg: err }) });
+      if (PM.isLoaded(id) && PM.getSettingTabs().some(r => r.plugin.manifest.id === id))
+        s.addExtraButton(b => b.setIcon('settings').setTooltip(t('settings.title')).onClick(() => show('plugin:' + id)));
+      s.addToggle(tg => tg.setValue(PM.isEnabled(id)).onChange(async v => { if (v) await PM.enablePlugin(id); else await PM.disablePlugin(id); show('plugins'); }));
+    }
+    new PM.Setting(content).setName(t('plugins.community')).setHeading();
+  }
   if (!PM.pluginsOn()) {
     const box = content.createDiv('settings-callout');
     box.createEl('h3', { text: t('plugins.restrictedTitle') });
@@ -416,9 +496,10 @@ async function renderPlugins(token) {
     .addExtraButton(b => b.setIcon('folder-open').setTooltip(t('plugins.openFolder')).onClick(() => H.api('POST', 'reveal', { path: '.obsidian/plugins' })))
     .addExtraButton(b => b.setIcon('refresh-cw').setTooltip(t('plugins.reload')).onClick(async () => { await PM.reloadAll(); show('plugins'); }));
 
-  if (!list.length) { content.createEl('p', { cls: 'empty-hint', text: t('plugins.none', { path: PM.getPluginDir() }) }); return; }
+  if (!list.some(p => !p.builtin)) { content.createEl('p', { cls: 'empty-hint', text: t('plugins.none', { path: PM.getPluginDir() }) }); return; }
 
   for (const p of list) {
+    if (p.builtin) continue;
     if (!p.manifest) { new PM.Setting(content).setName(p.dir).setDesc(p.error || ''); continue; }
     const m = p.manifest, id = m.id;
     const s = new PM.Setting(content).setName(m.name);
