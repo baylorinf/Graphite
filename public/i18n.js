@@ -2503,3 +2503,65 @@ Object.entries({
   "mock.addPaperPh":["Add a past paper by hand (any PDF or note)…","Ajouter une ancienne épreuve (tout PDF ou note)…","Añadir un examen anterior (cualquier PDF o nota)…","過去問を手動で追加（PDF・ノート）…","기출 시험지 직접 추가(PDF·노트)…","手动添加往年卷（任意 PDF 或笔记）…","手動新增歷年考卷（任意 PDF 或筆記）…"],
   "mock.addPaperBad":["Choose a PDF or note in the vault (pick one from the list).","Choisissez un PDF ou une note du coffre (dans la liste).","Elige un PDF o una nota de la bóveda (de la lista).","保管庫の PDF かノートを一覧から選んでください。","보관소의 PDF나 노트를 목록에서 고르세요.","请从列表中选择仓库里的 PDF 或笔记。","請從清單中選擇儲存庫裡的 PDF 或筆記。"],
 }).forEach(([key, labels]) => ["en", "fr", "es", "ja", "ko", "zh-CN", "zh-TW"].forEach((c, i) => { D[c][key] = labels[i]; }));
+// ---- Code workbench (projects, C++ build / run / debug) ----
+{
+  const WB = {
+    en: {
+      'wb.title': 'Code', 'wb.failed': 'The action failed.', 'cmd.code-workbench': 'Open the code workbench (project folder, run and debug C++)',
+      'wb.choose': 'Open folder…', 'wb.chooseTitle': 'Work in a project folder anywhere on this computer', 'wb.useVault': 'Use this vault', 'wb.useVaultTitle': 'Switch back to this vault as the project',
+      'wb.thisVault': 'This vault', 'wb.noProject': 'No project yet', 'wb.unavailableShort': 'Not reachable', 'wb.unavailable': 'The project folder {path} can’t be reached (moved, renamed or on a drive that isn’t connected). Your unsaved text is kept. Open the folder again, or use this vault.',
+      'wb.switched': 'Now working in {name}', 'wb.files': 'Files', 'wb.newFile': 'New file in the selected folder', 'wb.newFileShort': '+ File', 'wb.newFolder': 'New folder in the selected folder', 'wb.newFolderShort': '+ Folder', 'wb.refresh': 'Reload the folder tree',
+      'wb.pickFirst': 'Open a project folder, or use this vault.', 'wb.emptyFolder': 'This folder is empty.',
+      'wb.save': 'Save', 'wb.saveTitle': 'Save this file (Ctrl+S)', 'wb.build': 'Compile', 'wb.buildTitle': 'Compile without running', 'wb.run': '▶ Run', 'wb.runTitle': 'Compile and run (Ctrl+F5); input comes from the Input tab',
+      'wb.debug': 'Debug', 'wb.debugTitle': 'Compile and debug, stopping at your breakpoints (F5)', 'wb.stop': '■ Stop',
+      'wb.continue': 'Continue', 'wb.continueTitle': 'Run to the next breakpoint (F5)', 'wb.next': 'Step over', 'wb.nextTitle': 'Next line, without entering functions (F10)', 'wb.step': 'Step into', 'wb.stepTitle': 'Next line, entering function calls (F11)', 'wb.finish': 'Step out', 'wb.finishTitle': 'Run until this function returns (Shift+F11)',
+      'wb.output': 'Output', 'wb.input': 'Input', 'wb.problems': 'Problems', 'wb.variables': 'Debug', 'wb.inputHint': 'Text typed here is given to the program as its input (what cin reads).',
+      'wb.collapse': 'Hide panel ▾', 'wb.expand': 'Show panel ▴', 'wb.outputHint': 'Run a C++ file to see what it prints here.',
+      'wb.notCode': 'Graphite can’t edit this kind of file here.', 'wb.readonly': 'Read-only', 'wb.unsaved': 'Unsaved changes', 'wb.saved0': 'Saved', 'wb.saving': 'Saving…', 'wb.saved': 'Saved {name}', 'wb.lnCol': 'Ln {line}, Col {col}',
+      'wb.conflict': 'This file changed on disk while you were editing. Your text is kept. Keep yours (saves over the disk version), or load the disk version.', 'wb.keepMine': 'Keep mine and save', 'wb.loadDisk': 'Load the disk version', 'wb.discardMine': 'Replace your unsaved text with the version on disk?',
+      'wb.deleted': 'This file is no longer on disk. Your text is kept; save it under a new name with + File.', 'wb.projectGone': 'The project changed or can’t be reached. Your text is kept; open the project again.', 'wb.saveFailed': 'Not saved: {msg}. Your text is kept.',
+      'wb.closeDirty': '{name} has unsaved changes. Close it and discard them?', 'wb.closeFile': 'Close {name}',
+      'wb.newFileName': 'File name (e.g. main.cpp)', 'wb.newFolderName': 'Folder name', 'wb.inFolder': 'In {folder}', 'wb.inRoot': 'In the project’s top folder', 'wb.badName': 'Use a file name with a code extension (e.g. main.cpp), without \\ / or :.', 'wb.exists': 'A file or folder with that name already exists.',
+      'wb.breakpoint': 'Breakpoint, line {line} (click to remove)', 'wb.breakpoints': 'Breakpoints', 'wb.noBreakpoints': 'Click left of a line number (or press F9) to stop there when debugging.',
+      'wb.toolsChecking': 'Checking for g++ and GDB…', 'wb.toolMissing': '{tool} not found — install it to use this',
+      'wb.openCpp': 'Open a C++ file first.', 'wb.cppOnly': 'Run and debug work with C++ files (.cpp, .cc, .cxx) for now.', 'wb.busy': 'Stop the current run first.', 'wb.notCompiledSave': '{name} couldn’t be saved, so nothing was compiled.',
+      'wb.phase.starting': 'Starting…', 'wb.phase.compiling': 'Compiling…', 'wb.phase.running': 'Running…', 'wb.phase.debugging': 'Debugging…', 'wb.phase.paused': 'Paused',
+      'wb.end.built': 'Compiled without errors', 'wb.end.success': 'Finished (exit code {code})', 'wb.end.runtime': 'The program failed (exit code {code})', 'wb.end.compile_error': 'Didn’t compile — see Problems', 'wb.end.stopped': 'Stopped', 'wb.end.error': 'Couldn’t run',
+      'wb.error': 'Error', 'wb.warning': 'Warning', 'wb.note': 'Note', 'wb.noProblems': 'No problems found.', 'wb.compileFailedNoList': 'The compiler reported errors; see Output.',
+      'wb.pausedAt': 'Paused at {where}', 'wb.noLocals': 'No local variables here.', 'wb.varName': 'Name', 'wb.varValue': 'Value', 'wb.varType': 'Type', 'wb.debugHint': 'Set breakpoints and press Debug: the program stops there and its variables show here.',
+      'wb.newCodeTitle': 'Create a code file', 'wb.where': 'Where', 'wb.whereVault': 'In this vault', 'wb.folder': 'Folder', 'wb.vaultRoot': 'Vault root', 'wb.whereProject': 'In a project folder on this computer',
+      'wb.noExternal': 'No project folder chosen yet', 'wb.subfolder': 'Subfolder', 'wb.subfolderPh': 'optional, e.g. src', 'wb.fileName': 'File name', 'wb.create': 'Create', 'wb.target': 'Creates {path} in {place}', 'wb.pickFolderFirst': 'Choose the project folder first.',
+    },
+    'zh-CN': {
+      'wb.title': '代码', 'wb.failed': '操作失败。', 'cmd.code-workbench': '打开代码工作台（项目目录、运行和调试 C++）',
+      'wb.choose': '打开文件夹…', 'wb.chooseTitle': '在电脑上任意项目文件夹中工作', 'wb.useVault': '改用本仓库', 'wb.useVaultTitle': '把项目切回当前仓库',
+      'wb.thisVault': '本仓库', 'wb.noProject': '尚未选择项目', 'wb.unavailableShort': '无法访问', 'wb.unavailable': '无法访问项目文件夹 {path}（可能已移动、改名，或所在磁盘未连接）。未保存的内容已保留。请重新打开该文件夹，或改用本仓库。',
+      'wb.switched': '已切换到 {name}', 'wb.files': '文件', 'wb.newFile': '在所选文件夹中新建文件', 'wb.newFileShort': '+ 文件', 'wb.newFolder': '在所选文件夹中新建文件夹', 'wb.newFolderShort': '+ 文件夹', 'wb.refresh': '重新载入目录树',
+      'wb.pickFirst': '请打开一个项目文件夹，或改用本仓库。', 'wb.emptyFolder': '这个文件夹是空的。',
+      'wb.save': '保存', 'wb.saveTitle': '保存此文件（Ctrl+S）', 'wb.build': '编译', 'wb.buildTitle': '只编译，不运行', 'wb.run': '▶ 运行', 'wb.runTitle': '编译并运行（Ctrl+F5）；输入来自“输入”页',
+      'wb.debug': '调试', 'wb.debugTitle': '编译并调试，在断点处暂停（F5）', 'wb.stop': '■ 停止',
+      'wb.continue': '继续', 'wb.continueTitle': '运行到下一个断点（F5）', 'wb.next': '单步跳过', 'wb.nextTitle': '执行下一行，不进入函数（F10）', 'wb.step': '单步进入', 'wb.stepTitle': '执行下一行，进入函数调用（F11）', 'wb.finish': '单步跳出', 'wb.finishTitle': '运行到当前函数返回（Shift+F11）',
+      'wb.output': '输出', 'wb.input': '输入', 'wb.problems': '问题', 'wb.variables': '调试', 'wb.inputHint': '在这里输入的文字会作为程序的输入（cin 读取的内容）。',
+      'wb.collapse': '收起面板 ▾', 'wb.expand': '展开面板 ▴', 'wb.outputHint': '运行 C++ 文件后，程序的输出会显示在这里。',
+      'wb.notCode': 'Graphite 无法在这里编辑这类文件。', 'wb.readonly': '只读', 'wb.unsaved': '有未保存的修改', 'wb.saved0': '已保存', 'wb.saving': '正在保存…', 'wb.saved': '已保存 {name}', 'wb.lnCol': '第 {line} 行，第 {col} 列',
+      'wb.conflict': '编辑期间这个文件在磁盘上被改动了。你的内容已保留。可以保留你的版本（覆盖磁盘上的版本并保存），或载入磁盘上的版本。', 'wb.keepMine': '保留我的并保存', 'wb.loadDisk': '载入磁盘版本', 'wb.discardMine': '用磁盘上的版本替换你未保存的内容吗？',
+      'wb.deleted': '这个文件已不在磁盘上。你的内容已保留，可以用“+ 文件”另存为新文件。', 'wb.projectGone': '项目已变化或无法访问。你的内容已保留，请重新打开项目。', 'wb.saveFailed': '未保存：{msg}。你的内容已保留。',
+      'wb.closeDirty': '{name} 有未保存的修改。关闭并放弃这些修改吗？', 'wb.closeFile': '关闭 {name}',
+      'wb.newFileName': '文件名（例如 main.cpp）', 'wb.newFolderName': '文件夹名', 'wb.inFolder': '位于 {folder}', 'wb.inRoot': '位于项目顶层文件夹', 'wb.badName': '请使用带代码扩展名的文件名（例如 main.cpp），不要包含 \\ / 或 :。', 'wb.exists': '已存在同名的文件或文件夹。',
+      'wb.breakpoint': '断点，第 {line} 行（点击取消）', 'wb.breakpoints': '断点', 'wb.noBreakpoints': '点击行号左侧（或按 F9）设置断点，调试时会停在那里。',
+      'wb.toolsChecking': '正在检测 g++ 和 GDB…', 'wb.toolMissing': '未找到 {tool}，安装后才能使用',
+      'wb.openCpp': '请先打开一个 C++ 文件。', 'wb.cppOnly': '目前只能运行和调试 C++ 文件（.cpp、.cc、.cxx）。', 'wb.busy': '请先停止当前的运行。', 'wb.notCompiledSave': '{name} 没能保存，所以没有编译。',
+      'wb.phase.starting': '正在启动…', 'wb.phase.compiling': '正在编译…', 'wb.phase.running': '正在运行…', 'wb.phase.debugging': '正在调试…', 'wb.phase.paused': '已暂停',
+      'wb.end.built': '编译成功，没有错误', 'wb.end.success': '运行结束（退出码 {code}）', 'wb.end.runtime': '程序运行出错（退出码 {code}）', 'wb.end.compile_error': '编译失败，请看“问题”', 'wb.end.stopped': '已停止', 'wb.end.error': '无法运行',
+      'wb.error': '错误', 'wb.warning': '警告', 'wb.note': '说明', 'wb.noProblems': '没有发现问题。', 'wb.compileFailedNoList': '编译器报告了错误，请看“输出”。',
+      'wb.pausedAt': '暂停于 {where}', 'wb.noLocals': '这里没有局部变量。', 'wb.varName': '名称', 'wb.varValue': '值', 'wb.varType': '类型', 'wb.debugHint': '设置断点后点“调试”：程序会停在断点处，变量显示在这里。',
+      'wb.newCodeTitle': '新建代码文件', 'wb.where': '位置', 'wb.whereVault': '在本仓库中', 'wb.folder': '文件夹', 'wb.vaultRoot': '仓库根目录', 'wb.whereProject': '在电脑上的项目文件夹中',
+      'wb.noExternal': '尚未选择项目文件夹', 'wb.subfolder': '子文件夹', 'wb.subfolderPh': '可选，例如 src', 'wb.fileName': '文件名', 'wb.create': '新建', 'wb.target': '将在 {place} 中新建 {path}', 'wb.pickFolderFirst': '请先选择项目文件夹。',
+    },
+  };
+  // Traditional Chinese: the simplified text with a character map for the words used here.
+  const tw = { '项': '項', '目': '目', '录': '錄', '运': '運', '行': '行', '调': '調', '试': '試', '开': '開', '件': '件', '夹': '夾', '脑': '腦', '仓': '倉', '库': '庫', '换': '換', '选': '選', '择': '擇', '访': '訪', '问': '問', '动': '動', '盘': '盤', '连': '連', '接': '接', '未': '未', '内': '內', '容': '容', '请': '請', '新': '新', '载': '載', '树': '樹', '这': '這', '个': '個', '编': '編', '译': '譯', '断': '斷', '点': '點', '处': '處', '停': '停', '继': '繼', '续': '續', '单': '單', '执': '執', '进': '進', '数': '數', '输': '輸', '题': '題', '为': '為', '读': '讀', '显': '顯', '示': '示', '辑': '輯', '类': '類', '只': '只', '修': '修', '改': '改', '已': '已', '变': '變', '覆': '覆', '盖': '蓋', '无': '無', '关': '關', '闭': '閉', '弃': '棄', '扩': '擴', '展': '展', '议': '議', '层': '層', '时': '時', '设': '設', '测': '測', '装': '裝', '后': '後', '才': '才', '码': '碼', '错': '錯', '误': '誤', '没': '沒', '结': '結', '束': '束', '说': '說', '明': '明', '现': '現', '局': '局', '变量': '變數', '值': '值', '称': '稱', '型': '型', '位': '位', '置': '置', '电': '電', '将': '將', '尚': '尚', '还': '還', '复': '復', '杂': '雜', '标': '標', '签': '籤', '页': '頁', '面': '面', '板': '板', '起': '起', '启': '啟', '缓': '緩', '冲': '衝', '码头': '碼頭' };
+  const toTw = s => s.replace(/[一-鿿]/g, c => tw[c] || c);
+  WB['zh-TW'] = Object.fromEntries(Object.entries(WB['zh-CN']).map(([k, v]) => [k, toTw(v)]));
+  for (const [code, d] of Object.entries(WB)) if (D[code]) Object.assign(D[code], d);
+}
