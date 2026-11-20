@@ -24,7 +24,8 @@ async function main() {
     return {tool:{name:'submit_plan',input:{items:[],edits:[{path:name,content:old+'Proposed evidence.\n'}],summary:'Record the fixture evidence.'}}};
   });
   process.env.GRAPHITE_TEST_AI_BASE=model.url+'/v1';
-  const server=await require('../server').start({vault});
+  const product=path.resolve(process.argv[2] || path.join(__dirname,'..'));
+  const server=await require(path.join(product,'server')).start({vault});
   async function request(body) {
     const response=await fetch('http://127.0.0.1:'+server+'/api/agent',{method:'POST',
       headers:{'Content-Type':'application/json','X-Vault':'1','X-AI-Key':'fixture'},body:JSON.stringify({
