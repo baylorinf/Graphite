@@ -122,7 +122,7 @@ async function main() {
     assert.equal(await p.locator('.fj-res-note').count(), 0, 'indexError repeats the per-file reason: shown once');
     assert.equal((await p.locator('.fj-modal .fj-body').innerText()).split('COM error').length - 1, 1);
     assert.match(await p.locator('.fj-modal [data-a=previews]').innerText(), /Make the missing previews \(1\)/);
-    assert.match(await p.locator('.fj-modal [data-a=resume]').innerText(), /Retry these 1 files/);
+    assert.match(await p.locator('.fj-modal [data-a=resume]').innerText(), /Retry failed files \(1\)/);
   });
 
   await test('Make the missing previews: one request per preview (double click ignored), only the retryId; the row becomes ready', async p => {
@@ -139,6 +139,19 @@ async function main() {
     assert.ok(!('accept' in retries[0]) && !('destinations' in retries[0]));
     assert.match(await head(p).innerText(), /Imported 2 of 3/);
     assert.equal(await p.locator('.fj-modal [data-a=previews]').count(), 0);
+  });
+
+  await test('two previews missing: retry only one (the other stays to do, the batch button stays); one request with only its retryId', async p => {
+    const two = { ...PARTIAL, done: [PARTIAL.done[0], { name: 'B.pptx', originalDest: 'CS/B.pptx', dest: 'CS/B.pptx', preview: { status: 'failed', code: 'officeFailed', reason: 'Office busy', retryId: 'prev-B' } }, PARTIAL.done[1]], failed: [], retry: null };
+    const sent = await agent(p, { plan: nd({ result: PLAN }), apply: nd({ result: two }),
+      retryPreview: b => nd({ result: { job: 'import', done: [{ name: 'B.pptx', originalDest: 'CS/B.pptx', dest: 'CS/B.pdf', preview: { status: 'ready', dest: 'CS/B.pdf' } }], failed: [] } }) });
+    await start(p); await applyAll(p);
+    assert.equal(await p.locator('.fj-res-imported .is-pending').count(), 2);
+    await p.locator('.fj-res-imported .is-pending', { hasText: 'B.pptx' }).locator('[data-retry-one]').click();
+    await p.waitForFunction(() => document.querySelectorAll('.fj-res-imported .is-pending').length === 1);
+    assert.deepEqual(sent.filter(b => b.phase === 'retryPreview').map(b => b.retryId), ['prev-B']);
+    assert.match(await p.locator('.fj-res-imported .is-pending').innerText(), /A.docx/);
+    assert.match(await p.locator('.fj-modal [data-a=previews]').innerText(), /(1)/);
   });
 
   await test('Retry these files: resumeImport with the recovery id and the same AI, no accept/destinations; B is added once, nothing else', async p => {
@@ -266,11 +279,12 @@ async function main() {
     assert.equal(await p.locator('.fj-tag', { hasText: /course/i }).count(), 0, 'no "unclear course" tag');
     assert.match(await rows.first().innerText(), /Already imported · only the PDF preview to make[\s\S]*Stays at CS\/Example A\.docx/);
     assert.equal(await p.locator('.fj-item input[type=checkbox]:checked').count(), 2);
-    assert.equal(await p.locator('.fj-folder').count(), 0, 'no folder to choose again');
+    // Only the PDF's folder can be chosen (the original stays where it is): B's PDF goes to another folder.
+    await p.locator('.fj-item.is-preview-only input.fj-folder').nth(1).fill('Previews');
     await p.locator('.fj-modal [data-a=apply]').click();
     await p.locator('.fj-res-head').waitFor();
     const apply = sent.find(b => b.phase === 'apply');
-    assert.deepEqual(apply.accept, [0, 1]); assert.deepEqual(apply.destinations, {});
+    assert.deepEqual(apply.accept, [0, 1]); assert.deepEqual(apply.destinations, { 1: 'Previews/Example B.pdf' });
   });
 
   await test('summary of an imported PDF: its own folder first, the mapped course offered (source paths in lower case; a PDF made from a DOCX maps back to it); read-only refused', async p => {

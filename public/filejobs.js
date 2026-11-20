@@ -242,7 +242,7 @@ async function plan(extra = {}) {
     const title = esc(it.name || (it.quote || '').replace(/\s+/g, ' ').slice(0, 80));
     if (previewOnly(it)) {
       return `<div class="fj-item is-preview-only"><input type="checkbox" data-i="${i}" id="fj-i-${i}" checked><span class="fj-text"><label for="fj-i-${i}"><b>${title}</b> <span class="fj-tag is-ok">${esc(t('fj.res.previewOnly'))}</span></label>
-        <span class="muted">${esc(t('fj.res.stays', { path: shownPath(it.originalDest || '') }))}</span><span class="muted">→ ${esc(shownPath(it.dest || ''))}</span></span></div>`;
+        <span class="muted">${esc(t('fj.res.stays', { path: shownPath(it.originalDest || '') }))}</span>${manual ? `<span class="fj-dest"><span class="muted">${esc(t('fj.res.pdfFolder'))}</span><input type="text" class="fj-folder" data-f="${i}" list="fj-folders" spellcheck="false" placeholder="${esc(t('fj.vaultRoot'))}" value="${esc(folderOf(it.dest))}"><span class="muted">/${esc(baseOf(it.dest))}</span></span>` : `<span class="muted">→ ${esc(shownPath(it.dest || ''))}</span>`}</span></div>`;
     }
     const unknown = manual && !it.course;
     const where = manual
@@ -272,7 +272,6 @@ async function plan(extra = {}) {
     // shown as "Vault root"); the backend checks each one.
     const destinations = {}, err = body.querySelector('.fj-form-error');
     for (const i of accept) {
-      if (previewOnly(items[i])) continue; // its place is already decided
       const it = items[i], raw = String(body.querySelector(`[data-f="${i}"]`)?.value || '').trim().replace(/\\/g, '/');
       if (/(^|\/)\.\.?(\/|$)/.test(raw) || /:/.test(raw)) { err.textContent = t('fj.badFolder', { name: it.name || baseOf(it.dest) }); err.hidden = false; return; }
       const f = raw.replace(/^\/+|\/+$/g, '').replace(/\/{2,}/g, '/');
@@ -346,7 +345,7 @@ function showImportResult(r) {
     const p = d.originalDest || d.dest || d.target || d.name || '';
     const pend = d.preview?.status === 'failed';
     const ready = d.preview?.status === 'ready' && d.preview.dest && d.preview.dest !== p ? ` <span class="muted">→ ${esc(shownPath(d.preview.dest))}</span>` : '';
-    return `<li class="fj-res-row${pend ? ' is-pending' : ''}"><span class="fj-res-name">${esc(shownPath(p))}</span>${ready}${pend ? `<div class="fj-res-tag">${esc(t('fj.res.previewPending'))}</div>${reasonHtml(d.preview.reason || d.preview.code || '')}` : ''}</li>`;
+    return `<li class="fj-res-row${pend ? ' is-pending' : ''}"><span class="fj-res-name">${esc(shownPath(p))}</span>${ready}${pend ? `<div class="fj-res-tag">${esc(t('fj.res.previewPending'))}</div>${reasonHtml(d.preview.reason || d.preview.code || '')}${d.preview.retryId ? `<button class="mod-button fj-retry-one" data-retry-one="${esc(d.preview.retryId)}">${esc(t('fj.res.retryOne'))}</button>` : ''}` : ''}</li>`;
   }).join('');
   const notDone = failed.map(f => `<li class="fj-res-row is-failed"><span class="fj-res-name">${esc(f.name || baseOf(f.src) || f.id || '')}</span><div class="fj-res-tag">${esc(t('fj.res.notImportedTag'))}</div>${reasonHtml(f.error || '')}</li>`).join('');
   body.innerHTML = header(`<div class="fj-res-head is-${state}${state === 'ok' ? ' review-done' : ''}" role="status"><div class="fj-res-icon">${icon}</div><div><h2>${esc(title)}</h2>${lines.map(l => `<p>${esc(l)}</p>`).join('')}</div></div>
@@ -359,6 +358,7 @@ function showImportResult(r) {
   actions.innerHTML = `${pending.length ? `<button class="mod-button mod-cta" data-a="previews">${esc(t('fj.res.retryPreviews', { n: pending.length }))}</button>` : ''}${retryN ? `<button class="mod-button${pending.length ? '' : ' mod-cta'}" data-a="resume">${esc(t('fj.res.retryFiles', { n: retryN }))}</button>` : ''}<button class="mod-button" data-a="close">${esc(t('review.close'))}</button>`;
   actions.querySelector('[data-a=close]').onclick = close;
   actions.querySelector('[data-a=previews]')?.addEventListener('click', () => retryPreviews(me));
+  body.querySelector('.fj-res-imported')?.addEventListener('click', e => { const id = e.target.closest('[data-retry-one]')?.dataset.retryOne; if (id) retryPreviews(me, id); });
   actions.querySelector('[data-a=resume]')?.addEventListener('click', () => resumeFailed(me));
 }
 function resultError(me, e) {
@@ -367,17 +367,17 @@ function resultError(me, e) {
 }
 function lockActions(me, busy) {
   me.busy = busy;
-  for (const b of me.el.querySelectorAll('.fj-actions button')) b.disabled = busy && b.dataset.a !== 'close';
+  for (const b of me.el.querySelectorAll('.fj-actions button, .fj-retry-one')) b.disabled = busy && b.dataset.a !== 'close';
 }
 // Make the missing PDF previews of originals already in the vault (nothing is imported again).
-async function retryPreviews(me) {
+async function retryPreviews(me, only = null) {
   if (me.busy || win !== me) return;
   lockActions(me, true);
   const r = me.result, done = [...(r.done || [])];
   let error = null;
   for (let i = 0; i < done.length; i++) {
     const d = done[i];
-    if (d.preview?.status !== 'failed' || !d.preview.retryId) continue;
+    if (d.preview?.status !== 'failed' || !d.preview.retryId || (only && d.preview.retryId !== only)) continue;
     try {
       const out = await AI.agent(me.feature, 'import', { phase: 'retryPreview', retryId: d.preview.retryId }, { signal: me.ctl.signal, graphite: true });
       if (out?.done?.[0]) done[i] = out.done[0];

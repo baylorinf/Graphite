@@ -2512,7 +2512,7 @@ Object.entries({
   "fj.res.notImportedTag":["Not imported","Non importé","No importado","取り込めず","가져오지 못함","未导入","未匯入"],
   "fj.res.details":["Details","Détails","Detalles","詳細","자세히","详细信息","詳細資訊"],
   "fj.res.retryPreviews":["Make the missing previews ({n})","Faire les aperçus manquants ({n})","Crear las vistas previas que faltan ({n})","足りないプレビューを作る（{n}）","빠진 미리보기 만들기 ({n})","生成缺失的预览（{n}）","產生缺少的預覽（{n}）"],
-  "fj.res.retryFiles":["Retry these {n} files","Réessayer ces {n} fichiers","Reintentar estos {n} archivos","この {n} 件を再試行","이 {n}개 파일 다시 시도","重试这 {n} 个文件","重試這 {n} 個檔案"],
+  "fj.res.retryFiles":["Retry failed files ({n})","Réessayer les fichiers en échec ({n})","Reintentar los archivos fallidos ({n})","この {n} 件を再試行","이 {n}개 파일 다시 시도","重试这 {n} 个文件","重試這 {n} 個檔案"],
   "fj.res.previewOnly":["Already imported · only the PDF preview to make","Déjà importé · seul l’aperçu PDF reste à faire","Ya importado · solo falta la vista previa PDF","取り込み済み・PDF プレビューだけ作成","이미 가져옴 · PDF 미리보기만 생성","已导入 · 只需补建 PDF 预览","已匯入 · 只需補建 PDF 預覽"],
   "fj.res.stays":["Stays at {path}","Reste à {path}","Se queda en {path}","{path} のまま","{path}에 그대로","保留在 {path}","保留在 {path}"],
   "fj.acc.title":["A folder this import needs could not be used","Un dossier nécessaire à l’import n’a pas pu être utilisé","No se pudo usar una carpeta que necesita la importación","取り込みに必要なフォルダを使えませんでした","가져오기에 필요한 폴더를 쓸 수 없었습니다","导入需要的一个文件夹无法使用","匯入需要的一個資料夾無法使用"],
@@ -2614,6 +2614,9 @@ Object.entries({
   "wb.quickNone":["No file matches.","Aucun fichier ne correspond.","Ningún archivo coincide.","一致するファイルがありません。","일치하는 파일이 없습니다.","没有匹配的文件。","沒有符合的檔案。"],
   "wb.gotoLine":["Go to line","Aller à la ligne","Ir a la línea","行へ移動","줄로 이동","跳到行","跳到行"],
   "wb.gotoLineHint":["1 to {n}","1 à {n}","1 a {n}","1〜{n}","1~{n}","1 到 {n}","1 到 {n}"],
+  "fj.res.retryOne":["Retry","Réessayer","Reintentar","再試行","다시 시도","重试","重試"],
+  "fj.res.pdfFolder":["PDF goes to","Le PDF va dans","El PDF va a","PDF の保存先","PDF 저장 위치","PDF 保存到","PDF 儲存到"],
+  "ai.useCustom":["Use this name","Utiliser ce nom","Usar este nombre","この名前を使う","이 이름 사용","使用这个名称","使用這個名稱"],
   "plan.noReadable":["The chosen range has no notes and no PDF with readable text: its PDFs are scanned images. To plan from it, choose PDFs that have a text layer, add a text note for this range, or run OCR on the scanned PDFs first (to recognise their text), then try again.","La sélection ne contient ni note ni PDF avec du texte lisible : ses PDF sont des images scannées. Pour planifier, choisissez des PDF avec une couche texte, ajoutez une note texte pour cette partie, ou passez d’abord les PDF scannés à l’OCR (reconnaissance du texte), puis réessayez.","El rango elegido no tiene notas ni PDF con texto legible: sus PDF son imágenes escaneadas. Para planificar, elige PDF con capa de texto, añade una nota de texto para este rango o pasa antes los PDF escaneados por OCR (reconocimiento de texto) y vuelve a intentarlo.","選んだ範囲にはノートも文字を読める PDF もありません（PDF はスキャン画像です）。計画を作るには、テキスト層のある PDF を選ぶ、この範囲のテキストノートを追加する、またはスキャン PDF に先に OCR（文字認識）をかけてから、もう一度試してください。","선택한 범위에 노트도, 텍스트를 읽을 수 있는 PDF도 없습니다(PDF가 스캔 이미지입니다). 계획을 만들려면 텍스트 레이어가 있는 PDF를 고르거나, 이 범위의 텍스트 노트를 추가하거나, 스캔 PDF에 먼저 OCR(문자 인식)을 실행한 뒤 다시 시도하세요.","所选范围里没有笔记，也没有能读出文字的 PDF（这些 PDF 都是扫描图片）。要生成计划，可以：选择含文字层的 PDF、为这个范围添加文字笔记，或先对扫描件运行 OCR 识别文字，然后再试。","所選範圍裡沒有筆記，也沒有能讀出文字的 PDF（這些 PDF 都是掃描圖片）。要產生計畫，可以：選擇含文字層的 PDF、為這個範圍新增文字筆記，或先對掃描檔執行 OCR 辨識文字，然後再試。"],
 }).forEach(([key, labels]) => ["en", "fr", "es", "ja", "ko", "zh-CN", "zh-TW"].forEach((c, i) => { D[c][key] = labels[i]; }));
 Object.entries({

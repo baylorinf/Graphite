@@ -203,6 +203,47 @@ async function main() {
     assert.deepEqual(await listed(p, 'custom'), ['Custom model…'], 'checked again before A\'s models show');
   }, { keys: { gemini: 'key-A' } });
 
+  await test('the status line follows the newest check only: an old answer arriving late (success or failure) never shows; changing the key clears it', async p => {
+    await openAI(p);
+    const gbox = box(p, 'gemini'), keyBox = gbox.locator('input[type=password]'), status = gbox.locator('p.setting-note').first();
+    await keyBox.fill('slow-key-A'); await keyBox.press('Tab');
+    await gbox.getByRole('button', { name: 'Test' }).click();
+    await sleep(50);
+    await keyBox.fill('key-O'); await keyBox.press('Tab');
+    assert.doesNotMatch(await status.innerText(), /66/, 'the old key\'s status is gone when the key changed');
+    await gbox.getByRole('button', { name: 'Test' }).click();
+    await p.waitForFunction(() => /2/.test([...document.querySelectorAll('[data-model-picker="gemini"]')][0].closest('details').querySelector('p.setting-note')?.textContent || ''));
+    await sleep(1000);                                  // the old check (66 models) has answered by now
+    assert.match(await status.innerText(), / 2 models/); assert.doesNotMatch(await status.innerText(), /66/);
+    // A late failure of an older check doesn't show either.
+    await p.route(origin + '/api/ai', async r => { const k = r.request().headers()['x-ai-key']; if (k === 'slow-bad') { await sleep(700); return r.fulfill({ status: 500, json: { error: 'OLD FAILURE' } }); } return r.fallback(); });
+    await keyBox.fill('slow-bad'); await keyBox.press('Tab');
+    await gbox.getByRole('button', { name: 'Test' }).click();
+    await sleep(50);
+    await keyBox.fill('key-O'); await keyBox.press('Tab');
+    await gbox.getByRole('button', { name: 'Test' }).click();
+    await sleep(1100);
+    assert.doesNotMatch(await status.innerText(), /OLD FAILURE/);
+  });
+
+  await test('"Custom model…": Esc drops what was typed and keeps the model chosen before; Enter (or "Use this name") saves it', async p => {
+    await openAI(p);
+    await testKey(p, 'gemini');
+    await btn(p, 'gemini').click(); await p.keyboard.type('model-33'); await p.keyboard.press('Enter');
+    await btn(p, 'gemini').click();
+    await box(p, 'gemini').locator('.model-opt-custom').click();
+    await box(p, 'gemini').locator('.model-custom').fill('temporary-name');
+    await box(p, 'gemini').locator('.model-custom').press('Escape');
+    assert.match(await btn(p, 'gemini').innerText(), /fable-model-33/);
+    assert.equal(await p.evaluate(() => JSON.parse(localStorage.getItem('mo:ai')).models.gemini), 'fable-model-33');
+    assert.equal(await p.locator('.settings-modal:not(.hidden)').count(), 1, 'Settings stays open');
+    await btn(p, 'gemini').click();
+    await box(p, 'gemini').locator('.model-opt-custom').click();
+    await box(p, 'gemini').locator('.model-custom').fill('chosen-name');
+    await box(p, 'gemini').locator('.model-custom-use').click();
+    assert.equal(await p.evaluate(() => JSON.parse(localStorage.getItem('mo:ai')).models.gemini), 'chosen-name');
+  });
+
   await test('Chinese labels are readable', async p => {
     await openAI(p);
     await testKey(p, 'gemini');

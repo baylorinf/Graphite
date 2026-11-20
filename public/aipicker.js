@@ -160,9 +160,14 @@ export function modelPicker(host, p, P, { onPick } = {}) {
   });
   list.addEventListener('mousedown', e => e.preventDefault()); // keep the focus in the search box
   list.addEventListener('click', e => { const li = e.target.closest('[data-i]'); if (li) choose(+li.dataset.i); });
-  const saveCustom = () => { const v = custom.value.trim(); if (v) { AI.setModel(p, v); label(); onPick?.(v); } };
-  custom.addEventListener('change', saveCustom);
-  custom.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveCustom(); custom.hidden = true; btn.focus(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); custom.hidden = true; btn.focus(); } });
+  // A typed name is used only on Enter or "Use this name"; Esc drops it and keeps the model chosen before
+  // (leaving the box saves nothing either).
+  const useBtn = wrap.createEl('button', { cls: 'model-custom-use', attr: { type: 'button', hidden: '' } });
+  const endCustom = () => { custom.hidden = true; custom.value = ''; btn.focus(); };
+  const saveCustom = () => { const v = custom.value.trim(); if (v) { AI.setModel(p, v); label(); onPick?.(v); } endCustom(); };
+  useBtn.addEventListener('click', saveCustom);
+  custom.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveCustom(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); endCustom(); } });
+  new MutationObserver(() => { useBtn.hidden = custom.hidden; useBtn.textContent = t('ai.useCustom'); }).observe(custom, { attributes: true, attributeFilter: ['hidden'] });
   document.addEventListener('pointerdown', e => { if (isOpen() && !wrap.contains(e.target)) close(false); }, true);
   label();
   return { refresh() { label(); if (isOpen()) render(); }, close, el: wrap };

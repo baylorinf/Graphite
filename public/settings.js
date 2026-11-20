@@ -355,25 +355,32 @@ function renderProvider(p, P) {
 
   if (p === 'custom') {
     new PM.Setting(box).setName(t('ai.baseUrl')).setDesc(t('ai.customDesc'))
-      .addText(tx => { tx.inputEl.spellcheck = false; tx.setPlaceholder('https://example.com/v1').setValue(AI.baseUrl()).onChange(v => { AI.setBaseUrl(v); mark(); picker?.refresh(); }); });
+      .addText(tx => { tx.inputEl.spellcheck = false; tx.setPlaceholder('https://example.com/v1').setValue(AI.baseUrl()).onChange(v => { AI.setBaseUrl(v); mark(); picker?.refresh(); clearStatus?.(); }); });
   }
   const status = createEl('p', { cls: 'setting-note' });
   let picker = null;
+  // The status line follows the same rule as the model list: only the newest check, for the key and address set
+  // now, may write it (a late success or failure of an older check is ignored); changing them clears it.
+  let checkSeq = 0;
+  const context = () => AI.keyOf(p) + '|' + (p === 'custom' ? AI.baseUrl() : '');
+  const clearStatus = () => { checkSeq++; status.textContent = ''; status.classList.remove('mod-error'); };
   const test = async () => {
     if (!has()) return;
+    const me = ++checkSeq, ctx = context();
+    const current = () => me === checkSeq && ctx === context();
     status.textContent = '…'; status.classList.remove('mod-error');
     try {
       const r = await AI.testProvider(p);
+      if (!current() || r.stale) return; // the key or address changed meanwhile, or a newer check is running
       status.textContent = t('ai.testOk') + (r.models?.length ? ' ' + t('ai.modelsFound', { n: r.models.length }) : '') + (r.balance ? ' ' + t('ai.balance', { balance: r.balance }) : '');
       if (r.available === false) { status.textContent += ' ' + t('ai.noBalance'); status.classList.add('mod-error'); }
-      if (r.stale) return; // the key or address changed meanwhile, or a newer check is running
       picker?.refresh(); mark();
-    } catch (e) { status.textContent = t('ai.failed', { msg: e.message }); status.classList.add('mod-error'); }
+    } catch (e) { if (current()) { status.textContent = t('ai.failed', { msg: e.message }); status.classList.add('mod-error'); } }
   };
   const keyRow = new PM.Setting(box).setName(t('ai.key')).setDesc(P.site ? t('ai.keyDesc', { site: P.site }) : '')
     .addText(tx => {
       Object.assign(tx.inputEl, { type: 'password', autocomplete: 'off', spellcheck: false });
-      tx.setPlaceholder(P.keyPh || t('ai.keyOptional')).setValue(AI.keyOf(p)).onChange(v => { AI.setKey(p, v); mark(); picker?.refresh(); }); // another key: the old list no longer shows
+      tx.setPlaceholder(P.keyPh || t('ai.keyOptional')).setValue(AI.keyOf(p)).onChange(v => { AI.setKey(p, v); mark(); picker?.refresh(); clearStatus(); }); // another key: the old list and its status no longer show
       tx.inputEl.addEventListener('change', () => { if (tx.inputEl.value.trim()) test(); }); // check a newly pasted key right away
     })
     .addButton(b => b.setButtonText(t('ai.test')).onClick(test));
