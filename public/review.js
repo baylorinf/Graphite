@@ -287,7 +287,7 @@ export function addItem(item) {
   return id;
 }
 export function updateItem(id, patch) { const cur = state.items?.[id]; if (cur) setItem(id, { ...cur, ...patch }); }
-export function removeItem(id) { setItem(id, null); setCard(id, null); H.onReviewChange(); }
+export function removeItem(id) { clearMistakeDraft(id); setItem(id, null); setCard(id, null); H.onReviewChange(); }
 export function setDue(id, day) { const c = state.cards[id]; if (c) setCard(id, { ...c, due: day }); }
 export const dueOf = id => state?.cards?.[id]?.due ?? null;
 const shortName = p => String(p || '').split('/').pop().replace(/\.(md|pdf|docx?|pptx?)$/i, '');
@@ -413,6 +413,24 @@ export const dueCount = () => { if (!state) return 0; const s = stats(); return 
    3. Check session (a quiz in a window)
    ===================================================================== */
 let session = null;
+// A draft belongs to one question in one vault, independent of its review history and due date.
+const draftKey = id => 'mistakeDraft:' + JSON.stringify([H.S.vault, id]);
+const lastDraftKey = () => 'lastMistakeDraft:' + H.S.vault;
+export const mistakeDraft = id => H.store.get(draftKey(id), '');
+export function lastDraftItem() {
+  const id = H.store.get(lastDraftKey(), null);
+  return id && state?.items?.[id]?.kind === 'mistake' && mistakeDraft(id) ? id : null;
+}
+function clearMistakeDraft(id) {
+  if (mistakeDraft(id)) H.store.set(draftKey(id), '');
+  if (H.store.get(lastDraftKey(), null) === id) H.store.set(lastDraftKey(), null);
+}
+function editMistakeDraft(id, text) {
+  if (!text) { clearMistakeDraft(id); return; }
+  H.store.set(draftKey(id), text);
+  if (H.store.get(lastDraftKey(), null) !== id) H.store.set(lastDraftKey(), id);
+}
+
 export function startSession(cards, { title = t('review.title'), notePath = null, onDone = null, onClose = null } = {}) {
   if (!cards.length) { H.toast(t('review.noCards')); return; }
   closeSession();
@@ -433,19 +451,49 @@ export function startSession(cards, { title = t('review.title'), notePath = null
 function closeSession() {
   if (!session) return;
   const cb = session.onClose;
+  session.returnBar?.remove();
   session.el.remove(); session = null;
   try { cb?.(); } catch (e) { console.warn(e); }
   document.removeEventListener('keydown', onKey, true);
   H.onReviewChange();
 }
+// Keep the exact queue, input and revealed state when looking up a source. The paper can be read normally.
+async function consultSource(s, path, page) {
+  const returnBar = document.createElement('div');
+  returnBar.className = 'review-source-return';
+  returnBar.innerHTML = `<button class="mod-button mod-cta" data-review-return>${escapeHtml(t('mist.backToReview'))}</button><button class="clickable-icon" data-review-dismiss aria-label="${escapeHtml(t('review.close'))}">×</button>`;
+  const vault = H.S.vault;
+  const resume = () => {
+    if (session !== s) return;
+    if (H.S.vault !== vault) { closeSession(); return; }
+    returnBar.remove(); s.returnBar = null;
+    document.body.append(s.el);
+    document.addEventListener('keydown', onKey, true);
+    s.el.querySelector('.review-try:not([readonly]), .review-actions button')?.focus();
+  };
+  returnBar.querySelector('[data-review-return]').onclick = resume;
+  returnBar.querySelector('[data-review-dismiss]').onclick = closeSession;
+  s.returnBar = returnBar;
+  s.el.remove(); document.removeEventListener('keydown', onKey, true);
+  document.body.append(returnBar);
+  try { await H.openNote(path, { heading: page ? 'page=' + page : '' }); }
+  catch (e) { resume(); H.toast(e.message); }
+}
 function onKey(e) {
   if (!session) return;
   if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSession(); return; }
+  // The "Done" page: Space and Enter close it (its only button); rating keys do nothing, so a second
+  // press of "3" can never rate anything again. Checked first: on this page the answer area is hidden too.
+  if (session.finished) {
+    if (e.key === ' ' || e.key === 'Enter') { e.preventDefault(); e.stopPropagation(); closeSession(); }
+    else if (/^[1-4]$/.test(e.key)) { e.preventDefault(); e.stopPropagation(); }
+    return;
+  }
+  if (!session.queue.length) return;
   const shown = !session.el.querySelector('.review-a').classList.contains('hidden');
   if (e.target?.closest?.('.review-try')) return; // typing an answer
   if (!shown && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); e.stopPropagation(); reveal(); return; }
   if (shown && /^[1-4]$/.test(e.key)) { e.preventDefault(); e.stopPropagation(); answer(+e.key); return; }
-  if (session.finished && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); closeSession(); }
 }
 function showCard() {
   const s = session, card = s.queue[0];
@@ -457,10 +505,18 @@ function showCard() {
   el.querySelector('.review-source').innerHTML = card.kind === 'mistake' || card.kind === 'card'
     ? `<span class="review-kind">${escapeHtml(t(card.kind === 'mistake' ? 'mist.kind' : 'pcard.kind'))}</span> ${card.path ? `<a href="#" class="review-goto" data-path="${escapeHtml(card.path)}" data-page="${card.page || 0}">${escapeHtml(t('mist.backTo', { where: card.note }))}</a>` : ''}`
     : `<a href="#" data-open="${escapeHtml(card.path)}">${escapeHtml(t('review.fromNote', { note: card.note }))}</a>`;
-  el.querySelector('.review-goto')?.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); const { path, page } = ev.currentTarget.dataset; closeSession(); H.openNote(path, { heading: +page ? 'page=' + page : '' }); });
+  el.querySelector('.review-goto')?.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); const { path, page } = ev.currentTarget.dataset; consultSource(s, path, +page); });
   H.renderInto(el.querySelector('.review-q'), card.q, card.path, 1);
   // A mistake: answer it again first (written down), then compare with your old answer.
-  if (card.kind === 'mistake') el.querySelector('.review-q').insertAdjacentHTML('beforeend', `<textarea class="review-try" rows="4" placeholder="${escapeHtml(t('mist.tryPh'))}"></textarea>`);
+  if (card.kind === 'mistake') {
+    const prompt = el.querySelector('.review-q');
+    prompt.insertAdjacentHTML('beforeend', `<textarea class="review-try" rows="4" placeholder="${escapeHtml(t('mist.tryPh'))}"></textarea><button class="mod-button review-draft-clear">${escapeHtml(t('mist.clearDraft'))}</button>`);
+    const input = prompt.querySelector('.review-try'), clear = prompt.querySelector('.review-draft-clear');
+    input.value = mistakeDraft(card.id);
+    clear.hidden = !input.value;
+    input.oninput = () => { editMistakeDraft(card.id, input.value); clear.hidden = !input.value; };
+    clear.onclick = () => { input.value = ''; editMistakeDraft(card.id, ''); clear.hidden = true; input.focus(); };
+  }
   const a = el.querySelector('.review-a');
   a.classList.add('hidden');
   H.renderInto(a, card.a, card.path, 1);
@@ -469,13 +525,16 @@ function showCard() {
   actions.querySelector('.review-show').onclick = reveal;
 }
 function reveal() {
-  const s = session, card = s.queue[0];
+  const s = session, card = s?.queue[0];
+  if (!card || s.finished) return;
   s.el.querySelector('.review-a').classList.remove('hidden');
   const tryEl = s.el.querySelector('.review-try');
   if (card.kind === 'mistake' && tryEl) {
     const answerNow = tryEl.value.trim();
     tryEl.readOnly = true;
     if (answerNow) { const v = state.items?.[card.id]; if (v) updateItem(card.id, { attempts: [...(v.attempts || []), { day: today(), answer: answerNow }] }); }
+    if (mistakeDraft(card.id) === tryEl.value) clearMistakeDraft(card.id);
+    s.el.querySelector('.review-draft-clear').hidden = true;
   }
   const cur = state.cards[card.id];
   const labels = [[1, 'again'], [2, 'hard'], [3, 'good'], [4, 'easy']];
@@ -484,7 +543,9 @@ function reveal() {
   s.el.querySelectorAll('.review-rate').forEach(b => { b.onclick = () => answer(+b.dataset.r); });
 }
 function answer(r) {
-  const s = session, card = s.queue.shift();
+  const s = session;
+  if (!s || s.finished || !s.queue.length || s.el.querySelector('.review-a').classList.contains('hidden')) return;
+  const card = s.queue.shift();
   rate(card, r);
   if (!s.rated.has(card.id)) { s.rated.add(card.id); try { s.onDone?.(card); } catch (e) { console.warn(e); } }
   if (r === 1 && !s.again.has(card.id)) { s.again.add(card.id); s.queue.push(card); s.total++; } // see it again at the end
@@ -506,7 +567,9 @@ function finish() {
     <p>${escapeHtml(t('review.summary', { good: s.good, n: firstTry }))}</p>
     ${upcoming ? `<p class="muted">${escapeHtml(t('review.next', { when: intervalLabel(upcoming - today()) }))}</p>` : ''}</div>`;
   s.el.querySelector('.review-actions').innerHTML = `<button class="mod-button mod-cta review-close">${escapeHtml(t('review.close'))}</button>`;
-  s.el.querySelector('.review-close').onclick = closeSession;
+  const done = s.el.querySelector('.review-close');
+  done.onclick = closeSession;
+  done.focus({ preventScroll: true });
 }
 const escapeHtml = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 

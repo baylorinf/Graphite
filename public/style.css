@@ -681,7 +681,7 @@ mark.search-flash { background: rgba(255, 200, 40, .55); color: inherit; border-
 #tabbar .tabs { display: flex; align-items: flex-end; gap: 2px; min-width: 0; flex: 0 1 auto; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
 #tabbar .tabs::-webkit-scrollbar { display: none; }
 #tabbar .tab {
-  position: relative; display: flex; align-items: center; gap: 7px; flex: 0 1 200px; min-width: 72px; max-width: 220px;
+  position: relative; display: flex; align-items: center; gap: 7px; flex: 0 1 200px; min-width: 72px; max-width: 220px; overflow: hidden;
   height: 32px; padding: 0 6px 0 11px; margin-bottom: -1px; cursor: pointer; user-select: none;
   border: 1px solid transparent; border-bottom: 0; border-radius: 9px 9px 0 0; color: var(--text-muted);
   font-size: 13px; white-space: nowrap;
@@ -691,24 +691,28 @@ mark.search-flash { background: rgba(255, 200, 40, .55); color: inherit; border-
 #tabbar .tab.active .tab-title { font-weight: 600; }
 #tabbar .tab:not(.active) + .tab:not(.active)::before { content: ""; position: absolute; left: -2px; top: 9px; bottom: 9px; width: 1px; background: var(--border); }
 #tabbar .tab.preview .tab-title { font-style: italic; }
-#tabbar .tab .i { width: 15px; height: 15px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
+#tabbar .tab .i { width: 15px; height: 15px; flex: 0 1 15px; min-width: 0; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; opacity: .85; }
 #tabbar .tab.k-pdf .i { color: #d9534f; }
 #tabbar .tab.k-image .i, #tabbar .tab.k-media .i { color: #2fa37a; }
 #tabbar .tab.k-graph .i, #tabbar .tab.k-review .i { color: var(--accent); }
-#tabbar .tab-emoji { font-size: 13px; flex: none; }
-#tabbar .tab-title { overflow: hidden; text-overflow: ellipsis; min-width: 2.5em; flex: 0 1 auto; }
+#tabbar .tab-emoji { font-size: 13px; flex: 0 1 auto; min-width: 0; overflow: hidden; }
+/* The close button never shrinks or moves: the title gives way first (down to nothing), so even the
+   narrowest tab ends in its own ×, inside its own box; a click there can never reach the next tab. */
+#tabbar .tab-title { overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 #tabbar .tab-badge { font-size: 11px; color: var(--text-muted); flex: 0 1000 auto; min-width: 0; overflow: hidden; }
 #tabbar .tab-x {
   margin-left: auto; flex: none; width: 20px; height: 20px; display: grid; place-items: center; border-radius: 5px;
   font-size: 15px; line-height: 1; color: var(--text-muted); opacity: 0;
+  padding: 0; border: 0; background: none; font-family: inherit; cursor: pointer;
 }
-#tabbar .tab:hover .tab-x, #tabbar .tab.active .tab-x { opacity: 1; }
+#tabbar .tab:hover .tab-x, #tabbar .tab.active .tab-x, #tabbar .tab-x:focus-visible { opacity: 1; }
+#tabbar .tab-x:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 #tabbar .tab-x:hover { background: var(--bg-3); color: var(--text); }
 #tabbar .tab-read { position: absolute; left: 10px; bottom: 2px; height: 2px; border-radius: 2px; background: var(--accent); opacity: .55; pointer-events: none; }
 #tabbar .tab.dragging { opacity: .45; }
 #tabbar .tab.drop-before::after, #tabbar .tab.drop-after::after { content: ""; position: absolute; top: 4px; bottom: 4px; width: 2px; border-radius: 2px; background: var(--accent); }
-#tabbar .tab.drop-before::after { left: -2px; }
-#tabbar .tab.drop-after::after { right: -2px; }
+#tabbar .tab.drop-before::after { left: 0; }
+#tabbar .tab.drop-after::after { right: 0; }
 #tabbar .tab-new { flex: none; width: 28px; height: 28px; margin: 0 0 3px 4px; border-radius: 7px; font-size: 18px; line-height: 1; color: var(--text-muted); display: grid; place-items: center; }
 #tabbar .tab-new:hover { background: var(--bg-hover); color: var(--text); }
 /* A plugin tab (🎓 study page) in front: its own view covers the area under the tab bar */

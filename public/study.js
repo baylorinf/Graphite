@@ -312,8 +312,11 @@ function decoratePlan(el, from) {
 }
 
 /* ---------- Review page: the mistake book and cards from PDFs ---------- */
+const bookView = { vault: null, lists: {} };
+const normalizeSearch = text => String(text || '').normalize('NFKC').toLowerCase();
 function reviewPageExtras(page) {
   if (!page) return;
+  if (bookView.vault !== H.S.vault) { bookView.vault = H.S.vault; bookView.lists = {}; }
   const mistakes = RV.items('mistake').sort((a, b) => (RV.dueOf(a.id) ?? 0) - (RV.dueOf(b.id) ?? 0));
   const cards = RV.items('card').sort((a, b) => String(b.created).localeCompare(String(a.created)));
   const today = RV.today();
@@ -326,32 +329,60 @@ function reviewPageExtras(page) {
         <span class="study-item-text">${esc(((kind === 'mistake' ? i.question : i.q) || (i.img ? '🖼 ' + t('pcard.image') : '')).replace(/\s+/g, ' ').slice(0, 90))}</span></span>
       ${i.src ? `<a href="#" class="study-goto muted" data-path="${esc(i.src)}" data-page="${i.page || 0}">${esc(where(i.src, i.page))}</a>` : ''}
       ${kind === 'mistake' ? `<span class="muted">${esc(dueText(i.id))}${i.attempts?.length ? ' · ' + esc(t('mist.attempts', { n: i.attempts.length })) : ''}</span>` : ''}
-      <button class="mod-button" data-act="do">${esc(t(kind === 'mistake' ? 'mist.redoNow' : 'pcard.reviewNow'))}</button>
+      <button class="mod-button" data-act="do">${esc(t(kind === 'mistake' ? (RV.mistakeDraft(i.id) ? 'mist.resumeDraft' : 'mist.redoNow') : 'pcard.reviewNow'))}</button>
       <button class="clickable-icon" data-act="edit" title="${esc(t('study.edit'))}">✎</button>
       <button class="clickable-icon" data-act="del" title="${esc(t('study.delete'))}">🗑</button>
     </div>`;
-  const MAX = 8;
-  sec.innerHTML = `<h2>${esc(t('mist.bookTitle'))} <span class="muted">${mistakes.length}</span></h2>
-    ${mistakes.length ? `<div class="review-start"><button class="mod-button mod-cta" data-due ${dueM.length ? '' : 'disabled'}>${esc(dueM.length ? t('mist.startDue', { n: dueM.length }) : t('mist.noneDue'))}</button></div>
-      ${mistakes.slice(0, MAX).map(i => row(i, 'mistake')).join('')}${mistakes.length > MAX ? `<p class="muted">${esc(t('study.more', { n: mistakes.length - MAX }))}</p>` : ''}`
-      : `<p class="empty-hint">${esc(t('mist.empty'))}</p>`}
-    <h2>${esc(t('pcard.listTitle'))} <span class="muted">${cards.length}</span></h2>
-    ${cards.length ? cards.slice(0, MAX).map(i => row(i, 'card')).join('') + (cards.length > MAX ? `<p class="muted">${esc(t('study.more', { n: cards.length - MAX }))}</p>` : '') : `<p class="empty-hint">${esc(t('pcard.empty'))}</p>`}`;
+  const latest = RV.lastDraftItem();
+  const addList = (kind, entries, title, empty) => {
+    const box = document.createElement('div');
+    box.dataset.studyList = kind;
+    sec.append(box);
+    box.innerHTML = `<h2>${esc(t(title))} <span class="muted">${entries.length}</span></h2>`;
+    if (!entries.length) { box.insertAdjacentHTML('beforeend', `<p class="empty-hint">${esc(t(empty))}</p>`); return; }
+    if (kind === 'mistake') box.insertAdjacentHTML('beforeend', `<div class="review-start"><button class="mod-button mod-cta" data-due ${dueM.length ? '' : 'disabled'}>${esc(dueM.length ? t('mist.startDue', { n: dueM.length }) : t('mist.noneDue'))}</button>
+      ${latest ? `<button class="mod-button" data-resume-draft>${esc(t('mist.resumeDraft'))}</button>` : ''}</div>`);
+    const hint = esc(t('study.searchBook'));
+    box.insertAdjacentHTML('beforeend', `<input class="study-book-search" type="search" aria-label="${esc(t(title))} · ${hint}" placeholder="${hint}"><div class="study-book-items" id="study-items-${kind}"></div><button class="mod-button study-book-all" aria-controls="study-items-${kind}"></button>`);
+    const view = bookView.lists[kind] ||= { query: '', expanded: false };
+    const input = box.querySelector('input'), list = box.querySelector('.study-book-items'), toggle = box.querySelector('.study-book-all');
+    input.value = view.query;
+    const indexed = entries.map(item => ({ item, text: normalizeSearch([item.no, item.question || item.q, item.src, item.note].filter(Boolean).join(' ')) }));
+    const draw = () => {
+      const terms = normalizeSearch(view.query).trim().split(/\s+/).filter(Boolean);
+      const hits = indexed.filter(entry => terms.every(term => entry.text.includes(term)));
+      const shown = view.expanded ? hits : hits.slice(0, 8);
+      list.innerHTML = shown.length ? shown.map(entry => row(entry.item, kind)).join('') : `<p class="empty-hint" role="status">${esc(t('study.noMatch'))}</p>`;
+      toggle.hidden = hits.length <= 8;
+      toggle.setAttribute('aria-expanded', String(view.expanded));
+      toggle.textContent = view.expanded ? t('study.showFewer') : t('study.showAll', { n: hits.length });
+      wireGoto(list);
+    };
+    input.oninput = () => { view.query = input.value; draw(); };
+    toggle.onclick = () => { view.expanded = !view.expanded; draw(); };
+    draw();
+  };
+  addList('mistake', mistakes, 'mist.bookTitle', 'mist.empty');
+  addList('card', cards, 'pcard.listTitle', 'pcard.empty');
   // Before "How it works".
   const how = page.querySelector('.review-how')?.previousElementSibling;
   if (how) how.before(sec); else page.append(sec);
   const cardOf = id => RV.itemCards().find(c => c.id === id);
+  const reviewOne = id => {
+    const c = cardOf(id);
+    if (c) RV.startSession([c], { title: t(c.kind === 'mistake' ? 'mist.bookTitle' : 'pcard.listTitle'), onClose: () => H.onReviewChange() });
+  };
+  sec.querySelector('[data-resume-draft]')?.addEventListener('click', () => reviewOne(latest));
   sec.querySelector('[data-due]')?.addEventListener('click', () => RV.startSession(dueM.map(m => cardOf(m.id)).filter(Boolean), { title: t('mist.bookTitle'), onClose: () => H.onReviewChange() }));
-  sec.querySelectorAll('.study-item').forEach(r => r.addEventListener('click', e => {
+  sec.addEventListener('click', e => {
     const b = e.target.closest('[data-act]');
     if (!b) return;
-    const it = RV.getItem(r.dataset.id);
+    const it = RV.getItem(b.closest('.study-item').dataset.id);
     if (!it) return;
-    if (b.dataset.act === 'do') { const c = cardOf(it.id); if (c) RV.startSession([c], { title: it.kind === 'mistake' ? t('mist.bookTitle') : t('pcard.listTitle'), onClose: () => H.onReviewChange() }); }
+    if (b.dataset.act === 'do') reviewOne(it.id);
     if (b.dataset.act === 'edit') (it.kind === 'mistake' ? mistakeForm : cardForm)(it, { onSaved: () => H.onReviewChange() });
     if (b.dataset.act === 'del' && confirm(t('study.deleteConfirm'))) { RV.removeItem(it.id); H.onReviewChange(); }
-  }));
-  wireGoto(sec);
+  });
 }
 
 /* ---------- hooked into the preview of every note ---------- */

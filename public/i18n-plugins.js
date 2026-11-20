@@ -171,6 +171,23 @@ const ROWS = [
   ["{name} ran: {path}","{name} a exécuté : {path}","{name} ejecutó: {path}","{name} が実行：{path}","{name} 실행: {path}","{name} 执行了：{path}","{name} 執行了：{path}"],
   ["{name} is working on it on this computer","{name} y travaille sur cet ordinateur","{name} está trabajando en ello en este ordenador","{name} がこのパソコンで処理中","{name}이(가) 이 컴퓨터에서 작업 중","{name} 正在本机处理","{name} 正在本機處理"],
   ["Planned by {name}, which read {n} files itself. Nothing is written until you confirm.","Plan établi par {name}, qui a lu {n} fichiers lui-même. Rien n’est écrit avant votre confirmation.","Plan hecho por {name}, que leyó {n} archivos por sí mismo. No se escribe nada hasta que confirmes.","{name} が自分で {n} 個のファイルを読んで作った計画です。確認するまで何も書き込みません。","{name}이(가) 직접 파일 {n}개를 읽고 세운 계획입니다. 확인하기 전에는 아무것도 쓰지 않습니다.","此方案由 {name} 自己读取了 {n} 个文件后给出。确认之前不会写入任何内容。","此方案由 {name} 自己讀取了 {n} 個檔案後給出。確認之前不會寫入任何內容。"],
+  // 1.1.41: Graphite's own names for its features; the AI doing the work is shown separately ("Run by").
+  ['Graphite study assistant', 'Assistant d’étude Graphite', 'Asistente de estudio Graphite', 'Graphite 学習アシスタント', 'Graphite 학습 도우미', 'Graphite 学习助手', 'Graphite 學習助手'],
+  ['Run by', 'Exécuté par', 'Lo hace', '実行', '실행', '执行者', '執行者'],
+  ['Run by {name}. Click to choose who answers.', 'Exécuté par {name}. Cliquez pour choisir qui répond.', 'Lo hace {name}. Haz clic para elegir quién responde.', '{name} が実行中。クリックで回答する AI を選択。', '{name}이(가) 실행합니다. 클릭하여 답변할 AI를 선택하세요.', '执行者：{name}。点击选择由谁回答。', '執行者：{name}。點擊選擇由誰回答。'],
+  ['Find new course files on this computer and add them', 'Trouver les nouveaux fichiers de cours sur cet ordinateur et les ajouter', 'Buscar archivos de curso nuevos en este ordenador y añadirlos', 'このパソコンで新しい授業ファイルを探して追加', '이 컴퓨터에서 새 수업 파일을 찾아 추가', '查找这台电脑上新的课程文件并加入', '尋找這台電腦上新的課程檔案並加入'],
+  ['Open the capture inbox', 'Ouvrir les captures en attente', 'Abrir las capturas pendientes', '摘録の受信箱を開く', '캡처 보관함 열기', '打开摘录收件箱', '開啟摘錄收件匣'],
+  ['Turn on Graphite Capture (Settings → Plugins) to send things to Graphie.', 'Activez Capture Graphite (Réglages → Modules) pour envoyer des choses à Graphie.', 'Activa Captura Graphite (Ajustes → Plugins) para enviar cosas a Graphie.', 'Graphie に送るには Graphite 摘録をオンにしてください（設定 → プラグイン）。', 'Graphie에게 보내려면 Graphite 캡처를 켜세요 (설정 → 플러그인).', '请先开启「Graphite 摘录」（设置 → 插件），才能发送给 Graphie。', '請先開啟「Graphite 摘錄」（設定 → 外掛），才能傳送給 Graphie。'],
+  ['File my captures into my notes', 'Classer mes captures dans mes notes', 'Archivar mis capturas en mis notas', '摘録をノートに整理', '캡처를 노트에 정리', '把摘录整理进笔记', '把摘錄整理進筆記'],
+  ['File my captures into my notes.', 'Classe mes captures dans mes notes.', 'Archiva mis capturas en mis notas.', '摘録をノートに整理して。', '캡처를 노트에 정리해 줘.', '把我的摘录整理进笔记。', '把我的摘錄整理進筆記。'],
+  ['Update my study record from this chat', 'Mettre à jour mon dossier d’étude d’après cette discussion', 'Actualizar mi registro de estudio con este chat', 'このチャットから学習記録を更新', '이 채팅으로 학습 기록 업데이트', '根据这次聊天更新学习档案', '根據這次聊天更新學習檔案'],
+  ['Update my study record from this chat.', 'Mets à jour mon dossier d’étude d’après cette discussion.', 'Actualiza mi registro de estudio con este chat.', 'このチャットから学習記録を更新して。', '이 채팅으로 학습 기록을 업데이트해 줘.', '根据这次聊天更新我的学习档案。', '根據這次聊天更新我的學習檔案。'],
+  ['Graphie is already updating your study record.', 'Graphie met déjà à jour votre dossier d’étude.', 'Graphie ya está actualizando tu registro de estudio.', 'Graphie はすでに学習記録を更新しています。', 'Graphie가 이미 학습 기록을 업데이트하고 있습니다.', 'Graphie 正在更新学习档案。', 'Graphie 正在更新學習檔案。'],
+  ['Graphie suggests these changes to your study record:', 'Graphie propose ces changements à votre dossier d’étude :', 'Graphie propone estos cambios en tu registro de estudio:', 'Graphie は学習記録への次の変更を提案します：', 'Graphie가 학습 기록에 다음 변경을 제안합니다:', 'Graphie 建议对学习档案做以下修改：', 'Graphie 建議對學習檔案做以下修改：'],
+  ['Study record:', 'Dossier d’étude :', 'Registro de estudio:', '学習記録：', '학습 기록:', '学习档案：', '學習檔案：'],
+  ['No captures are waiting.', 'Aucune capture en attente.', 'No hay capturas pendientes.', '待機中の摘録はありません。', '대기 중인 캡처가 없습니다.', '没有待整理的摘录。', '沒有待整理的摘錄。'],
+  ['Nothing new to record in your study record.', 'Rien de nouveau à noter dans votre dossier d’étude.', 'Nada nuevo que registrar en tu registro de estudio.', '学習記録に追加する新しい内容はありません。', '학습 기록에 추가할 새 내용이 없습니다.', '学习档案没有需要记录的新内容。', '學習檔案沒有需要記錄的新內容。'],
+  ['Updated your study record:', 'Dossier d’étude mis à jour :', 'Registro de estudio actualizado:', '学習記録を更新しました：', '학습 기록을 업데이트했습니다:', '已更新学习档案：', '已更新學習檔案：'],
 ];
 const CODES =['fr', 'es', 'ja', 'ko', 'zh-CN', 'zh-TW'];
 export const PLUG = Object.fromEntries(CODES.map((c, i) => [c, Object.fromEntries(ROWS.map(r => [r[0], r[i + 1]]))]));

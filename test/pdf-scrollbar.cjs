@@ -1,4 +1,5 @@
 // The PDF preview's scrollbar: in the light theme, with the pointer over the page and the mouse wheel scrolling a
+require('./isolate.cjs'); // never touch the real ~/.graphite or ~/.claude
 // multi-page PDF, the scrollbar thumb must be clearly visible, move with the pages, and be draggable.
 //   node test/pdf-scrollbar.cjs [repo] [shot.png]
 const path = require('node:path'); const fs = require('node:fs/promises'); const os = require('node:os');

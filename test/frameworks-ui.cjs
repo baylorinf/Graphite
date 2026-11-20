@@ -1,4 +1,5 @@
 // Local frameworks through Graphite's normal UI, with the real DeepSeek Harness and Codex CLI (scripted local AI,
+require('./isolate.cjs'); // never touch the real ~/.graphite or ~/.claude
 // isolated framework homes, temporary vaults under test/.work). Checks:
 //  - an existing vault with an older Graphie chat plugin: the plugin code is updated, its settings kept; in
 //    Settings → AI the job's picker shows the framework as found; choose it; run "File my Claude Inbox captures"
@@ -35,7 +36,7 @@ async function main() {
   await fsp.writeFile(path.join(old, 'Algebra/Lesson.md'), '# Lesson\n' + marker + '\n');
   await fsp.writeFile(path.join(old, 'Claude Inbox.md'), '# Inbox\n- [ ] **Interesting** · 2026-11-20 · [[Algebra/Lesson]] %%cap-1%%\n  > First capture.\n');
   await fsp.writeFile(path.join(old, '.obsidian/community-plugins.json'), JSON.stringify(['claude-chat']));
-  const shipped = path.join(repo, 'sample-vault/.obsidian/plugins/claude-chat');
+  const shipped = path.join(repo, 'extensions/obsidian-plugins/claude-chat');
   for (const f of ['main.js', 'styles.css']) await fsp.copyFile(path.join(shipped, f), path.join(plug, f));
   await fsp.writeFile(path.join(plug, 'main.js'), (await fsp.readFile(path.join(plug, 'main.js'), 'utf8')) + '\n// old copy\n');
   await fsp.writeFile(path.join(plug, 'manifest.json'), JSON.stringify({ ...JSON.parse(await fsp.readFile(path.join(shipped, 'manifest.json'), 'utf8')), version: '1.0.0' }));
@@ -76,15 +77,19 @@ async function main() {
     await opt.click();
     assert.equal(await p.evaluate(() => window.myobsidianAI.choice('inbox')), 'dsh');
     assert.match(await row.locator('.aip-btn').innerText(), /DeepSeek Harness/);
-    // default course folder shown with its backslashes
-    assert.equal(await p.locator('[data-agent="roots"]').inputValue(), 'D:\\Task\\DYS');
+    // The course folders are in Study settings now (shared by every AI); the AI page links there.
+    assert.equal(await p.locator('[data-open-study]').count(), 1);
+    await p.evaluate(async () => (await import('/settings.js')).openSettings('study'));
+    await p.locator('[data-study="courseRoots"]').waitFor();
     await p.evaluate(async () => (await import('/settings.js')).closeSettings());
   });
   const runInbox = async () => {
     await p.keyboard.press('Control+p');
-    const label = await p.evaluate(() => window.graphiteT('File my Claude Inbox captures into my notes'));
+    const label = await p.evaluate(() => window.graphiteT('File my captures into my notes'));
     await p.locator('#modal-input').fill(label);
-    await p.locator('#modal-list .modal-item').first().click();
+    // the chat plugin's command (prefixed with its name), not the app's own file-jobs window
+    const name = await p.evaluate(async () => (await import('/i18n.js')).t('plug.claude-chat.name'));
+    await p.locator('#modal-list .modal-item', { hasText: name }).first().click();
   };
   await test('old vault: Cancel after the plan calls nothing and changes nothing', async () => {
     script.plan = { items: [{ id: 'cap-1', target: 'Algebra/Filed.md', mode: 'new', text: '# Filed\nRead by dsh: NATIVE_MARKER', shown: 'Filed' }], summary: 'one' };
@@ -155,6 +160,8 @@ async function main() {
   }, { courses });
   await ctx.route('**/*', r => (r.request().url().startsWith(origin2 + '/') ? r.continue() : r.abort()));
   p = await ctx.newPage(); p.setDefaultTimeout(30000);
+  // Course folders now live in Study settings (one file for every AI), already saved by the first vault's start.
+  await fetch(origin2 + '/api/study-profile', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ profile: { courseRoots: [courses], skipFolders: ['UPC'] } }) });
   await p.goto(origin2); await p.waitForFunction(() => !!window.myobsidianAI?.frameworks?.().codex);
   await test('new vault: the sample vault brings the Graphie chat and Capture plugins (enabled when plugins are on)', async () => {
     const list = JSON.parse(await fsp.readFile(path.join(nv, '.obsidian/community-plugins.json'), 'utf8'));
@@ -182,16 +189,23 @@ async function main() {
     assert.ok(!fs.existsSync(path.join(nv, 'Algebra/Homework.pdf')), 'an unticked file was copied');
     await p.locator('.fj-modal [data-a="close"]').click();
   });
-  await test('Settings: a saved "D:TaskDYS" is shown repaired as D:\\Task\\DYS; each folder is marked', async () => {
-    await p.evaluate(() => { const a = JSON.parse(localStorage.getItem('mo:ai')); a.agent.roots = ['D:TaskDYS', a.agent.roots[0], 'relative\\folder']; localStorage.setItem('mo:ai', JSON.stringify(a)); });
-    await p.evaluate(async () => (await import('/settings.js')).openSettings('ai'));
-    assert.equal((await p.locator('[data-agent="roots"]').inputValue()).split('\n')[0], 'D:\\Task\\DYS');
+  await test('Study settings: a saved "D:TaskDYS" is shown repaired as D:/Task/DYS; each folder is marked', async () => {
+    const keep = await p.evaluate(() => fetch('/api/study-profile').then(r => r.json()).then(r => r.profile));
+    await p.evaluate(async roots => { await fetch('/api/study-profile', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ profile: { courseRoots: roots } }) }); }, ['D:TaskDYS', ...keep.courseRoots, 'relative\\folder']);
+    await p.evaluate(async () => (await import('/settings.js')).openSettings('study'));
+    await p.locator('[data-study="courseRoots"]').waitFor();
+    assert.equal((await p.locator('[data-study="courseRoots"]').inputValue()).split('\n')[0], 'D:/Task/DYS');
     await p.locator('.fw-roots .fw-root').nth(2).waitFor();
     const marks = await p.locator('.fw-roots').innerText();
-    assert.match(marks, /✓ .*courses/); assert.match(marks, /✗ relative\\folder — 不是完整路径/);
+    assert.match(marks, /✓ .*courses/); assert.match(marks, /✗ relative\/folder — 不是完整路径/);
     await p.evaluate(async () => (await import('/settings.js')).closeSettings());
+    await p.evaluate(async profile => { await fetch('/api/study-profile', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ profile }) }); }, keep);
   });
   await test('new vault without the chat plugin, Claude Code chosen but not connected: says how to connect, not back to Settings', async () => {
+    // Built-in plugins ship in every vault; this user removed the chat plugin (it stays removed: offered once).
+    await fsp.rm(path.join(nv, '.obsidian/plugins/claude-chat'), { recursive: true, force: true });
+    await fsp.writeFile(path.join(nv, '.obsidian/community-plugins.json'), JSON.stringify(['claude-capture']));
+    await p.reload(); await p.waitForFunction(() => typeof window.__moFlush === 'function'); await p.waitForTimeout(500);
     await p.evaluate(async () => { const AI = await import('/ai.js'); AI.setChoice('inbox', 'claude-code'); });
     assert.equal(await p.evaluate(() => !!window.app?.plugins?.getPlugin?.('claude-chat')), false);
     await p.keyboard.press('Control+p');
@@ -214,7 +228,7 @@ async function main() {
       await p.locator('.fj-modal .check-busy').waitFor();
       const line = (await fsp.readFile(path.join(chat, 'outbox.jsonl'), 'utf8')).trim().split('\n').pop();
       const m = JSON.parse(line);
-      assert.equal(m.type, 'user'); assert.match(m.text, /Claude Inbox/); assert.ok(!m.via, 'the Claude Code watcher skips messages with "via"');
+      assert.equal(m.type, 'user'); assert.match(m.text, /captures/); assert.ok(!m.via, 'the Claude Code watcher skips messages with "via"');
       await fsp.writeFile(path.join(chat, 'replies', m.id + '.md'), 'Filed **2** captures into [[Algebra]].');
       await p.locator('.fj-modal .fj-reply').waitFor({ timeout: 15000 });
       assert.match(await p.locator('.fj-modal .fj-reply').innerText(), /Filed 2 captures/);

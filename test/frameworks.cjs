@@ -1,4 +1,5 @@
 // Local frameworks, for real: Graphite starts the installed DeepSeek Harness (dsh) and Codex CLI, which read and
+require('./isolate.cjs'); // never touch the real ~/.graphite or ~/.claude
 // write files with their own tools. The AI behind them is a scripted local stand-in (test/fake-llm.cjs), reached
 // through each framework's own settings (DEEPSEEK_BASE_URL; a CODEX_HOME config), so no account, key or network
 // is used. Everything lives in a new folder under test/.work (outside the system temp folder, so the frameworks'

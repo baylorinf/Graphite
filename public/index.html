@@ -9,6 +9,9 @@
   <link rel="stylesheet" href="/style.css">
   <link rel="stylesheet" href="/graphite.css">
   <link rel="stylesheet" href="/study.css">
+  <link rel="stylesheet" href="/reference.css">
+  <link rel="stylesheet" href="/vendor/codemirror-5.65.20/lib/codemirror.css">
+  <link rel="stylesheet" href="/code-editor.css">
   <script src="/lib/moment.js"></script>
 </head>
 <body>
@@ -38,6 +41,7 @@
     <div class="pane" id="lpane-files">
       <div class="pane-toolbar">
         <button data-cmd="new-note" data-icon="filePlus" data-i18n-title="tree.newNote" data-kbd="Alt+N"></button>
+        <button id="code-new" data-cmd="new-code-file" data-i18n-title="cmd.new-code-file" aria-label="New code file">&lt;/&gt;</button>
         <button data-cmd="new-folder" data-icon="folderPlus" data-i18n-title="tree.newFolder"></button>
         <button data-cmd="collapse-all" data-icon="collapse" data-i18n-title="tree.collapseAll"></button>
       </div>
@@ -63,6 +67,7 @@
       <button id="nav-fwd" data-icon="forward" data-i18n-title="nav.forward" data-kbd="Alt+→"></button>
       <div id="breadcrumb"></div>
       <div class="spacer"></div>
+      <button id="reference-button" class="hidden" data-cmd="study-reference" data-i18n="cmd.study-reference" data-i18n-title="cmd.study-reference"></button>
       <button id="fix-btn" data-cmd="check-note" data-icon="spellcheck" data-i18n-title="cmd.check-note" data-kbd="Ctrl+Shift+E"></button>
       <button id="tidy-btn" data-cmd="tidy-format" data-icon="wand" data-i18n-title="cmd.tidy-format" data-kbd="Ctrl+Shift+Y"></button>
       <button id="check-btn" data-cmd="quiz-note" data-icon="cap" data-i18n-title="cmd.quiz-note" data-kbd="Ctrl+Shift+K"></button>
@@ -86,6 +91,21 @@
         </div>
       </div>
       <div id="doc" class="hidden">
+        <section id="reference-pane" hidden aria-labelledby="reference-name">
+          <div class="reference-header">
+            <strong id="reference-name"></strong>
+            <button id="reference-change" type="button" data-i18n="ref.change"></button>
+            <button id="reference-close" type="button" data-i18n="ref.close"></button>
+          </div>
+          <div class="reference-tools">
+            <button type="button" id="reference-prev" data-i18n-title="ref.previous">‹</button>
+            <input id="reference-page" type="text" inputmode="numeric" data-i18n-title="pdf.page">
+            <span id="reference-pages"></span>
+            <button type="button" id="reference-next" data-i18n-title="ref.next">›</button>
+            <button id="reference-cite" type="button" data-i18n="ref.cite"></button>
+          </div>
+          <div id="reference-viewer"></div>
+        </section>
         <div id="panes" class="mode-split">
           <div id="editor-wrap" class="scroll">
             <div class="col">
@@ -131,6 +151,7 @@
 
     <section id="help-view" class="hidden scroll">
       <nav id="help-tabs"></nav>
+      <div id="help-find" class="help-find"></div>
       <div class="help-layout">
         <nav id="help-toc"></nav>
         <div class="col"><div id="help-body" class="markdown"></div></div>

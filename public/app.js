@@ -11,11 +11,15 @@ import { PLUG, fillVars } from '/i18n-plugins.js';
 import * as CK from '/check.js';
 import * as AI from '/ai.js';
 import * as SA from '/studyai.js';
+import * as SUM from '/summary.js';
+import { mountHandbook } from '/handbook.js';
 import * as FJ from '/filejobs.js'; // jobs on your files (find new course files, file captures), in any vault
 import { ICON, TAB_ICON, SEL_ICON } from '/icons.js'; // Lucide icons + the Graphite mark (scripts/make-icons.js)
 import { G, initGraph, buildGraph, drawGraph, readGraphColors, fitGraph, stopGraph } from '/graph.js';
 import { initSettings, openSettings, closeSettings, settingsOpen, refreshSettings } from '/settings.js';
 import { mountPdf } from '/pdfview.js';
+import { createReferencePane } from '/reference.js';
+import { createCodeEditor, sourceFormat } from '/code-editor.js';
 // The bundled plugins write English and ask the app for the text in your language.
 window.graphiteT = (s, v) => fillVars((PLUG[getLang()] || {})[s] ?? s, v);
 
@@ -114,6 +118,14 @@ function resolve(name, from = '') {
 }
 function resolveExact(name, from) {
   let t = name.replace(/\\/g, '/').trim();
+  // An explicitly rooted link can distinguish a root file from its namesake beside the note.
+  if (t.startsWith('/')) {
+    const root = t.slice(1).toLowerCase();
+    for (const path of S.files.keys()) {
+      const candidate = path.toLowerCase();
+      if (candidate === root || candidate === root + '.md') return path;
+    }
+  }
   if (from && (t.startsWith('./') || t.startsWith('../'))) { const rel = normalize(joinPath(dirName(from), t)); if (S.files.has(rel)) return rel; }
   t = t.replace(/^\.?\//, '');
   const tl = t.toLowerCase();
@@ -134,7 +146,7 @@ const score = (p, from) => (isMd(p) ? 0 : 500) + (dirName(p) === dirName(from) ?
 function linkNameFor(path) {
   // Another file with the same name (e.g. Lecture1.pdf in two courses): write the full path, so the link
   // can't open the other one. The label after "|" stays short.
-  if (!isMd(path)) return (nameIdx.get(fileName(path).toLowerCase()) || []).length > 1 ? path : fileName(path);
+  if (!isMd(path)) return (nameIdx.get(fileName(path).toLowerCase()) || []).length > 1 ? (path.includes('/') ? path : '/' + path) : fileName(path);
   const n = baseName(path);
   return (nameIdx.get(n.toLowerCase()) || []).length > 1 ? path.replace(/\.md$/i, '') : n;
 }
@@ -345,7 +357,10 @@ async function sync() {
   if (folders.size !== S.folders.size || [...folders].some(x => !S.folders.has(x))) structural = true;
   S.folders = folders;
   if (structural) { rebuildNameIndex(); renderTree(); }
-  for (const [type, p] of events) { PM.emitVault(type, p); if (type !== 'delete') PM.emitMetadata(p); }
+  for (const [type, p] of events) {
+    PM.emitVault(type, p); if (type !== 'delete') PM.emitMetadata(p);
+    if (type !== 'create' && p === codeEditor.activePath) void codeEditor.external(p);
+  }
   if (S.current && !S.files.has(S.current)) {
     // Deleted on another device. If you were editing it, keep your copy instead of losing the edits.
     if (S.dirty) {
@@ -1054,7 +1069,7 @@ function scrollToHeading(heading) {
    ===================================================================== */
 async function openNote(path, { push = true, heading = '' } = {}) {
   const f = S.files.get(path);
-  if (!f) return;
+  if (!f && !(sourceFormat(path) && codeEditor.hasDraft(path))) return;
   if (!isMd(path)) return showFile(path, { push, at: heading });
   leaveCustomTab();
   const prev = S.current;
@@ -1220,7 +1235,7 @@ function computeLinkUpdates(pairs) {
         if (!name) return all;
         const np = pairs.get(resolve(name, f.path));
         if (!np) return all;
-        const nn = name.includes('/') ? (isMd(np) && !/\.md$/i.test(name) ? np.replace(/\.md$/i, '') : np)
+        const nn = name.includes('/') ? (name.startsWith('/') ? '/' : '') + (isMd(np) && !/\.md$/i.test(name) ? np.replace(/\.md$/i, '') : np)
           : (isMd(np) && !/\.md$/i.test(name) ? baseName(np) : fileName(np));
         if (nn === name) return all;
         changed = true;
@@ -1238,6 +1253,7 @@ async function renamePath(from, to) {
   const taken = S.files.has(to) || S.folders.has(to);
   if (taken && from.toLowerCase() !== to.toLowerCase()) { toast(t('toast.exists', { name: to })); return false; }
   if (S.dirty) await saveNow();
+  await codeEditor.idle();
   const pairs = renamePairs(from, to);
   const edits = computeLinkUpdates(pairs); // worked out before the rename, while links still resolve to the old paths
   try { await api('POST', 'rename', {}, { from, to }); } catch (e) { toast(e.message); return false; }
@@ -1249,6 +1265,8 @@ async function renamePath(from, to) {
   if (!isFile) S.folders.add(to);
   S.collapsed = new Set([...S.collapsed].map(map));
   S.history = S.history.map(map);
+  codeEditor.renamed(pairs);
+  reference.rename(map);
   renameInTabs(map);
   const wasCurrent = S.current;
   if (S.current) S.current = map(S.current);
@@ -1422,6 +1440,7 @@ tree.addEventListener('contextmenu', e => {
     ...(isMd(p) ? [{ label: t('menu.copy'), run: () => duplicate(p) }] : []),
     { label: t('menu.rename'), run: () => renamePrompt(p) }, '-',
     ...(isMd(p) ? [{ label: t('cmd.tidy-format'), run: async () => { await openNote(p); SA.tidyFormat(p); } }] : []),
+    ...(/\.pdf$/i.test(p) ? [{ label: t('sum.title'), run: () => SUM.summaryDialog(p) }] : []),
     ...(isMd(p) || /\.pdf$/i.test(p) ? [{ label: t('menu.examAnalysis'), run: () => SA.examDialog(p) }, '-'] : []),
     { label: t('menu.delete'), danger: true, run: () => deletePath(p) }, ...tail,
   ]);
@@ -1551,10 +1570,85 @@ function quickSwitcher() {
   });
 }
 
+// Let the user pick the other half of the workbench without changing the active document on cancel.
+function chooseStudyFile(pickNote, chosen) {
+  const currentFolder = dirName(S.filePath || S.current || '');
+  const candidates = [...S.files.keys()].filter(p => pickNote ? isMd(p) : /\.pdf$/i.test(p));
+  Modal.open({
+    placeholder: t(pickNote ? 'ref.chooseNote' : 'ref.choosePdf'),
+    hint: !candidates.length && !pickNote ? esc(t('ref.noPdfs')) : '',
+    items: q => {
+      const hits = candidates.map(path => ({ path, rank: fuzzy(q, fileName(path)) || fuzzy(q, path) }))
+        .filter(x => x.rank)
+        .sort((a, b) => b.rank.score - a.rank.score ||
+          Number(dirName(b.path) === currentFolder) - Number(dirName(a.path) === currentFolder) || cmpName(a.path, b.path));
+      const items = hits.slice(0, 50).map(({path}) => ({
+        label: pickNote ? baseName(path) : fileName(path), detail: dirName(path), run: () => chosen(path),
+      }));
+      if (pickNote) items.push({ label: t('menu.newNote'), run: async () => {
+        const title = await askText(t('prompt.newName'));
+        if (!title) return;
+        const name = safeName(title.replace(/\.md$/i, ''));
+        if (!name) return;
+        const path = joinPath(currentFolder, name + '.md');
+        if (S.files.has(path)) { toast(t('toast.exists', { name: path })); return; }
+        const f = await createFile(path);
+        if (f) chosen(f.path);
+      } });
+      return items;
+    },
+  });
+}
+
+function openStudyReference() {
+  if (S.view === 'file' && /\.pdf$/i.test(S.filePath || '')) {
+    const path = S.filePath, pdf = S.pdf;
+    const page = (pdf?.ready && pdf.ctl?.page) || pdf?.jumpPage || pdf?.requestedPage || 1;
+    chooseStudyFile(true, async note => {
+      await openInTab(note, { where: 'new', keep: true });
+      if (S.view === 'note' && S.current === note) reference.select(path, page);
+    });
+  } else if (S.view === 'note' && S.current) {
+    chooseStudyFile(false, path => reference.select(path));
+  }
+}
+const reference = createReferencePane({
+  store, vault: () => S.vault, files: () => S.files, url: path => '/vault/' + encPath(path),
+  choose: openStudyReference,
+  cite: (path, page) => replaceRange(ed.selectionStart, ed.selectionEnd, selSourceLink({ path, page })),
+  layout: () => { updateTopbar(); requestAnimationFrame(autosize); },
+});
+
+function recordSource(path, result) {
+  const existing = S.files.get(path);
+  if (existing) { existing.mtime=result.mtime; return; }
+  S.files.set(path,{path,mtime:result.mtime}); addFolderChain(path); rebuildNameIndex(); renderTree();
+  PM.emitVault('create', path);
+}
+const codeEditor = createCodeEditor({
+  vault: () => S.vault, askName: value => askText(t('code.name'),value), savedFile:recordSource, toast,
+  openCreated:async(path,result)=>{ recordSource(path,result); await openInTab(path,{where:'new',keep:true}); },
+  copyLine:async(path,line)=>{
+    const text='[['+linkNameFor(path)+'#L'+line+'|'+fileName(path)+' L'+line+']]';
+    if (await copyText(text)) toast(t('file.linkCopied'));
+  },
+});
+async function newCodeFile() {
+  const folder = S.selectedFolder ?? (S.view==='file' && S.filePath ? dirName(S.filePath) : currentFolder());
+  const name=await askText(t('code.name'),'main.cpp',folder);
+  if (!name) return;
+  if (!sourceFormat(name) || name !== safeName(name) || /[\\/]/.test(name)) { toast(t('code.badName')); return; }
+  const path=joinPath(folder,name);
+  try { const result=await codeEditor.create(path); recordSource(path,result); await openInTab(path,{where:'new',keep:true}); }
+  catch(err) { toast(err.status===409?t('code.exists'):t('code.error',{msg:err.message})); }
+}
+
 /* =====================================================================
    Commands & shortcuts
    ===================================================================== */
 const COMMANDS = [
+  { id:'new-code-file', name:'Create a code file', run:newCodeFile },
+  { id: 'study-reference', name: 'Study PDF beside a note', available: () => (S.view === 'note' && !!S.current) || (S.view === 'file' && /\.pdf$/i.test(S.filePath || '')), run: openStudyReference },
   { id: 'new-note', name: 'Create new note', kbd: 'Alt+N', run: () => newNote() },
   { id: 'new-folder', name: 'Create new folder', run: () => newFolder() },
   { id: 'quick-switcher', name: 'Open quick switcher', kbd: 'Ctrl+O', run: quickSwitcher },
@@ -1568,7 +1662,10 @@ const COMMANDS = [
   { id: 'mode-source', name: 'Switch to editing view', run: () => setMode('source') },
   { id: 'mode-split', name: 'Switch to split view', run: () => setMode('split') },
   { id: 'mode-preview', name: 'Switch to reading view', run: () => setMode('preview') },
-  { id: 'rename', name: 'Rename current note', kbd: 'F2', run: () => { if (S.current) { showNoteView(); setMode(S.mode === 'preview' ? S.lastEditMode : S.mode); $('#title').focus(); $('#title').select(); } } },
+  { id: 'rename', name: 'Rename current note', kbd: 'F2', run: () => {
+    if (codeEditor.activePath) return renamePrompt(codeEditor.activePath);
+    if (S.current) { showNoteView(); setMode(S.mode === 'preview' ? S.lastEditMode : S.mode); $('#title').focus(); $('#title').select(); }
+  } },
   { id: 'duplicate', name: 'Make a copy of current note', run: () => S.current && duplicate(S.current) },
   { id: 'delete', name: 'Delete current note', run: () => S.current && deletePath(S.current) },
   { id: 'insert-date', name: 'Insert current date', run: () => { const d = new Date(); insertAtCursor(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`); } },
@@ -1596,18 +1693,24 @@ const COMMANDS = [
   { id: 'tidy-format', name: 'Tidy this note\'s format to match its folder', kbd: 'Ctrl+Shift+Y', available: () => !!S.current, run: () => SA.tidyFormat(S.current) },
   { id: 'revision-plan', name: 'Make an exam revision plan', run: () => SA.planDialog() },
   { id: 'find-course-files', name: 'Find new course files on this computer', run: () => FJ.runFileJob('import', 'import') },
-  { id: 'file-inbox', name: 'File the Claude Inbox captures', run: () => FJ.runFileJob('inbox', 'inbox') },
+  { id: 'file-inbox', name: 'File my captures into my notes', run: () => FJ.runFileJob('inbox', 'inbox') },
   { id: 'mock-paper', name: 'Make a mock paper', run: () => SA.mockDialog() },
+  { id: 'summarize-pdf', name: 'Summarize this PDF', available: () => S.view === 'file' && /\.pdf$/i.test(S.filePath || ''), run: () => SUM.summaryDialog(S.filePath) },
   { id: 'exam-analysis', name: 'Analyse an exam paper', run: () => SA.examDialog(S.view === 'file' && /\.pdf$/i.test(S.filePath || '') ? S.filePath : (S.current || '')) },
   { id: 'quiz-note', name: 'Quiz yourself on this note', kbd: 'Ctrl+Shift+K', available: () => !!S.current, run: async () => { if (S.dirty) await saveNow(); RV.checkNote(S.current); } },
   { id: 'latex-cheatsheet', name: 'Open LaTeX cheatsheet', run: () => (S.view === 'help' && S.helpPage === 'latex' ? showNoteView() : showHelp('latex')) },
   { id: 'settings', name: 'Open settings', kbd: 'Ctrl+,', run: () => openSettings() },
+  { id: 'study-settings', name: 'Open study settings', run: () => openSettings('study') },
+  { id: 'feature-handbook', name: 'Search the feature manual', run: async () => { if (!(S.view === 'help' && S.helpPage === 'guide')) await showHelp('guide'); HB.focus(); } },
+  { id: 'ai-settings', name: 'Choose who does each AI job', run: () => openSettings('ai') },
   { id: 'reload-plugins', name: 'Reload plugins', run: async () => { await PM.reloadAll(); refreshSettings(); } },
 ];
 // Returns false when the command does not exist or is not available right now.
+const noteCommands = new Set(['duplicate','delete','insert-date','insert-time','insert-table','insert-callout','insert-math','tidy-format','check-note','quiz-note','toggle-mode','mode-source','mode-split','mode-preview']);
+const commandAvailable = c => !!c && !(codeEditor.activePath && noteCommands.has(c.id)) && (!c.available || c.available());
 const runCommand = id => {
   const c = COMMANDS.find(x => x.id === id);
-  if (!c || (c.available && !c.available())) return false;
+  if (!commandAvailable(c)) return false;
   c.run();
   return true;
 };
@@ -1626,7 +1729,7 @@ function palette() {
     placeholder: t('palette.placeholder'),
     hint: esc(t('palette.hint')),
     // Match the translated name first; fall back to the English name so English keywords always work.
-    items: q => COMMANDS.filter(c => c.id !== 'palette' && (!c.available || c.available()))
+    items: q => COMMANDS.filter(c => c.id !== 'palette' && commandAvailable(c))
       .map(c => {
         const label = c.label || t('cmd.' + c.id);
         const r = fuzzy(q, label) || (fuzzy(q, c.name) ? { score: -20, idx: [] } : null);
@@ -1727,7 +1830,7 @@ document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && S.view === 'help') { showNoteView(); return; }
   if (mod && !e.shiftKey && k === 'o') { e.preventDefault(); quickSwitcher(); }
   else if (mod && !e.shiftKey && k === 'p') { e.preventDefault(); palette(); }
-  else if (mod && !e.shiftKey && k === 's') { e.preventDefault(); saveNow().then(retryDrafts); }
+  else if (mod && !e.shiftKey && k === 's') { e.preventDefault(); if (S.view === 'file' && codeEditor.activePath) codeEditor.save(); else saveNow().then(retryDrafts); }
   else if (mod && !e.shiftKey && k === 'e') { e.preventDefault(); runCommand('toggle-mode'); }
   else if (mod && !e.shiftKey && k === 'g') { e.preventDefault(); runCommand('graph'); }
   else if (mod && !e.shiftKey && k === 'n') { e.preventDefault(); newNote(); }
@@ -1753,6 +1856,7 @@ document.addEventListener('click', e => {
     const r = cmd.getBoundingClientRect(), folder = currentFolder();
     showMenu(r.left, r.bottom + 4, [
       { label: t('menu.newNote') + '   Alt+N', run: () => newNote(folder) },
+      { label: t('cmd.new-code-file'), run: newCodeFile },
       { label: t('menu.addFiles'), run: () => addFiles(folder) },
     ]);
     return;
@@ -1787,6 +1891,10 @@ function navigate(dir) {
 }
 
 function updateTopbar() {
+  const editing = S.view === 'note' && !!S.current && !$('#main').classList.contains('tab-custom');
+  const readingPdf = S.view === 'file' && /\.pdf$/i.test(S.filePath || '');
+  const shown = reference.refresh(editing);
+  $('#reference-button').classList.toggle('hidden', shown || !(editing || readingPdf));
   $('#nav-back').disabled = S.hIdx <= 0;
   $('#nav-fwd').disabled = S.hIdx >= S.history.length - 1;
   const bc = $('#breadcrumb');
@@ -2078,6 +2186,7 @@ function onReviewChange() {
 }
 
 function setView(name) {
+  if (name !== 'file') codeEditor.close();
   leaveCustomTab();
   if (S.view === 'note' && name !== 'note') { offerCheckIfWritten(); S.openedContent = ed.value; }
   S.view = name;
@@ -2112,13 +2221,13 @@ const FILE_KIND = [
   ['text', /\.(txt|csv|tsv|json|ya?ml|toml|ini|log|tex|bib|xml|js|mjs|ts|py|c|h|cpp|hpp|java|kt|rs|go|rb|sh|ps1|bat|css|sql)$/i],
   ['html', /\.html?$/i],
 ];
-const fileKind = p => (FILE_KIND.find(([, re]) => re.test(p)) || ['other'])[0];
+const fileKind = p => sourceFormat(p) ? 'code' : (FILE_KIND.find(([, re]) => re.test(p)) || ['other'])[0];
 const fmtSize = n => (n == null ? '' : n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(0)} KB` : `${(n / 1048576).toFixed(1)} MB`);
 
 // at: where to open, from a link like [[x.pdf#page=12]] or [[x.mp4#t=125]] ("page=12", "t=125").
 const fmtTime = s => { s = Math.floor(s); const h = Math.floor(s / 3600), m = Math.floor(s / 60) % 60, x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
 async function showFile(path, { push = true, at = '' } = {}) {
-  const f = S.files.get(path);
+  const f = S.files.get(path) || (sourceFormat(path) && codeEditor.hasDraft(path) ? {path} : null);
   if (!f) return;
   // Study pages (.html) open as study tabs when the study-pages plugin is on.
   if (fileKind(path) === 'html' && window.moStudy?.handles?.(path)) { window.moStudy.open(path); return; }
@@ -2131,6 +2240,7 @@ async function showFile(path, { push = true, at = '' } = {}) {
     if (S.history[S.hIdx] !== path) { S.history.push(path); S.hIdx = S.history.length - 1; }
   }
   setView('file');
+  codeEditor.close();
   closePdf(); hideSelBar();
   S.filePath = path;
   store.set('last', path); // reopen this file (not the previous note) next time the app starts
@@ -2152,7 +2262,8 @@ async function showFile(path, { push = true, at = '' } = {}) {
     </div>
     <div class="fv-body fv-${kind}"></div>`;
   const body = box.querySelector('.fv-body');
-  if (kind === 'pdf') openPdf(box, body, path, src, page);
+  if (kind === 'code') void codeEditor.open(body,path,at);
+  else if (kind === 'pdf') openPdf(box, body, path, src, page);
   else if (kind === 'office') showOfficeAsPdf(box, body, path, page);
   else if (kind === 'docx') showDocx(box, body, path, src);
   else if (kind === 'image') body.innerHTML = `<img class="fv-img" src="${src}" alt="${esc(fileName(path))}">`;
@@ -2245,14 +2356,27 @@ async function showOfficeAsPdf(box, body, path, page) {
 }
 /* ---------- PDFs (PDF.js): page box, zoom, fit width, find; reopens at the page you were on ---------- */
 const PDF_POS_MAX = 300;
-const pdfPos = path => (store.get('pdfPos', {}) || {})[path] || null;
+// Kept per vault: two vaults can both have Algebra/Lecture.pdf, and each keeps its own page and zoom.
+// (Up to 1.1.40 one list served every vault; it is handed to the first vault opened after the update.)
+const pdfPosKey = () => 'pdfPos:' + String(S.vault || '').replace(/\\/g, '/').toLowerCase();
+function pdfPosAll() {
+  const k = pdfPosKey();
+  let all = store.get(k, null);
+  if (!all) {
+    const legacy = store.get('pdfPos', null);
+    all = legacy && typeof legacy === 'object' ? legacy : {};
+    if (legacy) { store.set(k, all); try { localStorage.removeItem('mo:pdfPos'); } catch { /* ignore */ } }
+  }
+  return all;
+}
+const pdfPos = path => pdfPosAll()[path] || null;
 function savePdfPos(path, st) {
-  const all = store.get('pdfPos', {}) || {};
+  const all = pdfPosAll();
   delete all[path];
   all[path] = { page: st.page, scale: st.scaleValue };
   const keys = Object.keys(all);
   for (const k of keys.slice(0, Math.max(0, keys.length - PDF_POS_MAX))) delete all[k];
-  store.set('pdfPos', all);
+  store.set(pdfPosKey(), all);
 }
 function pdfControls() {
   const b = (cmd, label, title) => `<button class="fv-btn pdf-ib" data-pdf="${cmd}" title="${esc(title)}">${label}</button>`;
@@ -2265,6 +2389,7 @@ function pdfControls() {
     <span class="pdf-sep"></span>
     <button class="fv-btn pdf-ib pdf-study" data-pdf="clip" title="${esc(t('clip.title'))}">${selSvg('scissors')}</button>
     <button class="fv-btn pdf-ib pdf-study" data-pdf="mistake" title="${esc(t('mist.addFromPage'))}">${selSvg('mistake')}</button>
+    <button class="fv-btn pdf-summary" data-cmd="summarize-pdf" title="${esc(t('sum.title'))}">${esc(t('sum.short'))}</button>
   </span>`;
 }
 function closePdf() {
@@ -2274,7 +2399,7 @@ function closePdf() {
 }
 async function openPdf(box, body, path, src, page) {
   const pos = pdfPos(path);
-  const token = S.pdf = { path, ctl: null };
+  const token = S.pdf = { path, ctl: null, requestedPage: page || pos?.page || 1 };
   body.innerHTML = `<div class="pdf-host"><div class="fv-none pdf-loading">${esc(t('pdf.loading'))}</div></div>`;
   const host = body.firstElementChild;
   const pageIn = box.querySelector('.pdf-page'), pagesEl = box.querySelector('.pdf-pages'), scaleBtn = box.querySelector('.pdf-scale');
@@ -2283,6 +2408,10 @@ async function openPdf(box, body, path, src, page) {
   try {
     ctl = await mountPdf(host, src, {
       page: page || pos?.page || 1, scale: pos?.scale || 'page-width',
+      onReady: () => {
+        token.ready = true;
+        if (S.pdf === token && token.jumpPage) token.ctl?.goTo(token.jumpPage);
+      },
       onState: st => {
         if (S.pdf !== token) return;
         if (document.activeElement !== pageIn) pageIn.value = st.page;
@@ -2299,6 +2428,7 @@ async function openPdf(box, body, path, src, page) {
   }
   if (S.pdf !== token) { ctl.destroy(); return; } // another file was opened meanwhile
   token.ctl = ctl;
+  if (token.ready && token.jumpPage) ctl.goTo(token.jumpPage);
   pageIn.addEventListener('keydown', e => { if (e.key === 'Enter') { ctl.goTo(parseInt(pageIn.value, 10) || 1); pageIn.blur(); } if (e.key === 'Escape') { pageIn.value = ctl.page; pageIn.blur(); } });
   pageIn.addEventListener('blur', () => { pageIn.value = ctl.page; });
   pageIn.addEventListener('focus', () => pageIn.select());
@@ -2444,7 +2574,8 @@ function showGraph() {
 }
 // The file shown in the file view was deleted (here or on another device): go back to the note, or the empty page.
 function closeFileIfGone() {
-  if (S.view !== 'file' || !S.filePath || S.files.has(S.filePath)) return;
+  updateTopbar(); // also drop a reference PDF removed from the vault
+  if (S.view !== 'file' || !S.filePath || S.files.has(S.filePath) || codeEditor.hasDraft(S.filePath)) return;
   showNoteView();
   if (S.current && S.files.has(S.current)) store.set('last', S.current); else closeNote();
 }
@@ -2475,6 +2606,15 @@ async function showHelp(page = S.helpPage || 'guide') {
   if (S.view !== 'help' || S.helpPage !== page) return;
   $('#help-view').classList.toggle('cheatsheet', page !== 'guide');
   updateTopbar();
+  // The guide page has the manual's search on top (by study task, word or shortcut).
+  $('#help-find').hidden = page !== 'guide';
+  if (page === 'guide') {
+    const g = document.createElement('div');
+    renderInto(g, text, '', 1);
+    helpGuide = g;
+    HB.redraw();
+    if (HB.active()) { drawHandbook(); $('#help-view').scrollTop = 0; return; }
+  }
   renderInto($('#help-body'), text, '', 1);
   // Table of contents from the page's sections (not from the headings inside examples).
   const toc = $('#help-toc');
@@ -2482,6 +2622,22 @@ async function showHelp(page = S.helpPage || 'guide') {
   $('#help-view').scrollTop = 0;
 }
 $('#help-tabs').addEventListener('click', e => { const b = e.target.closest('[data-help-page]'); if (b) showHelp(b.dataset.helpPage); });
+// The manual's search: live commands (translated name, shortcut, available now?) plus the guide's sections.
+let helpGuide = null;
+const HB = mountHandbook($('#help-find'), {
+  commands: () => COMMANDS.filter(c => c.id !== 'palette').map(c => ({ id: c.id, name: c.name, label: c.label || t('cmd.' + c.id), kbd: c.kbd || '', available: commandAvailable(c) })),
+  guide: () => helpGuide,
+  update: () => { if (S.view === 'help' && S.helpPage === 'guide') { if (HB.active()) drawHandbook(); else showHelp('guide'); } },
+});
+function drawHandbook() {
+  HB.render($('#help-body'));
+  $('#help-toc').innerHTML = '';
+}
+$('#help-body').addEventListener('click', e => {
+  const run = e.target.closest('[data-hb-run]');
+  if (run) { e.preventDefault(); e.stopPropagation(); runCommand(run.dataset.hbRun); return; }
+  if (e.target.closest('[data-hb-reset]')) { e.preventDefault(); HB.reset(); showHelp('guide'); }
+}, true);
 $('#help-toc').addEventListener('click', e => {
   const a = e.target.closest('[data-help]');
   if (!a) return;
@@ -2601,7 +2757,7 @@ function renderTabs() {
     const tip = tab.kind === 'path' ? tab.path : tab.badge?.title || title;
     return `<div class="tab${tab.id === TABS.active ? ' active' : ''}${tab.preview ? ' preview' : ''}${tab.kind === 'path' && isMd(tab.path || '') ? '' : ' k-' + tabIconKind(tab)}" data-tab="${tab.id}" draggable="true" role="tab" title="${esc(tip + (tab.preview ? '\n' + t('tabs.previewHint') : ''))}">
       ${icon}<span class="tab-title">${esc(title)}</span>${badge ? `<span class="tab-badge">${esc(badge)}</span>` : ''}
-      <span class="tab-x" data-close="${tab.id}" title="${esc(t('tabs.close'))} (Ctrl+W)">×</span>
+      <button type="button" class="tab-x" data-close="${tab.id}" draggable="false" title="${esc(t('tabs.close'))} (Ctrl+W)" aria-label="${esc(t('tabs.close') + ': ' + title)}">×</button>
       ${tab.badge?.progress ? `<span class="tab-read" style="width:calc((100% - 20px) * ${Math.max(0, Math.min(1, tab.badge.progress))})"></span>` : ''}
     </div>`;
   }).join('');
@@ -2651,7 +2807,9 @@ function leaveCustomTab() {
 function saveTabView(tab) {
   if (!tab) return;
   tab.history = S.history; tab.hIdx = S.hIdx;
-  if (tab.kind === 'path' && isMd(tab.path || '') && S.view === 'note') tab.scroll = { ed: edWrap.scrollTop, pv: pvWrap.scrollTop, sel: ed.selectionStart };
+  if (tab.kind === 'path' && isMd(tab.path || '') && S.view === 'note') {
+    tab.scroll = { ed: edWrap.scrollTop, pv: pvWrap.scrollTop, start: ed.selectionStart, end: ed.selectionEnd, direction: ed.selectionDirection };
+  }
 }
 
 async function activateTab(id) {
@@ -2670,15 +2828,23 @@ async function activateTab(id) {
   TABS.restoring = true; // showing a tab's content must not change the tab itself
   try {
     if (tab.kind === 'custom') {
+      codeEditor.close();
       const pr = TABS.providers.get(tab.provider);
       $('#main').classList.add('tab-custom');
       hideSelBar();
       if (pr) { pr.open?.(tab.key); pr.show?.(tab.key); }
     } else {
       $('#main').classList.remove('tab-custom');
-      if (tab.kind === 'path' && tab.path && S.files.has(tab.path)) {
+      if (tab.kind === 'path' && tab.path && (S.files.has(tab.path) || codeEditor.hasDraft(tab.path))) {
         await openNote(tab.path, { push: false });
-        if (tab.scroll && S.current === tab.path) { const sc = tab.scroll; requestAnimationFrame(() => { edWrap.scrollTop = sc.ed; pvWrap.scrollTop = sc.pv; }); }
+        if (tab.scroll && S.current === tab.path) {
+          const sc = tab.scroll;
+          ed.setSelectionRange(sc.start, sc.end, sc.direction);
+          requestAnimationFrame(() => {
+            if (activeTab() !== tab || S.current !== tab.path) return;
+            edWrap.scrollTop = sc.ed; pvWrap.scrollTop = sc.pv;
+          });
+        }
       } else if (tab.kind === 'graph') showGraph();
       else if (tab.kind === 'review') showReview();
       else if (tab.kind === 'help') await showHelp(tab.page || 'guide');
@@ -2695,7 +2861,15 @@ async function openInTab(path, { where = 'auto', keep = false, heading = '', ind
   if (existing && where !== 'here') {
     if (keep) existing.preview = false;
     await activateTab(existing.id);
-    if (heading) setTimeout(() => scrollToHeading(heading), 30);
+    if (heading && isMd(path)) setTimeout(() => scrollToHeading(heading), 30);
+    else if (heading && S.view === 'file' && S.filePath === path) {
+      if (sourceFormat(path) && /^L\d+$/i.test(heading)) { codeEditor.goTo(Number(heading.slice(1))); return; }
+      const match = /^page=(\d+)$/i.exec(heading);
+      if (match && S.pdf?.path === path) {
+        S.pdf.jumpPage = Number(match[1]);
+        if (S.pdf.ready) S.pdf.ctl?.goTo(S.pdf.jumpPage);
+      } else if (!isMd(path)) await showFile(path, { push: false, at: heading });
+    }
     return;
   }
   let target = null;
@@ -2769,7 +2943,7 @@ function renameInTabs(map) {
   renderTabs(); persistTabs();
 }
 async function pruneTabs() {
-  const gone = TABS.list.filter(x => x.kind === 'path' && x.path && !S.files.has(x.path)).map(x => x.id);
+  const gone = TABS.list.filter(x => x.kind === 'path' && x.path && !S.files.has(x.path) && !codeEditor.hasDraft(x.path)).map(x => x.id);
   if (gone.length) await closeTabs(gone);
 }
 
@@ -2809,7 +2983,7 @@ function renderStartPage() {
         ${item('data-cmd="daily"', tabSvg('note'), t('ribbon.daily'), 'Alt+D')}
         ${item('data-cmd="graph"', tabSvg('graph'), t('graph.title'), 'Ctrl+G')}
         ${item('data-cmd="review"', tabSvg('review'), t('review.title'), 'Alt+R')}
-        ${item('data-cmd="help"', tabSvg('help'), t('help.title'), 'F1')}
+        ${item('data-cmd="help"', tabSvg('help'), t('empty.help'), 'F1')}
       </div>
       <p class="sp-tip">${esc(t('tabs.tip'))}</p>
     </div>`;
@@ -3013,12 +3187,16 @@ async function restoreTabs() {
   const saved = store.get('tabs', null);
   TABS.list = [];
   for (const x of saved?.list || []) {
-    if (x.kind === 'path' && !S.files.has(x.path)) continue;
+    if (x.kind === 'path' && !S.files.has(x.path) && !codeEditor.hasDraft(x.path)) continue;
     const { id: oldId, ...rest } = x;
     const tab = newTabObj({ ...rest, history: (x.history || []).filter(p => S.files.has(p)) });
     tab.oldId = oldId;
     tab.hIdx = Math.min(x.hIdx ?? tab.history.length - 1, tab.history.length - 1);
     TABS.list.push(tab);
+  }
+  // A source removed outside Graphite still needs a way to recover its unsaved copy.
+  for (const path of codeEditor.draftPaths()) {
+    if (!S.files.has(path) && sourceFormat(path) && !TABS.list.some(tab=>tab.path===path)) TABS.list.push(newTabObj({kind:'path',path}));
   }
   const act = TABS.list.find(x => x.oldId === saved?.active) || TABS.list[0];
   for (const x of TABS.list) delete x.oldId;
@@ -3043,6 +3221,7 @@ async function boot() {
   initGraph(host);
   AI.initAI(host);
   SA.initStudyAI(host);
+  SUM.initSummary(host);
   FJ.initFileJobs(host);
   STUDY.initStudy(host);
   setLang(store.get('lang', null) || detectLang());
@@ -3079,7 +3258,7 @@ async function boot() {
   setInterval(updateReviewBadge, 60 * 1000); // new day → new reviews
   // Right-click menu actions from the desktop app
   window.myobsidianDesktop?.onAppCommand?.(cmd => {
-    if (cmd.type === 'wrap' && S.current) { if (S.view !== 'note') showNoteView(); ed.focus(); wrapSelection(cmd.before, cmd.after ?? cmd.before); }
+    if (cmd.type === 'wrap' && S.current && !codeEditor.activePath) { if (S.view !== 'note') showNoteView(); ed.focus(); wrapSelection(cmd.before, cmd.after ?? cmd.before); }
     else if (cmd.type === 'search') searchFor(cmd.text);
     else if (cmd.type === 'command') runCommand(cmd.id);
   });
@@ -3131,6 +3310,7 @@ window.__moFlush = async () => {
   try { await RV.flushReview(); } catch { /* review progress is retried on next start */ }
   await retryDrafts().catch(() => {});
   const unsaved = [...drafts].map(([path, d]) => ({ path, text: d.text }));
+  unsaved.push(...await codeEditor.flush());
   return { ok: !unsaved.length, unsaved };
 };
 // Ask once more on startup for drafts left from last time.
@@ -3139,6 +3319,7 @@ setTimeout(() => { if (drafts.size) retryDrafts(); }, 3000);
 // Reloading or closing the page: the newest text is stored as a draft first, then one last save is sent with
 // the same version check as every other save, so it can never overwrite a change that reached the disk.
 addEventListener('beforeunload', () => {
+  codeEditor.writeDrafts();
   if (S.dirty && S.current) {
     setDraft(S.current, ed.value);
     const base = draftBase(S.current);

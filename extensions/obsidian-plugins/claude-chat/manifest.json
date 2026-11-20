@@ -1,9 +1,9 @@
 {
   "id": "claude-chat",
-  "name": "Claude Chat",
-  "version": "1.1.0",
+  "name": "Graphite Study Assistant",
+  "version": "1.2.0",
   "minAppVersion": "1.0.0",
-  "description": "A chat box in the right sidebar that talks to the Claude window you keep open. Claude sees your open note and selection. No API key, nothing leaves your computer.",
-  "author": "Claude",
+  "description": "A study chat in the right sidebar that sees your open note and selection. It is answered by the AI you choose (Claude Code, a local framework or an API model), shown next to it as \"Run by\".",
+  "author": "Graphite",
   "isDesktopOnly": false
 }

@@ -1,7 +1,8 @@
 {
-  "_help": "Copy this file to ~/.claude/graphite.json (or point GRAPHITE_CONFIG at it) and fill in your own values. Use forward slashes in paths.",
+  "_help": "Graphite writes this file from Settings → Study settings (the same settings every AI uses; the full copy is ~/.graphite/study.json, named in studySettings). You only need to edit it by hand without Graphite. Use forward slashes in paths.",
   "vault": "C:/Users/you/Documents/Graphite Vault",
   "studyRoot": "C:/Users/you/University",
+  "studyRoots": ["C:/Users/you/University"],
   "courses": {
     "CALC": "Calculus",
     "PHYS": "Physics"
@@ -15,5 +16,6 @@
   "chatLanguage": "English",
   "readingLanguages": "English",
   "noteLanguage": "English",
-  "about": "One line about you as a learner, e.g. second-year engineering student."
+  "about": "One line about you as a learner, e.g. second-year engineering student.",
+  "studySettings": "C:/Users/you/.graphite/study.json"
 }

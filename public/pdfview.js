@@ -24,7 +24,9 @@ async function loadLib() {
 export async function pdfText(src, { only = null, onProgress = null } = {}) {
   const { pdfjs } = await loadLib();
   const doc = await pdfjs.getDocument({ url: src, cMapUrl: '/lib/pdfjs/cmaps/', cMapPacked: true }).promise;
-  const want = only?.length ? only.filter(n => n >= 1 && n <= doc.numPages) : Array.from({ length: doc.numPages }, (_, i) => i + 1);
+  // A given list is used exactly: an empty or out-of-range list never turns into "the whole document".
+  const want = only ? only.filter(n => n >= 1 && n <= doc.numPages) : Array.from({ length: doc.numPages }, (_, i) => i + 1);
+  if (only && want.length !== only.length) throw Object.assign(new Error(`page ${only.find(n => n < 1 || n > doc.numPages)} is outside 1–${doc.numPages}`), { code: 'range' });
   const pages = [], empty = [];
   for (const n of want) {
     const tc = await (await doc.getPage(n)).getTextContent();
@@ -38,16 +40,24 @@ export async function pdfText(src, { only = null, onProgress = null } = {}) {
   return { pages, numPages: doc.numPages, empty };
 }
 export async function pdfPageCount(src) { const { pdfjs } = await loadLib(); return (await pdfjs.getDocument({ url: src }).promise).numPages; }
-// "1-5, 8, 10-12" → [1,2,3,4,5,8,10,11,12] (within 1..max). Empty → null (all pages).
+// "1-5, 8, 10-12" → [1,2,3,4,5,8,10,11,12]. Only an empty field means "all pages" (null).
+// Anything else must name real pages: page 0, a page past `max` (the document's page count) or a range that
+// runs past it is an error, never silently "all pages" or a quietly shortened range. The thrown Error has
+// .code 'syntax' | 'zero' | 'range' and .part (the piece of input at fault), .max (the page count).
 export function parsePages(str, max) {
   const out = new Set();
-  for (const part of String(str || '').split(/[,，;；\s]+/).filter(Boolean)) {
-    const m = part.match(/^(\d+)(?:[-–~～](\d+))?$/);
-    if (!m) throw new Error(part);
+  const fail = (code, part) => { throw Object.assign(new Error(part), { code, part, max }); };
+  const s = String(str || '').trim().replace(/\s*([-–—~～])\s*/g, '$1');
+  if (!s) return null;
+  for (const part of s.split(/[,，;；\s]+/).filter(Boolean)) {
+    const m = part.match(/^(\d+)(?:[-–—~～](\d+))?$/);
+    if (!m) fail('syntax', part);
     const a = +m[1], b = m[2] ? +m[2] : a;
-    for (let i = Math.min(a, b); i <= Math.max(a, b) && i <= (max || 1e9); i++) if (i >= 1) out.add(i);
+    if (a < 1 || b < 1) fail('zero', part);
+    if (max && Math.max(a, b) > max) fail('range', part);
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i++) out.add(i);
   }
-  return out.size ? [...out].sort((x, y) => x - y) : null;
+  return [...out].sort((x, y) => x - y);
 }
 // [1,2,3,5,7,8] → "1–3, 5, 7–8"
 export function pageRanges(list) {
@@ -87,6 +97,7 @@ export async function mountPdf(host, src, opts = {}) {
     viewer.currentScaleValue = opts.scale && (FIT.has(opts.scale) || +opts.scale > 0) ? String(opts.scale) : 'page-width';
     if (opts.page > 1) viewer.currentPageNumber = Math.min(opts.page, doc.numPages);
     emit();
+    if (!destroyed) opts.onReady?.(state());
   });
   eventBus.on('pagechanging', emit);
   eventBus.on('scalechanging', emit);

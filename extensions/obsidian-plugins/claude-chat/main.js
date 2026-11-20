@@ -45,8 +45,8 @@ module.exports = class ClaudeChatPlugin extends Plugin {
     this.addCommand({ id: 'open', name: T('Open the Graphie chat'), callback: () => this.show() });
     this.addCommand({ id: 'new', name: T('Start a new Graphie chat'), callback: () => this.newChat() });
     this.addCommand({ id: 'find-files', name: T('Find new course files on this computer'), callback: () => this.findFiles() });
-    this.addCommand({ id: 'file-inbox', name: T('File my Claude Inbox captures into my notes'), callback: () => this.fileInbox() });
-    this.addCommand({ id: 'update-brain', name: T('Update the Claude Brain from this chat'), callback: () => this.updateBrain() });
+    this.addCommand({ id: 'file-inbox', name: T('File my captures into my notes'), callback: () => this.fileInbox() });
+    this.addCommand({ id: 'update-brain', name: T('Update my study record from this chat'), callback: () => this.updateBrain() });
 
     this.app.workspace.onLayoutReady(async () => {
       await this.ensureDirs();
@@ -148,7 +148,7 @@ module.exports = class ClaudeChatPlugin extends Plugin {
     // downloads) and add anything missing. Progress and the summary show in this chat.
     const fileBar = document.querySelector('#lpane-files .pane-toolbar');
     if (fileBar) {
-      this.findBtn = fileBar.createEl('button', { cls: 'cc-find-files', attr: { type: 'button', title: T('Find new course files on this computer and add them (Graphie, through Claude Code)') } });
+      this.findBtn = fileBar.createEl('button', { cls: 'cc-find-files', attr: { type: 'button', title: T('Find new course files on this computer and add them') } });
       this.findBtn.innerHTML = ICON.findFiles;
       this.findBtn.onclick = () => this.findFiles();
     }
@@ -169,7 +169,10 @@ module.exports = class ClaudeChatPlugin extends Plugin {
     const head = pane.createDiv({ cls: 'cc-head' });
     const brand = head.createDiv({ cls: 'cc-title' });
     brand.createSpan({ cls: 'cc-logo' }).innerHTML = ICON.spark;
-    brand.createSpan({ text: 'Graphie' });
+    // The feature is Graphite's; the AI doing the work is shown next to it ("Run by"), and changes with the choice.
+    brand.createSpan({ cls: 'cc-brand-name', text: T('Graphite study assistant') });
+    brand.title = 'Graphie';
+    head.createSpan({ cls: 'cc-model-by', text: T('Run by') });
     this.titleEl = head.createEl('button', { cls: 'cc-model', attr: { type: 'button', 'aria-haspopup': 'menu' } });
     this.titleEl.onclick = e => { e.stopPropagation(); this.toggleModelMenu(); };
     this.renderModelPill();
@@ -212,6 +215,8 @@ module.exports = class ClaudeChatPlugin extends Plugin {
     el.createSpan({ cls: 'cc-model-name', text: name });
     if (model) el.createSpan({ cls: 'cc-model-sub', text: model });
     el.createSpan({ cls: 'cc-model-chev' }).innerHTML = ICON.chev;
+    el.dataset.executor = this.engine();
+    el.setAttribute('aria-label', T('Run by {name}. Click to choose who answers.', { name: this.engineLabel() }));
     this.renderStatus?.();
   }
 
@@ -585,20 +590,20 @@ module.exports = class ClaudeChatPlugin extends Plugin {
     if (!this.pane) return;
     this.show();
     if (this.msgs.some(m => m.task === 'inbox' && m.reply == null)) { new Notice(T('Graphie is already filing your captures.')); return; }
-    if (this.agentVia('inbox')) return this.runAgent('inbox', 'inbox', text || T('File my Claude Inbox captures into my notes.'));
-    this.input.value = text || T('File my Claude Inbox captures into my notes.');
+    if (this.agentVia('inbox')) return this.runAgent('inbox', 'inbox', text || T('File my captures into my notes.'));
+    this.input.value = text || T('File my captures into my notes.');
     return this.send();
   }
 
   async updateBrain(text) {
     if (!this.pane) return;
     this.show();
-    if (this.msgs.some(m => m.task === 'brain' && m.reply == null)) { new Notice(T('Graphie is already updating the Claude Brain.')); return; }
+    if (this.msgs.some(m => m.task === 'brain' && m.reply == null)) { new Notice(T('Graphie is already updating your study record.')); return; }
     if (!this.agentVia('inbox')) { this.input.value = text || 'Update my brain.'; return this.send(); }
     const history = this.msgs.filter(x => x.reply != null && !x.agent).slice(-15)
       .flatMap(x => [{ role: 'user', content: x.text }, { role: 'assistant', content: x.reply }]);
     if (!history.length) { new Notice(T('Chat first: the Brain is updated from what this chat shows.')); return; }
-    return this.runAgent('inbox', 'brain', text || T('Update the Claude Brain from this chat.'), { history });
+    return this.runAgent('inbox', 'brain', text || T('Update my study record from this chat.'), { history });
   }
 
   // Run a job: plan (read-only, progress shown live) → the user confirms → apply.
@@ -712,9 +717,9 @@ module.exports = class ClaudeChatPlugin extends Plugin {
         tx.createDiv({ cls: 'cc-agent-sub', text: (it.mode === 'new' ? T('New note') : T('Add to')) + ' → ' + it.target });
         if (it.preview) { const d = tx.createEl('details'); d.createEl('summary', { text: T('Preview') }); d.createEl('pre', { cls: 'cc-agent-pre', text: it.preview }); }
       });
-    } else box.createDiv({ cls: 'cc-agent-head', text: T('Graphie suggests these changes to the Claude Brain:') });
+    } else box.createDiv({ cls: 'cc-agent-head', text: T('Graphie suggests these changes to your study record:') });
     if (plan.edits?.length) {
-      if (job !== 'brain') box.createDiv({ cls: 'cc-agent-note', text: T('Claude Brain:') });
+      if (job !== 'brain') box.createDiv({ cls: 'cc-agent-note', text: T('Study record:') });
       plan.edits.forEach((e, i) => {
         const row = box.createEl('label', { cls: 'cc-agent-item' });
         row.append(check(r.acceptEdits, i, r.acceptEdits.has(i)));
@@ -737,8 +742,8 @@ module.exports = class ClaudeChatPlugin extends Plugin {
 
   emptyText(job, plan) {
     if (job === 'import') return T('Everything is already in Graphite.') + (plan.counts ? ' ' + T('({n} files checked)', { n: plan.counts.scanned }) : '');
-    if (job === 'inbox') return plan.empty ? T('No captures are waiting in the Claude Inbox.') : T('Graphie couldn’t find a place for these captures; try again.');
-    return T('Nothing new to record in the Claude Brain.');
+    if (job === 'inbox') return plan.empty ? T('No captures are waiting.') : T('Graphie couldn’t find a place for these captures; try again.');
+    return T('Nothing new to record in your study record.');
   }
 
   doneText(job, out, plan) {
@@ -758,9 +763,9 @@ module.exports = class ClaudeChatPlugin extends Plugin {
     } else if (job === 'inbox') {
       L.push(out.done.length ? T('Filed {n} captures:', { n: out.done.length }) : T('No captures were filed.'));
       for (const d of out.done) L.push(`- [[${d.target.replace(/\.md$/i, '')}|${d.shown || d.target.replace(/^.*\//, '').replace(/\.md$/i, '')}]]`);
-      if (out.edited?.length) L.push('', T('Claude Brain:') + ' ' + out.edited.map(p => '`' + p + '`').join(', '));
+      if (out.edited?.length) L.push('', T('Study record:') + ' ' + out.edited.map(p => '`' + p + '`').join(', '));
     } else {
-      L.push(out.edited?.length ? T('Updated the Claude Brain:') + ' ' + out.edited.map(p => '`' + p + '`').join(', ') : T('Nothing new to record in the Claude Brain.'));
+      L.push(out.edited?.length ? T('Updated your study record:') + ' ' + out.edited.map(p => '`' + p + '`').join(', ') : T('Nothing new to record in your study record.'));
     }
     for (const f of out.failed || []) L.push('', '⚠️ ' + T('Couldn’t do {name}: {msg}', { name: f.name || f.target || f.src, msg: f.error }));
     if (out.summary) L.push('', out.summary);

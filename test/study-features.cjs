@@ -1,4 +1,5 @@
 // Regression checks for the student features and the related fixes, run in a real browser against a throwaway vault.
+require('./isolate.cjs'); // never touch the real ~/.graphite or ~/.claude
 //   node test/study-features.cjs [repo] [filter]
 // Needs Playwright (GRAPHITE_PLAYWRIGHT or the Codex runtime copy) and Chrome (GRAPHITE_CHROME). Nothing outside a
 // new temporary folder is written. AI calls go to a fake local provider (the /api/ai request is answered here).
@@ -49,12 +50,13 @@ async function main() {
     'Bio/Cells.md': 'What is a cell? :: The unit of life\n',
     'LA/Exam.pdf': pdf(85, [5, 9, 84], 'EX', 120),
     'LA/Lecture.pdf': pdf(3, [], 'LEC', 24),
+    'ReferenceScratch.md': '# A source for this proof\n',
     'LA/复习资料/2024 期中.pdf': pdf(3, [], 'MID', 24),
     'LA/复习计划 Review Plans/Plan.md': `---\ntags: [Revision plan]\ncreated: 2026.11.20\n---\n# LA plan\n\n## Day 1 · ${isoDay(-1)}\n\n- [ ] [[Det]] (30)\n\n## Day 2 · ${isoDay(0)}\n\n- [ ] [[Maps]] (30)\n\n## Day 3 · ${isoDay(1)}\n\n- [ ] [[Kernel]] (30)\n`,
   };
   for (const [n, b] of Object.entries(files)) { await fs.mkdir(path.dirname(path.join(vault, n)), { recursive: true }); await fs.writeFile(path.join(vault, n), b); }
   // The Graphie chat plugin, to check that bundled plugins follow the language.
-  const plugSrc = path.join(repo, 'vault/.obsidian/plugins/claude-chat');
+  const plugSrc = path.join(repo, 'extensions/obsidian-plugins/claude-chat');
   await fs.mkdir(path.join(vault, '.obsidian'), { recursive: true });
   await fs.writeFile(path.join(vault, '.obsidian/community-plugins.json'), JSON.stringify(['claude-chat']));
   if (fss.existsSync(plugSrc)) await fs.cp(plugSrc, path.join(vault, '.obsidian/plugins/claude-chat'), { recursive: true, filter: s => !/[\\/]chat([\\/]|$)/.test(s.slice(plugSrc.length)) });
@@ -107,6 +109,30 @@ async function main() {
   const review = async () => JSON.parse(await fs.readFile(path.join(vault, '.obsidian/myobsidian/review.json'), 'utf8').catch(() => '{}'));
 
   try {
+    await test('Reference PDF stays on its page while editing and inserts a durable citation', async p => {
+      await p.locator('#tree [data-path="ReferenceScratch.md"]').dblclick();
+      await p.locator('#reference-button').click();
+      await p.locator('#modal-input').fill('LA/Lecture.pdf');
+      await p.locator('#modal-list .modal-item').first().click();
+      const pageNumber = p.locator('#reference-page');
+      await pageNumber.fill('3');
+      await pageNumber.press('Enter');
+      await p.waitForFunction(() => document.querySelector('#reference-page').value === '3');
+      const editor = p.locator('#editor');
+      const old = await editor.inputValue();
+      await editor.focus();
+      await editor.press('Control+End');
+      await p.locator('#reference-cite').click();
+      const text = await editor.inputValue();
+      assert.ok(text.startsWith(old));
+      assert.match(text.slice(old.length), /\[\[Lecture\.pdf#page=3[|\]]/);
+      await p.evaluate(() => window.__moFlush());
+      assert.equal(await fs.readFile(path.join(vault, 'ReferenceScratch.md'), 'utf8'), text);
+      await p.reload();
+      await p.waitForFunction(() => document.querySelector('#reference-page')?.value === '3');
+      await p.locator('#reference-close').click();
+      assert.equal(await p.locator('#reference-pane').isVisible(), false);
+    });
     await test('9 Chinese and spaced "question :: answer" make cards; "status:: done" stays a property', async p => {
       const cards = await p.evaluate(async () => (await import('/review.js')).cardsFor('LA/Eigen.md').map(c => [c.q, c.a]));
       assert.deepEqual(cards, [['什么是特征值？', '使 Av = λv 成立的 λ'], ['问题', '答案']]);
@@ -291,6 +317,95 @@ async function main() {
       await p.evaluate(async () => (await import('/review.js')).flushReview());
       const srcs = Object.values((await review()).items).map(i => i.src);
       assert.ok(!srcs.includes('LA/Lecture.pdf') && srcs.includes('LA/Lecture 1.pdf'), JSON.stringify(srcs));
+    });
+
+    await test('Review library: find, expand and edit older items by question and source', async p => {
+      const ids = await p.evaluate(async () => {
+        const rv = await import('/review.js');
+        const result = [];
+        for (let i = 1; i <= 12; i++) {
+          const src = i === 12 ? 'LA/复习资料/2024 期中.pdf' : 'LA/Exam.pdf';
+          result.push({ mistake: rv.addItem({ kind: 'mistake', src, page: 2, no: String(i), question: `Variant ${i}`, redo: rv.today() + i }), card: rv.addItem({ kind: 'card', src, page: 2, q: `Recall ${i}`, a: `Solution ${i}` }) });
+        }
+        await rv.flushReview(); return result;
+      });
+      await p.locator('#review-btn').click();
+      for (const kind of ['mistake', 'card']) {
+        const box = p.locator(`[data-study-list=${kind}]`), search = box.locator('input[type=search]');
+        assert.equal(await box.locator('.study-item').count(), 8);
+        await box.locator('.study-book-all').click();
+        assert.ok(await box.locator('.study-item').count() >= 12);
+        await box.locator('.study-book-all').click();
+        assert.equal(await box.locator('.study-item').count(), 8);
+        await search.fill('no-such-question-or-path');
+        assert.equal(await box.locator('.study-item').count(), 0);
+        await search.fill(kind === 'mistake' ? 'variant １２ 期中' : 'recall 12 期中');
+        const entry = box.locator('.study-item');
+        assert.equal(await entry.count(), 1);
+        assert.equal(await entry.getAttribute('data-id'), ids[11][kind]);
+        await entry.locator('[data-act=edit]').click();
+        const field = p.locator('.study-modal [data-f='+(kind === 'mistake' ? 'question' : 'q')+']');
+        await field.fill((await field.inputValue())+' edited');
+        await p.locator('.study-modal [data-a=save]').click();
+        assert.match(await entry.innerText(), /edited/);
+        await search.fill('');
+      }
+      await p.evaluate(async () => (await import('/review.js')).flushReview());
+      const saved = (await review()).items;
+      assert.match(saved[ids[11].mistake].question, /edited$/);
+      assert.match(saved[ids[11].card].q, /edited$/);
+    });
+
+    await test('Redo draft: read the paper, return to the queue, close, reopen, clear and submit', async p => {
+      const id = await p.evaluate(async () => {
+        const rv = await import('/review.js');
+        const id = rv.addItem({ kind: 'mistake', src: 'LA/复习资料/2024 期中.pdf', page: 2, question: 'Draft specimen', myAnswer: 'old', redo: rv.today() });
+        await rv.flushReview(); return id;
+      });
+      const before = await review();
+      const draft = '由定义可知\nλ < 2 & λ ≠ 0';
+      const openQuestion = async () => {
+        await p.locator('#review-btn').click();
+        const box = p.locator('[data-study-list=mistake]');
+        await box.locator('input[type=search]').fill('Draft specimen');
+        await box.locator(`[data-id="${id}"] [data-act=do]`).click();
+      };
+      await openQuestion();
+      await p.locator('.review-try').fill(draft);
+      const progress = await p.locator('.review-progress').innerText();
+      await p.locator('.review-goto').click();
+      await p.waitForFunction(() => document.querySelector('.pdf-page')?.value === '2');
+      await p.locator('[data-review-return]').click();
+      assert.equal(await p.locator('.review-progress').innerText(), progress);
+      assert.equal(await p.locator('.review-try').inputValue(), draft);
+      assert.ok(await p.locator('.review-a').isHidden());
+      await p.locator('.review-x').click();
+      await p.reload();
+      await p.locator('#review-btn').click();
+      await p.locator('[data-resume-draft]').click();
+      assert.equal(await p.locator('.review-try').inputValue(), draft);
+      let disk = await review();
+      assert.deepEqual(disk.cards[id], before.cards[id]);
+      assert.deepEqual(disk.days, before.days);
+      assert.deepEqual(disk.items[id].attempts, before.items[id].attempts);
+      await p.locator('.review-draft-clear').click();
+      await p.locator('.review-x').click();
+      assert.equal(await p.locator('[data-resume-draft]').count(), 0);
+      await openQuestion();
+      assert.equal(await p.locator('.review-try').inputValue(), '');
+      await p.locator('.review-try').fill('now submit');
+      await p.locator('.review-show').click();
+      await p.locator('.review-goto').click();
+      await p.locator('[data-review-return]').click();
+      assert.ok(await p.locator('.review-a').isVisible());
+      await p.locator('.review-rate[data-r="3"]').click();
+      await p.locator('.review-close').click();
+      await p.evaluate(async () => (await import('/review.js')).flushReview());
+      disk = await review();
+      assert.deepEqual(disk.items[id].attempts.map(a => a.answer), ['now submit']);
+      assert.equal(disk.cards[id].reps, before.cards[id].reps + 1);
+      await openQuestion();
+      assert.equal(await p.locator('.review-try').inputValue(), '');
     });
 
     const zh = async p => {

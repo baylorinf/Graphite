@@ -5,7 +5,7 @@ description: File the user's Graphite captures into their notes. The user marks 
 
 # Obsidian inbox
 
-**Settings first.** Read `~/.claude/graphite.json` (Graphite writes it from Settings → Claude Code; `graphite.example.json` in the skills folder shows every field). Below, `<vault>` is its `vault`, `<studyRoot>` its `studyRoot`, the brain folder is `<vault>/<brainFolder>` (default `Claude Brain`), and `courses` maps course codes (folder names under `<studyRoot>`) to course names. `about`, `chatLanguage`, `readingLanguages` and `noteLanguage` describe the user. If the file is missing, ask the user to open Graphite → Settings → Claude Code and press Save.
+**Settings first.** Read `~/.claude/graphite.json`: Graphite fills it from **Settings → Study settings**, the one set of folders, courses and languages every AI uses (the full file is `~/.graphite/study.json`, named in `studySettings`; `graphite.example.json` in the skills folder shows every field). `studyRoots` lists every course folder (`studyRoot` is the first); `readOnlyFolders` are never written; `recentFolders` is empty when the user turned off "also look elsewhere". Below, `<vault>` is its `vault`, `<studyRoot>` its `studyRoot`, the brain folder is `<vault>/<brainFolder>` (default `Claude Brain`), and `courses` maps course codes (folder names under `<studyRoot>`) to course names. `about`, `chatLanguage`, `readingLanguages` and `noteLanguage` describe the user. If the file is missing, ask the user to open Graphite → Settings → Claude Code and press Save.
 
 The user studies in **Graphite** (an Obsidian-style app; vault at `<vault>`). While reading, they press the ✦ button (ribbon, `Ctrl+Shift+L`, or right-click → *Send to Claude*) and pick one of:
 

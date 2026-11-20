@@ -21,7 +21,7 @@ export function openSettings(tab) {
   if (!root) build();
   root.classList.remove('hidden');
   document.addEventListener('keydown', onKey, true);
-  show(tab ? (tab.startsWith('plugin:') || ['general', 'appearance', 'review', 'ai', 'claude', 'sync', 'plugins'].includes(tab) ? tab : 'plugin:' + tab) : current);
+  show(tab ? (tab.startsWith('plugin:') || ['general', 'appearance', 'review', 'study', 'ai', 'claude', 'sync', 'plugins'].includes(tab) ? tab : 'plugin:' + tab) : current);
 }
 export function closeSettings() {
   if (!root || root.classList.contains('hidden')) return;
@@ -52,6 +52,7 @@ function drawNav() {
   item('general', t('settings.general'));
   item('appearance', t('settings.appearance'));
   item('review', t('settings.review'));
+  item('study', t('study.title'));
   item('ai', t('settings.ai'));
   item('claude', t('claude.title'));
   item('sync', t('settings.sync'));
@@ -59,7 +60,7 @@ function drawNav() {
   const tabs = PM.getSettingTabs();
   if (tabs.length) {
     nav.createDiv({ cls: 'settings-nav-heading', text: t('settings.pluginOptions') });
-    for (const r of tabs) item('plugin:' + r.plugin.manifest.id, r.plugin.manifest.name);
+    for (const r of tabs) item('plugin:' + r.plugin.manifest.id, PM.pluginName(r.plugin.manifest));
   }
 }
 
@@ -73,6 +74,7 @@ async function show(id) {
   if (id === 'general') return renderGeneral();
   if (id === 'appearance') return renderAppearance(token);
   if (id === 'review') return renderReview();
+  if (id === 'study') return renderStudy(token);
   if (id === 'ai') return renderAI();
   if (id === 'claude') return renderClaude(token);
   if (id === 'sync') return renderSync(token);
@@ -140,6 +142,87 @@ function renderReview() {
     .addButton(b => b.setButtonText(t('cmd.review')).setCta().onClick(() => { closeSettings(); H.runCommand('review'); }));
 }
 
+// Study settings: folders, courses, languages and a few words about you, saved once and used by every AI that does
+// a job (Claude Code, DeepSeek Harness, Codex CLI, an API model, frameworks added later). Saved by the server in
+// one file (shown on the page) that outside agents can read too.
+async function renderStudy(token) {
+  heading(t('study.title'));
+  content.createEl('p', { cls: 'setting-note', text: t('study.intro') });
+  let st;
+  try { st = await AI.studySettings(true); } catch (e) { content.createEl('p', { cls: 'mod-error', text: e.message }); return; }
+  if (token !== renderToken) return;
+  const p = { ...st.profile };
+  delete p.differences;
+  const list = v => String(v || '').split(/[,，\n]/).map(x => x.trim()).filter(Boolean);
+  const pairs = o => Object.entries(o || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
+  const parsePairs = txt => Object.fromEntries(String(txt).split(/\r?\n/).map(l => l.split('=')).filter(x => x.length >= 2 && x[0].trim()).map(([k, ...v]) => [k.trim(), v.join('=').trim()]));
+  let dirty = false;
+  const set = patch => { Object.assign(p, patch); dirty = true; saveBtn?.setDisabled(false); state.setText(t('study.unsaved')); };
+
+  // Left over from the move: the two old places said different things. Both values were kept; check them once.
+  const diffs = st.differences || st.profile?.differences || [];
+  if (diffs.length) {
+    const box = content.createDiv('settings-callout is-warn study-diffs');
+    box.createEl('h3', { text: t('study.diffTitle') });
+    box.createEl('p', { text: t('study.diffDesc') });
+    const ul = box.createEl('ul');
+    const show = v => (Array.isArray(v) ? v.join(', ') || '—' : typeof v === 'boolean' ? (v ? '✓' : '✗') : String(v ?? '—'));
+    for (const d of diffs) ul.createEl('li', { text: t('study.diffRow', { field: t('study.f.' + d.field), claude: show(d.claude), ai: show(d.ai), kept: show(d.field === 'lookElsewhere' ? d.ai : [...new Set([...(d.claude || []), ...(d.ai || [])])]) }) });
+  }
+
+  new PM.Setting(content).setName(t('study.f.vault')).setDesc(H.S.vault || st.vault || '');
+  // Course folders, each checked: found, not a full path, or missing.
+  const rootsRow = new PM.Setting(content).setName(t('study.f.courseRoots')).setDesc(t('study.d.courseRoots')).addTextArea(ta => {
+    ta.setPlaceholder('D:/University').setValue((p.courseRoots || []).join('\n')).onChange(v => { set({ courseRoots: list(v) }); checkRoots(); });
+    ta.inputEl.rows = 3; ta.inputEl.dataset.study = 'courseRoots';
+  });
+  const rootsInfo = rootsRow.descEl.createDiv({ cls: 'fw-roots' });
+  let rootsTimer = null;
+  const checkRoots = () => {
+    clearTimeout(rootsTimer);
+    rootsTimer = setTimeout(async () => {
+      const r = await fetch('/api/check-folders', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ paths: p.courseRoots || [] }) }).then(x => x.json()).catch(() => []);
+      rootsInfo.empty();
+      for (const f of r) rootsInfo.createDiv({ cls: 'fw-root ' + (f.ok ? 'is-ok' : 'is-bad'), text: (f.ok ? '✓ ' : '✗ ') + f.path + (f.ok ? '' : ' — ' + t('agent.root.' + f.reason)) });
+    }, 300);
+  };
+  checkRoots();
+  new PM.Setting(content).setName(t('study.f.courses')).setDesc(t('study.d.courses'))
+    .addTextArea(x => { x.setPlaceholder('LA = Linear Algebra\nCALC = Calculus').setValue(pairs(p.courses)).onChange(v => set({ courses: parsePairs(v) })); x.inputEl.rows = 5; x.inputEl.dataset.study = 'courses'; });
+  new PM.Setting(content).setName(t('study.f.skipFolders')).setDesc(t('study.d.skipFolders'))
+    .addText(x => { x.setPlaceholder('OLD, Archive').setValue((p.skipFolders || []).join(', ')).onChange(v => set({ skipFolders: list(v) })); x.inputEl.dataset.study = 'skipFolders'; });
+  new PM.Setting(content).setName(t('study.f.lookElsewhere')).setDesc(t('study.d.lookElsewhere', { days: p.recentDays || 180 }))
+    .addToggle(tg => { tg.setValue(!!p.lookElsewhere).onChange(v => set({ lookElsewhere: v })); tg.toggleEl.dataset.study = 'lookElsewhere'; })
+    .addText(x => { x.setValue((p.recentFolders || []).join(', ')).onChange(v => set({ recentFolders: list(v) })); x.inputEl.dataset.study = 'recentFolders'; });
+  new PM.Setting(content).setName(t('study.f.readOnlyFolders')).setDesc(t('study.d.readOnlyFolders'))
+    .addText(x => { x.setPlaceholder('My Brain').setValue((p.readOnlyFolders || []).join(', ')).onChange(v => set({ readOnlyFolders: list(v) })); x.inputEl.dataset.study = 'readOnlyFolders'; });
+  new PM.Setting(content).setName(t('study.f.brainFolder')).setDesc(t('study.d.brainFolder'))
+    .addText(x => { x.setValue(p.brainFolder || 'Claude Brain').onChange(v => set({ brainFolder: v.trim() })); x.inputEl.dataset.study = 'brainFolder'; });
+  new PM.Setting(content).setName(t('study.f.studyPagesFolder')).setDesc(t('study.d.studyPagesFolder'))
+    .addText(x => { x.setValue(p.studyPagesFolder || '').onChange(v => set({ studyPagesFolder: v.trim() })); x.inputEl.dataset.study = 'studyPagesFolder'; });
+  new PM.Setting(content).setName(t('study.f.about')).setDesc(t('study.d.about'))
+    .addTextArea(x => { x.setPlaceholder(t('study.p.about')).setValue(p.about || '').onChange(v => set({ about: v })); x.inputEl.rows = 2; x.inputEl.dataset.study = 'about'; });
+  for (const k of ['chatLanguage', 'readingLanguages', 'noteLanguage'])
+    new PM.Setting(content).setName(t('study.f.' + k)).setDesc(t('study.d.' + k))
+      .addText(x => { x.setPlaceholder(t('study.p.' + k)).setValue(p[k] || '').onChange(v => set({ [k]: v })); x.inputEl.dataset.study = k; });
+
+  // Which job uses what (so it is clear nothing more than needed is handed over).
+  const det = content.createEl('details', { cls: 'setting-note study-uses' });
+  det.createEl('summary', { text: t('study.usesTitle') });
+  for (const k of ['import', 'inbox', 'chat', 'quiz', 'summary', 'other']) det.createEl('p', { text: t('study.uses.' + k) });
+
+  let saveBtn = null;
+  const row = new PM.Setting(content).setName(t('study.save')).setDesc(t('study.where', { file: st.file || '' }))
+    .addButton(b => { saveBtn = b; b.setButtonText(t('study.save')).setCta().onClick(async () => {
+      b.setDisabled(true);
+      try { await AI.saveStudySettings(p); dirty = false; state.setText(t('study.saved')); H.toast(t('study.saved')); if (diffs.length) show('study'); }
+      catch (e) { state.setText(e.message); b.setDisabled(false); }
+    }); b.buttonEl.dataset.studySave = '1'; });
+  const state = row.descEl.createDiv({ cls: 'study-state muted', text: st.saved ? '' : t('study.unsaved') });
+  saveBtn.setDisabled(st.saved && !diffs.length);
+  void dirty;
+}
+
 // AI: which AI does each job, and optional API keys. Keys stay on this computer and go only to their provider.
 function renderAI() {
   heading(t('settings.ai'));
@@ -175,30 +258,9 @@ function renderAI() {
       enhanceAISelect(d.selectEl, f);
     });
   }
-  const lines = s => s.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
-  const rootsRow = new PM.Setting(content).setName(t('agent.roots')).setDesc(t('agent.rootsDesc')).addTextArea(ta => {
-    ta.setValue(AI.agentConf().roots.join('\n')).onChange(v => { AI.setAgentConf({ roots: lines(v) }); checkRoots(); });
-    ta.inputEl.rows = 3; ta.inputEl.dataset.agent = 'roots';
-  });
-  // Each folder's state: found, not a full path (e.g. "D:TaskDYS"), or not there.
-  const rootsInfo = rootsRow.descEl.createDiv({ cls: 'fw-roots' });
-  let rootsTimer = null;
-  const checkRoots = () => {
-    clearTimeout(rootsTimer);
-    rootsTimer = setTimeout(async () => {
-      const paths = AI.agentConf().roots;
-      const r = await fetch('/api/check-folders', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ paths }) }).then(x => x.json()).catch(() => []);
-      rootsInfo.empty();
-      for (const f of r) rootsInfo.createDiv({ cls: 'fw-root ' + (f.ok ? 'is-ok' : 'is-bad'), text: (f.ok ? '✓ ' : '✗ ') + f.path + (f.ok ? '' : ' — ' + t('agent.root.' + f.reason)) });
-    }, 300);
-  };
-  checkRoots();
-  new PM.Setting(content).setName(t('agent.skip')).setDesc(t('agent.skipDesc')).addText(tx => {
-    tx.setValue(AI.agentConf().skip.join(', ')).onChange(v => AI.setAgentConf({ skip: v.split(',').map(x => x.trim()).filter(Boolean) }));
-    tx.inputEl.dataset.agent = 'skip';
-  });
-  new PM.Setting(content).setName(t('agent.extras')).setDesc(t('agent.extrasDesc'))
-    .addToggle(tg => tg.setValue(AI.agentConf().extras).onChange(v => AI.setAgentConf({ extras: v })));
+  // The folders these jobs may read (and everything else about you) are in Study settings, shared by every AI.
+  new PM.Setting(content).setName(t('study.title')).setDesc(t('study.usedBy'))
+    .addButton(b => { b.setButtonText(t('study.open')).onClick(() => show('study')); b.buttonEl.dataset.openStudy = '1'; });
 
   // 1c. Local agent frameworks: found on this computer or not (and why), their version, an optional custom path.
   content.createEl('h3', { cls: 'settings-sub', text: t('fw.title') });
@@ -403,11 +465,6 @@ async function renderClaude(token) {
   let st;
   try { st = await H.api('GET', 'claude-kit'); } catch (e) { content.createEl('p', { cls: 'mod-error', text: e.message }); return; }
   if (token !== renderToken) return;
-  const c = { ...st.config };
-  const lines = o => Object.entries(o || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
-  const parseLines = txt => Object.fromEntries(String(txt).split(/\r?\n/).map(l => l.split('=')).filter(x => x.length >= 2 && x[0].trim()).map(([k, ...v]) => [k.trim(), v.join('=').trim()]));
-  const list = v => String(v || '').split(',').map(x => x.trim()).filter(Boolean);
-
   const installed = st.skills.length && st.skills.every(x => x.upToDate) && st.hooks.every(h => h.registered) && st.hasConfig;
   const box = content.createDiv('settings-callout');
   box.createEl('h3', { text: installed ? t('claude.ready') : st.hasConfig ? t('claude.outdated') : t('claude.notYet') });
@@ -415,28 +472,11 @@ async function renderClaude(token) {
   if (!st.claudeFound) box.createEl('p', { text: t('claude.noClaude') });
 
   new PM.Setting(content).setName(t('claude.vault')).setDesc(st.vault);
-  new PM.Setting(content).setName(t('claude.studyRoot')).setDesc(t('claude.studyRootDesc'))
-    .addText(x => x.setPlaceholder('C:/Users/you/University').setValue(c.studyRoot || '').onChange(v => { c.studyRoot = v; }));
-  new PM.Setting(content).setName(t('claude.courses')).setDesc(t('claude.coursesDesc'))
-    .addTextArea(x => { x.setPlaceholder('CALC = Calculus\nPHYS = Physics').setValue(lines(c.courses)).onChange(v => { c.courses = parseLines(v); }); x.inputEl.rows = 6; });
-  new PM.Setting(content).setName(t('claude.skip')).setDesc(t('claude.skipDesc'))
-    .addText(x => x.setPlaceholder('OLD, Archive').setValue((c.skipFolders || []).join(', ')).onChange(v => { c.skipFolders = list(v); }));
-  new PM.Setting(content).setName(t('claude.recent')).setDesc(t('claude.recentDesc'))
-    .addText(x => x.setValue((c.recentFolders || []).join(', ')).onChange(v => { c.recentFolders = list(v); }));
-  new PM.Setting(content).setName(t('claude.about')).setDesc(t('claude.aboutDesc'))
-    .addText(x => x.setPlaceholder('second-year engineering student').setValue(c.about || '').onChange(v => { c.about = v; }));
-  new PM.Setting(content).setName(t('claude.chatLang')).setDesc(t('claude.chatLangDesc'))
-    .addText(x => x.setPlaceholder('English').setValue(c.chatLanguage || '').onChange(v => { c.chatLanguage = v; }));
-  new PM.Setting(content).setName(t('claude.readLang')).setDesc(t('claude.readLangDesc'))
-    .addText(x => x.setPlaceholder('English').setValue(c.readingLanguages || '').onChange(v => { c.readingLanguages = v; }));
-  new PM.Setting(content).setName(t('claude.noteLang')).setDesc(t('claude.noteLangDesc'))
-    .addText(x => x.setPlaceholder('English').setValue(c.noteLanguage || '').onChange(v => { c.noteLanguage = v; }));
-  new PM.Setting(content).setName(t('claude.brain')).setDesc(t('claude.brainDesc'))
-    .addText(x => x.setValue(c.brainFolder || 'Claude Brain').onChange(v => { c.brainFolder = v.trim() || 'Claude Brain'; }));
-  new PM.Setting(content).setName(t('claude.pages')).setDesc(t('claude.pagesDesc'))
-    .addText(x => x.setValue(c.studyPagesFolder || '').onChange(v => { c.studyPagesFolder = v.trim(); }));
-  new PM.Setting(content).setName(t('claude.readOnly')).setDesc(t('claude.readOnlyDesc'))
-    .addText(x => x.setValue((c.readOnlyFolders || []).join(', ')).onChange(v => { c.readOnlyFolders = list(v); }));
+  // Folders, courses, languages and the rest come from Study settings (the same ones every AI uses); installing
+  // writes them into Claude Code's own copy, which its skills read.
+  new PM.Setting(content).setName(t('study.title')).setDesc(t('study.claudeUses'))
+    .addButton(b => b.setButtonText(t('study.open')).onClick(() => show('study')));
+  const c = {};
 
   const out = content.createDiv('setting-note');
   new PM.Setting(content).setName(t('claude.install')).setDesc(t('claude.installDesc')).addButton(b => b.setButtonText(t('claude.installBtn')).setCta().onClick(async () => {
@@ -464,10 +504,10 @@ async function renderPlugins(token) {
     new PM.Setting(content).setName(t('plugins.builtin')).setDesc(t('plugins.builtinDesc')).setHeading();
     for (const p of builtin) {
       const m = p.manifest, id = m.id;
-      const s = new PM.Setting(content).setName(m.name).setDesc(m.description || '');
+      const s = new PM.Setting(content).setName(PM.pluginName(m)).setDesc(PM.pluginDesc(m));
       s.nameEl.createSpan({ cls: 'plugin-version', text: ` v${m.version || '?'}` });
       const err = PM.getError(id);
-      if (err) s.descEl.createDiv({ cls: 'mod-error', text: t('plugins.loadFailed', { name: m.name, msg: err }) });
+      if (err) s.descEl.createDiv({ cls: 'mod-error', text: t('plugins.loadFailed', { name: PM.pluginName(m), msg: err }) });
       if (PM.isLoaded(id) && PM.getSettingTabs().some(r => r.plugin.manifest.id === id))
         s.addExtraButton(b => b.setIcon('settings').setTooltip(t('settings.title')).onClick(() => show('plugin:' + id)));
       s.addToggle(tg => tg.setValue(PM.isEnabled(id)).onChange(async v => { if (v) await PM.enablePlugin(id); else await PM.disablePlugin(id); show('plugins'); }));

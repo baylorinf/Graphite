@@ -380,7 +380,7 @@ module.exports = class ClaudeQuizzesPlugin extends Plugin {
 
   sendToClaude(text, where, kind, page) {
     const cap = this.capture();
-    if (!cap?.openCaptureWith) { new Notice(T('Turn on the Claude Capture plugin (Settings → Community plugins) to send things to Graphie.')); return; }
+    if (!cap?.openCaptureWith) { new Notice(T('Turn on Graphite Capture (Settings → Plugins) to send things to Graphie.')); return; }
     cap.openCaptureWith({ selection: text, source: '🎓 ' + where, course: page?.course, kind });
   }
 

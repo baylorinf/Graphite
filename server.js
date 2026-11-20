@@ -8,6 +8,7 @@ const http = require('http');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const { createHash } = require('node:crypto');
 const { exec } = require('child_process');
 
 let VAULT = '', CONFIG_DIR = '', PLUGIN_DIR = '';
@@ -15,6 +16,9 @@ let TOKEN = null; // desktop app: every request must carry this secret, so other
 const VERSION = require('./package.json').version;
 const PUBLIC = path.join(__dirname, 'public');
 const NM = path.join(__dirname, 'node_modules');
+const SOURCE_FORMATS = require('./public/source-formats.json');
+const SOURCE_LIMIT = 2 * 1024 * 1024;
+const sourceRevision = bytes => createHash('sha256').update(bytes).digest('hex');
 const LIBS = {
   '/lib/marked.js': path.join(NM, 'marked', 'lib', 'marked.esm.js'),
   '/lib/moment.js': path.join(NM, 'moment', 'min', 'moment-with-locales.min.js'),
@@ -70,6 +74,12 @@ const AI_SCHEMAS = {
   connect: { type: 'object', additionalProperties: false, required: ['related'], properties: { related: { type: 'array', items: {
     type: 'object', additionalProperties: false, required: ['title', 'why'], properties: { title: { type: 'string' }, why: { type: 'string' } } } } } },
   format: { type: 'object', additionalProperties: false, required: ['markdown', 'changes'], properties: { markdown: { type: 'string' }, changes: { type: 'array', items: { type: 'string' } } } },
+  summary: { type: 'object', additionalProperties: false, required: ['title', 'overview', 'sections', 'concepts', 'formulas'], properties: {
+    title: { type: 'string' }, overview: { type: 'string' },
+    sections: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['heading', 'page', 'points'], properties: { heading: { type: 'string' }, page: { type: 'integer' },
+      points: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['text', 'page'], properties: { text: { type: 'string' }, page: { type: 'integer' } } } } } } },
+    concepts: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['term', 'meaning', 'page'], properties: { term: { type: 'string' }, meaning: { type: 'string' }, page: { type: 'integer' } } } },
+    formulas: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['latex', 'meaning', 'page'], properties: { latex: { type: 'string' }, meaning: { type: 'string' }, page: { type: 'integer' } } } } } },
   questions: {
     type: 'object', additionalProperties: false, required: ['questions'],
     properties: { questions: { type: 'array', items: {
@@ -129,6 +139,14 @@ related: the chosen notes, each with title (copied exactly from the list) and wh
 - If the note already matches, return it unchanged with an empty changes list.
 markdown: the whole reformatted note.
 changes: one short item per kind of change, in ${ui}.`,
+  summary: ui => `You summarize one PDF (lecture slides, a textbook chapter, notes) for a university student, so they can review it and jump back to the right page.
+The input is the PDF's text with "--- page N ---" markers (only the pages chosen), or, for a local agent, the file itself and the page range.
+- Follow the document's own chapters or sections, in order. For each: heading (as in the document, or a short one), page (where it starts), and 2–6 points: the key ideas, each one or two sentences, with the page it comes from.
+- concepts: the key terms and definitions (term, one-sentence meaning, page). formulas: the important formulas or theorems (LaTeX without $ signs, what it means, page). Empty lists if there are none.
+- overview: two or three sentences on what the document covers.
+- Use only what the given pages say. Every page number must be one of the pages given; never invent pages. If a page has no text (scanned), say so in the overview instead of guessing its content.
+- Write in ${ui}; keep technical terms as the document writes them. Maths in $...$ inside text.
+title: a short note title such as "<document name> summary".`,
   chat: () => `You are Graphie, the study assistant in the chat panel of Graphite, a Markdown notes app. The user asks about what they are studying.
 - Reply in the language of the user's latest message.
 - When they say "this", "here" or "it", they mean the selected text if there is one, otherwise the open note (both are included in their message when available).
@@ -144,6 +162,7 @@ const AI_EXAMPLES = {
   connect: { related: [{ title: 'Exact note title from the list', why: 'uses its definition of X' }] },
   mock: { title: 'Linear Algebra mock paper', problems: [{ no: '1', marks: 10, kind: 'past', sourceFile: 'LA/复习资料/2024 midterm.pdf', sourcePage: 2, sourceLabel: '2024 midterm Q4', topic: 'Determinants', question: 'Compute $\\det A$ for ...', answer: 'Expand along the first row: ...' }], topics: [{ topic: 'Determinants', pastCount: 3, note: 'appears every year' }] },
   format: { markdown: 'the whole reformatted note', changes: ['Added frontmatter', 'Numbered the key points'] },
+  summary: { title: 'Lecture 3 summary', overview: 'What the lecture covers.', sections: [{ heading: '3.1 Eigenvalues', page: 2, points: [{ text: 'An eigenvector keeps its direction under $A$.', page: 2 }] }], concepts: [{ term: 'Eigenvalue', meaning: 'A scalar $\\lambda$ with $Av = \\lambda v$ for some $v \\neq 0$.', page: 2 }], formulas: [{ latex: '\\det(A - \\lambda I) = 0', meaning: 'characteristic equation', page: 3 }] },
 };
 // OpenAI-compatible providers. `extra` holds optional fields (e.g. turning off slow "thinking"); if a provider
 // rejects them, the request is retried without them.
@@ -195,6 +214,15 @@ function tidyResult(task, out) {
   }
   else if (task === 'connect') out.related = (Array.isArray(out.related) ? out.related : []).filter(x => x && x.title).map(x => ({ title: String(x.title), why: String(x.why || '') }));
   else if (task === 'format') { out.markdown = String(out.markdown || ''); out.changes = Array.isArray(out.changes) ? out.changes.map(String) : []; if (!out.markdown) throw new SyntaxError('empty'); }
+  else if (task === 'summary') {
+    const pg = x => (Number.isFinite(+x) ? Math.max(0, Math.round(+x)) : 0);
+    const arr = v => (Array.isArray(v) ? v.filter(x => x && typeof x === 'object') : []);
+    out.title = String(out.title || ''); out.overview = String(out.overview || '');
+    out.sections = arr(out.sections).map(s => ({ heading: String(s.heading || ''), page: pg(s.page), points: arr(s.points).map(p => ({ text: String(p.text || ''), page: pg(p.page) })).filter(p => p.text) })).filter(s => s.heading || s.points.length);
+    out.concepts = arr(out.concepts).map(c => ({ term: String(c.term || ''), meaning: String(c.meaning || ''), page: pg(c.page) })).filter(c => c.term);
+    out.formulas = arr(out.formulas).map(f => ({ latex: String(f.latex || ''), meaning: String(f.meaning || ''), page: pg(f.page) })).filter(f => f.latex);
+    if (!out.sections.length && !out.overview) throw new SyntaxError('empty');
+  }
   return out;
 }
 
@@ -259,9 +287,9 @@ async function compatTask(provider, key, body) {
   let messages;
   if (json) {
     tooLong(String(body.content || ''));
-    messages = [{ role: 'system', content: `${prompt(LANG_NAMES[body.lang] || 'English')}\n\nReply with JSON only, in exactly this format:\n${JSON.stringify(AI_EXAMPLES[body.task], null, 2)}` },
+    messages = [{ role: 'system', content: `${body.__system || prompt(LANG_NAMES[body.lang] || 'English')}\n\nReply with JSON only, in exactly this format:\n${JSON.stringify(AI_EXAMPLES[body.task], null, 2)}` },
       { role: 'user', content: noteBlock(body) }];
-  } else messages = [{ role: 'system', content: prompt() }, ...chatMessages(body)];
+  } else messages = [{ role: 'system', content: body.__system || prompt() }, ...chatMessages(body)];
   const tokens = P.tokens || 'max_tokens';
   const full = { model, messages, [tokens]: 16000, ...(json ? { response_format: { type: 'json_object' } } : {}), ...(P.extra || {}) };
   const plain = { model, messages, [tokens]: 16000 };
@@ -316,7 +344,7 @@ async function anthropicTask(key, body) {
     if (json) tooLong(String(body.content || ''));
     const params = {
       model, max_tokens: 16000,
-      system: json ? prompt(LANG_NAMES[body.lang] || 'English') : prompt(),
+      system: body.__system || (json ? prompt(LANG_NAMES[body.lang] || 'English') : prompt()),
       messages: json ? [{ role: 'user', content: noteBlock(body) }] : chatMessages(body),
       output_config: json
         ? { format: { type: 'json_schema', schema: AI_SCHEMAS[body.task] }, effort: body.task === 'questions' ? 'low' : 'medium' }
@@ -345,9 +373,20 @@ async function anthropicTask(key, body) {
   }
 }
 
+// The instructions for a job: the job's own, in the language it should write in, plus the study settings it uses
+// (Study settings: the same for every AI). Used for API models and local frameworks alike.
+async function jobSystem(task, body) {
+  const p = await study.get();
+  const ui = LANG_NAMES[body.lang] || 'English';
+  const base = task === 'chat' ? AI_PROMPTS.chat() : AI_PROMPTS[task](PROFILE.outputLanguage(task, p, ui));
+  const block = PROFILE.promptBlock(task, p, study.file());
+  return block ? base + '\n\n' + block : base;
+}
 async function aiTask(req) {
   const key = String(req.headers['x-ai-key'] || '').trim();
   const body = JSON.parse((await readBody(req, 5 * 1024 * 1024)).toString('utf8') || '{}');
+  delete body.__system;
+  if (AI_PROMPTS[body.task]) body.__system = await jobSystem(body.task, body);
   const provider = body.provider || 'anthropic';
   if (provider === 'anthropic') return anthropicTask(key, body);
   if (!COMPAT[provider]) throw new HttpError(400, 'Unknown AI provider');
@@ -484,25 +523,118 @@ async function withFileLock(abs, fn) {
   try { return await fn(); } finally { await fsp.unlink(lock).catch(() => {}); }
 }
 // Write to a temporary file and rename it over the original, so a failed write never leaves half a file.
-async function atomicWrite(abs, body) {
+async function atomicWrite(abs, body, { mode, beforeReplace } = {}) {
   await fsp.mkdir(path.dirname(abs), { recursive: true });
   const tmp = path.join(path.dirname(abs), `.${path.basename(abs)}.${process.pid}.${Date.now()}.tmp`);
-  await fsp.writeFile(tmp, body);
   // Windows can refuse to replace a file another program has open for a moment (antivirus, cloud sync):
   // try the rename again for a while. Never fall back to writing over the original in place: a write that
   // fails half way (disk full) would leave half a file. If it can't be replaced, the original stays whole
   // and the save is reported as failed, so the app keeps the text and tries again.
-  for (let i = 0; ; i++) {
-    try { await fsp.rename(tmp, abs); return; }
-    catch (e) {
-      const busy = e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY';
-      if (!busy || i >= 7) {
-        await fsp.unlink(tmp).catch(() => {});
-        if (busy) throw new HttpError(503, 'The file is in use by another program; it was not changed. Try again.');
-        throw e;
+  try {
+    await fsp.writeFile(tmp, body, { mode });
+    if (mode !== undefined && process.platform !== 'win32') await fsp.chmod(tmp, mode);
+    for (let i = 0; ; i++) {
+      if (beforeReplace) await beforeReplace();
+      try { await fsp.rename(tmp, abs); return; }
+      catch (e) {
+        const busy = e.code === 'EPERM' || e.code === 'EACCES' || e.code === 'EBUSY';
+        if (!busy) throw e;
+        if (i >= 7) throw new HttpError(503, 'The file is in use by another program; it was not changed. Try again.');
+        await new Promise(r => setTimeout(r, 40 * 2 ** Math.min(i, 4)));
       }
-      await new Promise(r => setTimeout(r, 40 * 2 ** Math.min(i, 4)));
     }
+  } catch (err) {
+    await fsp.unlink(tmp).catch(() => {});
+    throw err;
+  }
+}
+
+// Use the same visible directories as the file tree. Only ordinary source files are editable.
+async function sourcePath(rel) {
+  const abs = inVault(rel);
+  const parts = rel.split(/[\\/]/);
+  if (!Object.hasOwn(SOURCE_FORMATS, path.extname(abs).slice(1).toLowerCase()) ||
+      parts.some(p => !p || p.startsWith('.') || p.toLowerCase() === 'node_modules' || /[:\x00-\x1f]/.test(p))) {
+    throw new HttpError(400, 'Unsupported source path');
+  }
+  const [root, parent] = await Promise.all([fsp.realpath(VAULT), fsp.realpath(path.dirname(abs))]);
+  const relative = path.relative(root, parent);
+  if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative) ||
+      relative.split(path.sep).some(p => p.startsWith('.') || p.toLowerCase() === 'node_modules')) {
+    throw new HttpError(400, 'Invalid source directory');
+  }
+  return path.join(parent, path.basename(abs));
+}
+
+async function readSource(abs) {
+  const st = await fsp.lstat(abs);
+  if (!st.isFile()) throw new HttpError(400, 'Not a regular source file');
+  if (st.size > SOURCE_LIMIT) return { editable: false, reason: 'size' };
+  const bytes = await fsp.readFile(abs);
+  if (bytes.length > SOURCE_LIMIT) return { editable: false, reason: 'size' };
+  let raw;
+  try { raw = decodeSource(bytes); } catch { return { editable: false, reason: 'encoding' }; }
+  const endings = new Set(raw.match(/\r\n|\r|\n/g));
+  const content = raw.replace(/\r\n?/g, '\n');
+  if (endings.size > 1) return { editable: false, reason: 'mixed-eol', content };
+  const eol = endings.has('\r\n') ? 'CRLF' : endings.has('\r') ? 'CR' : 'LF';
+  return { editable: true, content, eol, bom: bytes.subarray(0, 3).equals(UTF8_BOM), revision: sourceRevision(bytes), mode: st.mode & 0o777, mtime: st.mtimeMs };
+}
+
+const UTF8_BOM = Buffer.from([0xef, 0xbb, 0xbf]);
+function decodeSource(bytes, literalBom = false) {
+  if (bytes.includes(0)) throw new Error('binary');
+  return new TextDecoder('utf-8', { fatal: true, ignoreBOM: literalBom }).decode(bytes);
+}
+
+async function sourceFile(req, res, rel) {
+  let abs;
+  try {
+    abs = await sourcePath(rel);
+    if (req.method === 'GET') return send(res, 200, await readSource(abs));
+    const creating = req.method === 'POST';
+    if (!creating && req.method !== 'PUT') throw new HttpError(405, 'Unsupported source operation');
+    const base = req.headers['x-base-hash'];
+    if (!creating && !/^[a-f\d]{64}$/.test(base || '')) throw new HttpError(428, 'Missing file revision');
+    const body = await readBody(req, SOURCE_LIMIT + 4);
+    let content;
+    try { content = decodeSource(body, true).replace(/\r\n?/g, '\n'); }
+    catch { throw new HttpError(400, 'Expected UTF-8 source text'); }
+    return await withFileLock(abs, async () => {
+      let bom = false, eol = 'LF', current;
+      if (creating) {
+        eol = req.headers['x-source-eol'] || 'LF';
+        const mark = req.headers['x-source-bom'] || '0';
+        if (!['LF', 'CRLF', 'CR'].includes(eol) || !['0', '1'].includes(mark)) throw new HttpError(400, 'Invalid source format');
+        bom = mark === '1';
+      } else {
+        current = await readSource(abs);
+        if (!current.editable) throw new HttpError(409, 'changed');
+        ({ bom, eol } = current);
+      }
+      const lineEnd = { LF: '\n', CRLF: '\r\n', CR: '\r' }[eol];
+      const bytes = Buffer.from((bom ? '\uFEFF' : '') + content.replace(/\n/g, lineEnd), 'utf8');
+      if (bytes.length > SOURCE_LIMIT) throw new HttpError(413, 'Source file is too large');
+      const revision = sourceRevision(bytes);
+      if (creating) {
+        const handle = await fsp.open(abs, 'wx');
+        try { await handle.writeFile(bytes); }
+        catch (e) { await handle.close(); await fsp.unlink(abs).catch(() => {}); throw e; }
+        await handle.close();
+      } else if (current.revision !== revision) {
+        if (current.revision !== base) throw new HttpError(409, 'changed');
+        if (!(current.mode & 0o222)) throw new HttpError(403, 'File is read-only');
+        await atomicWrite(abs, bytes, { mode: current.mode, beforeReplace: async () => {
+          const latest = await readSource(abs);
+          if (latest.revision !== base) throw new HttpError(409, 'changed');
+        } });
+      }
+      return send(res, 200, { revision, eol, bom, mtime: (await fsp.stat(abs)).mtimeMs });
+    });
+  } catch (err) {
+    if (err.code === 'ENOENT' || err.code === 'ENOTDIR') throw new HttpError(404, 'Source file or directory not found');
+    if (err.code === 'EEXIST') throw new HttpError(409, 'exists');
+    throw err;
   }
 }
 
@@ -524,6 +656,8 @@ async function api(req, res, u) {
 
   if (route === 'all' && m === 'GET') return send(res, 200, { vault: VAULT, version: VERSION, ...(await walk(VAULT, { folders: [], files: [] }, true)) });
   if (route === 'list' && m === 'GET') return send(res, 200, await walk(VAULT, { folders: [], files: [] }, false));
+
+  if (route === 'source') return sourceFile(req, res, q.get('path'));
 
   if (route === 'file') {
     const abs = inVault(q.get('path'));
@@ -595,6 +729,24 @@ async function api(req, res, u) {
     await fsp.writeFile(abs, body);
     const st = await fsp.stat(abs);
     return send(res, 200, { path: toRel(abs), mtime: st.mtimeMs, size: st.size });
+  }
+
+  // ---- Study settings (shared by every AI): read, save, and the one-time move from the two old places
+  if (route === 'study-profile' && m === 'GET') {
+    const saved = await study.load();
+    return send(res, 200, { profile: saved || { ...study.DEFAULTS }, saved: !!saved, file: study.file(), vault: VAULT, differences: saved?.differences || [], claude: await study.fromClaude() });
+  }
+  if (route === 'study-profile' && m === 'POST') {
+    const input = JSON.parse((await readBody(req, 1024 * 1024)).toString('utf8') || '{}');
+    if (input.migrate) {
+      if (await study.load()) return send(res, 200, { profile: await study.get(), saved: true, migrated: false, file: study.file() });
+      const r = await study.migrate(input.agent || null);
+      return send(res, 200, { ...r, saved: true, migrated: true, file: study.file() });
+    }
+    const prev = await study.load();
+    const keep = input.keepDifferences ? prev?.differences : undefined;
+    const profile = await study.save({ ...(input.profile || {}), differences: keep });
+    return send(res, 200, { profile, saved: true, file: study.file() });
   }
 
   // ---- Claude Code kit (Settings → Claude Code)
@@ -767,9 +919,12 @@ async function serveFile(res, abs, req) {
 
 // Local agent frameworks (DeepSeek Harness, Codex CLI): detection and running, shared by the file jobs and AI jobs.
 const frameworks = require('./frameworks')({ HttpError });
+// Study settings: one file every AI job reads its folders, courses and languages from (profile.js).
+const PROFILE = require('./profile');
+const study = PROFILE({ atomicWrite, vault: () => VAULT, claudeDir: () => CLAUDE_DIR() });
 const agent = require('./agent')({
   HttpError, hash, inVault, toRel, exists, uniquePath, atomicWrite, withFileLock, officeToPdf, readBody, LANG_NAMES, COMPAT, ANTHROPIC_DEFAULT,
-  parseJsonReply, compatCaller, anthropicClient, anthropicError, vault: () => VAULT, frameworks,
+  parseJsonReply, compatCaller, anthropicClient, anthropicError, vault: () => VAULT, frameworks, study, PROFILE,
 });
 // An AI job (Check, quiz questions, chat, plan, exam analysis, mock paper, tidy format, connect) done by a local
 // framework: it gets the same instructions as an API model, plus the paths of the files involved, which it may
@@ -780,11 +935,10 @@ async function localAiTask(req, res) {
   if (!frameworks.ids.includes(body.framework)) throw new HttpError(400, 'Unknown local framework');
   const prompt = AI_PROMPTS[body.task];
   if (!prompt) throw new HttpError(400, 'Unknown task');
-  const ui = LANG_NAMES[body.lang] || 'English';
   const files = [...new Set([body.path, ...(Array.isArray(body.files) ? body.files : [])].filter(Boolean).map(String))]
     .map(f => { try { return inVault(f); } catch { return null; } }).filter(Boolean);
   const chat = body.task === 'chat';
-  const parts = [chat ? prompt() : prompt(ui), '',
+  const parts = [await jobSystem(body.task, body), '',
     '## How to work here',
     `You are running as a local agent for Graphite, a notes app. The vault (the user's notes) is the folder: ${VAULT}`,
     files.length ? `Files for this task (open them with your own tools if you need to; the text below may be shortened): ${files.join(' ; ')}` : '',
@@ -948,6 +1102,10 @@ async function installClaudeKit(input) {
   for (const k of allowed) if (input && k in input) config[k] = input[k];
   if (config.studyRoot) config.studyRoot = String(config.studyRoot).trim().replace(/\\/g, '/');
   await atomicWrite(path.join(dir, 'graphite.json'), JSON.stringify(config, null, 2) + '\n');
+  // The study settings are the source: fill Claude Code's copy from them (when they were saved), so the skills
+  // read the same folders, courses and languages as every other AI.
+  const shared = await study.load();
+  if (shared) await study.save(shared);
   // 2. Skills (each file the app ships is copied over; your own extra files are left alone).
   const done = { skills: [], hooks: [] };
   for (const name of await fsp.readdir(path.join(CLAUDE_SHIP, 'skills')).catch(() => [])) {

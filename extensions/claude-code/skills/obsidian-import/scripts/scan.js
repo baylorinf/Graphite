@@ -100,9 +100,11 @@ function walk(dir, course, base, { recentOnly = false, depth = 0, maxDepth = 8 }
   }
 }
 
-for (const [code, course] of Object.entries(STUDY_ROOT ? COURSES : {})) {
-  const dir = path.join(STUDY_ROOT, code);
-  if (fs.existsSync(dir)) walk(dir, course, dir);
+// Every course folder from Study settings (studyRoots; older files only have studyRoot).
+const ROOTS = [...new Set([STUDY_ROOT, ...(Array.isArray(graphite.studyRoots) ? graphite.studyRoots : [])].filter(Boolean))];
+for (const root of ROOTS) for (const [code, course] of Object.entries(COURSES)) {
+  const dir = path.join(root, code);
+  if (fs.existsSync(dir) && !SKIP.has(code.toLowerCase())) walk(dir, course, dir);
 }
 for (const dir of EXTRA_ROOTS) walk(dir, null, dir, { recentOnly: true, maxDepth: 2 });
 

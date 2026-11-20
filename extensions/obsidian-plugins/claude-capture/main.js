@@ -152,7 +152,7 @@ module.exports = class ClaudeCapturePlugin extends Plugin {
       hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'L' }],
       callback: () => this.openCapture(),
     });
-    this.addCommand({ id: 'open-inbox', name: T('Open Claude Inbox'), callback: () => this.openInbox() });
+    this.addCommand({ id: 'open-inbox', name: T('Open the capture inbox'), callback: () => this.openInbox() });
 
     this.registerEvent(this.app.workspace.on('editor-menu', menu => {
       menu.addItem(item => item.setTitle(T('Send to Graphie')).setIcon('sparkles').onClick(() => this.openCapture()));

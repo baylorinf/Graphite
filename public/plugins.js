@@ -976,11 +976,23 @@ const codeBlocks = new Map();    // lang -> fn
 const editorSuggests = [];       // EditorSuggest instances
 const hotkeys = [];              // { id, hk }
 
+// The plugins that ship with Graphite are Graphite's own features: they show under Graphite's names in the user's
+// language ("Graphite study assistant"…), whichever AI does the work. Their ids (claude-chat…), folders, settings
+// and files keep the old names, so nothing a user already has moves or disappears.
+const GRAPHITE_PLUGINS = new Set(['claude-chat', 'claude-capture', 'claude-quizzes']);
+export function pluginName(m) {
+  if (m && GRAPHITE_PLUGINS.has(m.id)) { const k = `plug.${m.id}.name`, v = t(k); if (v !== k) return v; }
+  return m?.name || m?.id || '';
+}
+export function pluginDesc(m) {
+  if (m && GRAPHITE_PLUGINS.has(m.id)) { const k = `plug.${m.id}.desc`, v = t(k); if (v !== k) return v; }
+  return m?.description || '';
+}
 export class Plugin extends Component {
   constructor(a, manifest) { super(); this.app = a; this.manifest = manifest; }
   addCommand(cmd) {
     const id = `${this.manifest.id}:${cmd.id}`;
-    const full = { ...cmd, id, name: `${this.manifest.name}: ${cmd.name}` };
+    const full = { ...cmd, id, name: `${pluginName(this.manifest)}: ${cmd.name}` };
     commandsById[id] = full;
     const available = () => {
       try {
@@ -1103,7 +1115,7 @@ export const pluginsOn = () => { try { return localStorage.getItem(PLUGINS_ON_KE
 
 function pluginError(manifest, err) {
   console.error(`[plugin ${manifest.id}]`, err);
-  new Notice(t('plugins.runtimeError', { name: manifest.name, msg: err?.message || String(err) }), 8000);
+  new Notice(t('plugins.runtimeError', { name: pluginName(manifest), msg: err?.message || String(err) }), 8000);
 }
 
 export async function refreshInstalled() {
@@ -1155,7 +1167,7 @@ async function loadPlugin(info) {
     errors.set(id, e?.message || String(e));
     const rec = loaded.get(id);
     if (rec) { try { rec.inst.unload(); } catch { /* ignore */ } rec.styleEl?.remove(); loaded.delete(id); delete app.plugins.plugins[id]; app.plugins.enabledPlugins.delete(id); }
-    new Notice(t('plugins.loadFailed', { name: info.manifest.name, msg: e?.message || String(e) }), 8000);
+    new Notice(t('plugins.loadFailed', { name: pluginName(info.manifest), msg: e?.message || String(e) }), 8000);
   }
 }
 

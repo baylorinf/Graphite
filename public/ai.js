@@ -19,7 +19,17 @@ export function initAI(host) {
   // For plugins (the chat panel): window.myobsidianAI
   window.myobsidianAI = { FEATURES, options, choice, setChoice, label, parts, request, ccListening, openSettings: () => H.openSettings('ai'), onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
   Object.assign(window.myobsidianAI, { AGENT_FEATURES, agent, isApi: v => !!PROVIDERS[v], isLocal: v => !!LOCAL[v], isAgent: v => !!PROVIDERS[v] || !!LOCAL[v], frameworks: () => fwState, refreshFrameworks, errorText });
+  Object.assign(window.myobsidianAI, { studySettings, executor, executorName });
   refreshFrameworks().catch(() => {});
+  studySettings().catch(() => {}); // moves the old settings over on the first start after the update
+}
+// Who does a job, in words for the UI ("Claude Code", "DeepSeek Harness", "DeepSeek · Flash"). The job itself always
+// has Graphite's own name (Graphite study assistant…); this is only the "done by" label next to it.
+export const executor = f => choice(f);
+export function executorName(v) {
+  if (v === 'off') return t('ai.off');
+  const p = parts(v);
+  return p.model && !LOCAL[v] ? `${p.name} · ${p.model}` : p.name;
 }
 
 /* ---------- local agent frameworks ---------- */
@@ -65,7 +75,7 @@ async function localRequest(v, task, payload, signal) {
   return res.json();
 }
 
-export const FEATURES = ['check', 'quiz', 'chat', 'plan', 'exam', 'mock', 'format', 'connect'];
+export const FEATURES = ['check', 'quiz', 'chat', 'plan', 'exam', 'mock', 'summary', 'format', 'connect'];
 export const openSettings = () => H?.openSettings('ai');
 export const CC = 'claude-code';
 export const CHAT_DIR = '.obsidian/plugins/claude-chat/chat';
@@ -115,7 +125,7 @@ export const setKey = (p, v) => { const r = raw(); save({ keys: { ...r.keys, [p]
 export const setModel = (p, v) => { const r = raw(); save({ models: { ...r.models, [p]: v.trim() } }); };
 export const setBaseUrl = v => save({ baseUrl: v.trim() });
 // Jobs added later default to what Check uses.
-export const choice = f => raw().use[f] || (['plan', 'exam', 'mock', 'format', 'connect'].includes(f) && raw().use.check && raw().use.check !== 'off' ? raw().use.check : CC);
+export const choice = f => raw().use[f] || (['plan', 'exam', 'mock', 'format', 'connect', 'summary'].includes(f) && raw().use.check && raw().use.check !== 'off' ? raw().use.check : CC);
 export const setChoice = (f, v) => { const r = raw(); save({ use: { ...r.use, [f]: v } }); };
 const hasProvider = p => (p === 'custom' ? !!raw().baseUrl : !!keyOf(p));
 
@@ -188,7 +198,10 @@ const sleep = (ms, signal) => new Promise((res, rej) => {
 async function ccRequest(task, payload, signal) {
   if (!(await ccListening())) throw Object.assign(new Error(t('ai.ccOffline')), { offline: true });
   const id = 't-' + new Date().toISOString().replace(/\D/g, '').slice(0, 14) + '-' + Math.random().toString(36).slice(2, 6);
-  await writeVault(`${CHAT_DIR}/tasks/${id}.json`, JSON.stringify({ id, task: 'ai-' + task, note: payload.path || '', title: payload.title || '', lang: getLang(), at: new Date().toISOString(), ...(payload.job || {}) }));
+  // The job carries the study settings too (the same ones every other AI gets), and where the full file is.
+  const st = await studySettings().catch(() => null);
+  const { differences, ...profile } = st?.profile || {};
+  await writeVault(`${CHAT_DIR}/tasks/${id}.json`, JSON.stringify({ id, task: 'ai-' + task, note: payload.path || '', title: payload.title || '', lang: getLang(), at: new Date().toISOString(), studySettings: profile, studySettingsFile: st?.file || '', ...(payload.job || {}) }));
   const t0 = Date.now();
   for (;;) {
     if (signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
@@ -215,7 +228,7 @@ export async function request(feature, task, payload, { signal, provider } = {})
   if (LOCAL[v]) return localRequest(v, task, payload, signal);
   if (!PROVIDERS[v]) throw new Error(t('ai.noKey'));
   if (!hasProvider(v)) throw new Error(t('ai.noKeyFor', { provider: PROVIDERS[v].label }));
-  const limit = AbortSignal.timeout(['plan', 'exam', 'mock', 'format', 'connect'].includes(task) ? 270000 : 150000);
+  const limit = AbortSignal.timeout(['plan', 'exam', 'mock', 'format', 'connect', 'summary'].includes(task) ? 270000 : 150000);
   const res = await fetch('/api/ai', {
     signal: signal ? AbortSignal.any([signal, limit]) : limit,
     method: 'POST',
@@ -245,6 +258,34 @@ export async function testProvider(p) {
    around with read-only tools and proposes a plan; nothing is copied or written until the user confirms it.
    It may read only the vault and the course folders listed here (minus the left-out folder names). */
 export const AGENT_FEATURES = ['import', 'inbox'];
+
+/* ---------- Study settings: one set of folders, courses and languages for every AI ----------
+   Kept by the server in ~/.graphite/study.json (profile.js); every job reads what it needs from there. On the
+   first start after the update the two old places (Settings → AI's course folders here, Settings → Claude
+   Code's ~/.claude/graphite.json) are combined once, keeping any differences for the user to check. */
+let studyCache = null;
+export async function studySettings(force = false) {
+  if (studyCache && !force) return studyCache;
+  const r = await fetch('/api/study-profile').then(x => (x.ok ? x.json() : null)).catch(() => null);
+  if (!r) return studyCache || { profile: {}, saved: false };
+  if (!r.saved) {
+    // Only what the user really set in Settings → AI counts (not the built-in default folder).
+    const old = (H?.store.get('ai', {}) || {}).agent;
+    const agent = old && (Array.isArray(old.roots) || Array.isArray(old.skip) || 'extras' in old) ? old : null;
+    const m = await fetch('/api/study-profile', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ migrate: true, agent }) }).then(x => x.json()).catch(() => null);
+    if (m?.profile) { studyCache = { ...r, ...m, differences: m.differences || [] }; listeners.forEach(fn => { try { fn(); } catch { /* gone */ } }); return studyCache; }
+  }
+  studyCache = r;
+  return r;
+}
+export async function saveStudySettings(profile, { keepDifferences = false } = {}) {
+  const res = await fetch('/api/study-profile', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ profile, keepDifferences }) });
+  const d = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(d.error || res.statusText);
+  studyCache = { ...(studyCache || {}), ...d, differences: keepDifferences ? studyCache?.differences || [] : [] };
+  listeners.forEach(fn => { try { fn(); } catch { /* gone */ } });
+  return studyCache;
+}
 export const DEFAULT_ROOT = 'D:\\Task\\DYS';
 export function agentConf() {
   const a = raw().agent || {};

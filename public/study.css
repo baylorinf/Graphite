@@ -74,6 +74,11 @@
 
 /* ---------- Review page lists ---------- */
 .study-book h2 .muted { font-size: 13px; font-weight: 500; margin-left: 6px; }
+.study-book-search { box-sizing: border-box; width: min(100%, 28em); margin: 4px 0 8px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; color: var(--text); background: var(--bg); font: inherit; }
+.study-book-all { margin-top: 5px; }
+.study-book-all[hidden], .review-draft-clear[hidden] { display: none; }
+.review-source-return { position: fixed; bottom: 34px; left: 50%; transform: translateX(-50%); display: flex; align-items: center; gap: 4px; z-index: 45; padding: 4px; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; box-shadow: var(--shadow); }
+.review-draft-clear { margin-top: 4px; }
 .study-item { gap: 8px; }
 .study-item-main { flex: 1; min-width: 0; display: flex; gap: 8px; align-items: baseline; overflow: hidden; }
 .study-item-main b { flex: none; font-size: 13px; }
@@ -124,3 +129,34 @@
 .fw-root.is-bad { color: #e5534b; }
 .fj-phrase { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
 .fj-phrase code { flex: 1; padding: 8px 12px; border-radius: 8px; background: var(--code-bg); font-size: 14px; }
+
+/* ---------- Summarize this PDF ---------- */
+.fv-btn.pdf-summary { width: auto; padding: 0 9px; font-size: 12.5px; font-weight: 600; }
+.ai-summary .sum-file { word-break: break-all; }
+.ai-summary .sum-target { word-break: break-all; padding: 2px 6px; border-radius: 6px; background: var(--code-bg); }
+.ai-summary .sum-preview { margin-top: 10px; padding: 6px 16px; max-height: 48vh; overflow: auto; border: 1px solid var(--border); border-radius: 10px; }
+.ai-summary .sum-choice { display: flex; gap: 6px; align-items: center; margin: 4px 0; cursor: pointer; }
+.ai-summary .sum-avail { font-size: 12.5px; }
+
+/* ---------- Feature manual (help page search) ---------- */
+.help-find { max-width: 980px; margin: 0 auto; padding: 10px 24px 0; }
+.help-find[hidden] { display: none; }
+.hb-bar { display: flex; flex-direction: column; gap: 8px; }
+.hb-search { box-sizing: border-box; width: 100%; padding: 8px 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg); color: var(--text); font: inherit; }
+.hb-groups { display: flex; flex-wrap: wrap; gap: 6px; }
+.hb-groups button { padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); background: transparent; color: var(--text-muted); font-size: 12.5px; cursor: pointer; }
+.hb-groups button.active { background: var(--sel); color: var(--text); border-color: var(--accent); }
+.hb-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.hb-item { padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px; }
+.hb-item p { margin: 4px 0; }
+.hb-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.hb-head kbd { font-size: 11.5px; }
+.hb-tag { margin-left: auto; font-size: 11.5px; color: var(--text-muted); }
+.hb-meta { font-size: 12px; }
+.hb-section { margin: 12px 0; padding: 4px 14px; border-left: 3px solid var(--accent); }
+.hb-none { padding: 20px 0; }
+
+/* ---------- Study settings ---------- */
+.study-diffs ul { margin: 6px 0 0 18px; padding: 0; }
+.study-uses p { margin: 6px 0; }
+.study-state { margin-top: 4px; }

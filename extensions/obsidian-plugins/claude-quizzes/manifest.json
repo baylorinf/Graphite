@@ -1,9 +1,9 @@
 {
   "id": "claude-quizzes",
-  "name": "Claude Quizzes",
-  "version": "1.1.0",
+  "name": "Graphite Practice & Quizzes",
+  "version": "1.2.0",
   "minAppVersion": "1.0.0",
-  "description": "Opens the review plans, topic quizzes, level tests and notes Claude made, right inside Graphite. Scores are saved to Claude Brain/quiz-results.md. Works offline, no API key.",
-  "author": "Claude",
+  "description": "Opens your review plans, topic quizzes, level tests and study pages as tabs in Graphite. Scores are saved in your study record (Claude Brain/quiz-results.md). Works offline; no AI or key needed.",
+  "author": "Graphite",
   "isDesktopOnly": false
 }

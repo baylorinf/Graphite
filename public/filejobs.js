@@ -81,7 +81,7 @@ async function ccJob(job) {
   }
   // Connected: add the task to the queue the Claude window reads (chat/outbox.jsonl), then wait for its answer.
   const id = 'm-' + new Date().toISOString().replace(/\D/g, '').slice(0, 17) + '-fj';
-  const text = job === 'import' ? 'Find new course files on this computer and add them to Graphite.' : 'File my Claude Inbox captures into my notes.';
+  const text = job === 'import' ? 'Find new course files on this computer and add them to Graphite.' : 'File my captures into my notes.';
   const msg = { type: 'user', id, at: new Date().toISOString().slice(0, 16).replace('T', ' '), text, ...(job === 'import' ? { task: 'import' } : {}), note: '', study: '', selection: '' };
   try {
     for (let i = 0; ; i++) {

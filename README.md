@@ -37,6 +37,8 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 - **Maths:** `$inline$` and `$$display$$` LaTeX rendered offline with KaTeX, including `\ce{…}` chemistry.
 - **Obsidian Markdown:** frontmatter properties, `#tags`, `==highlights==`, `%%comments%%`, callouts and task lists.
 - **Files in tabs:** notes, PDFs (with search, zoom and links to a page), images, audio and video open as tabs.
+- **Code editor.** Open a `.cpp` or `.py` file in the tree, or choose **New code file**. Edit the actual source file with offline syntax highlighting, line numbers and automatic indentation. `Ctrl+F` searches the open file. `Ctrl+S` saves it. **Copy line link** puts a link to the current line on the clipboard for use in a solution note. If another editor has changed the file, you can keep your work as a separate copy.
+- **PDF beside notes** opens a lecture and an editable note together. Turn to the page you need and use **Cite this page** to insert its link at the cursor. The lecture stays open when you switch notes, and Graphite remembers the page for this vault.
 - **Word and PowerPoint:** `.docx` opens as a readable page; `.doc`, `.ppt` and `.pptx` (and `.docx` in exact layout) open as a PDF made by your installed Office, cached so it opens instantly next time.
 - **Built-in help (F1)** in 7 languages, with a Markdown cheatsheet and a LaTeX cheatsheet of about 160 commands.
 
@@ -58,6 +60,7 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 - **After writing,** a card offers to check the note or quiz you on it.
 - **Mistake book:** add a problem from an exam analysis (+ Mistake book) or from any PDF page, with its page, your answer, why it was wrong and a redo date. On that day it comes back in the daily review: answer it again first, then compare with your old answer. "Back to page" opens the paper at that page.
 - **Cards from PDFs:** select text in a PDF and press **Card** (question and answer editable, file and page kept), or clip a formula, figure or scanned page with the scissors. Clipped images are saved in the vault and work offline.
+- Search the mistake book and PDF cards by question or source. During a redo, you can check the original page and return to your unfinished answer. A draft stays available if you close Graphite before submitting it.
 - **Plan days you can run:** each day of a revision plan gets a **Start** button for that day's cards and mistakes. Stop any time and **Continue** later; missed days can be **carried over** to today; the plan note shows the progress under each day.
 - **Study pages:** interactive review pages (`.html`) in a course's `Study Pages` folder open as 🎓 tabs, with progress saved.
 
@@ -71,7 +74,9 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 | **Exam analysis** | From an exam paper or a graded exam: every problem, its topic and your matching note, what went wrong, and a plan. Reads every page (or the pages you choose), analyses long papers in parts, and says which pages were covered and which had no text. |
 | **Connect note** (🔗) | Links a note, both ways, to the notes that really relate to it. Works with Claude Code or an API model. |
 | **Tidy format** (`Ctrl+Shift+Y`) | Makes a note follow the format of the other notes in its folder, with a before/after preview. |
-| **Graphie** (chat panel) | Ask Graphie, the study assistant, about the note or the text you're reading; pick who answers from the menu next to its name. |
+| **Summarize this PDF** | From the PDF toolbar or the file tree's right-click menu: an editable note with the main points by section, key concepts and formulas, each linking to its page. Saved next to the PDF (or in the mapped course folder); regenerating never overwrites your edits without asking. |
+| **Graphite study assistant** (chat panel) | Ask Graphie about the note or the text you're reading. "Run by" next to its name shows, and switches, the AI that answers. |
+| **Graphite Capture** · **Graphite practice & quizzes** | ✦ mark what's unfamiliar or interesting and have it filed into your notes; study pages, quizzes and level tests as tabs. |
 
 ![A revision plan in light mode](docs/screenshot-plan.png)
 
@@ -92,6 +97,8 @@ Every AI job (Check, Quiz questions, Chat, Revision plans, Exam analysis, Mock p
 - **Claude Code (no key):** if you use [Claude Code](https://claude.com/claude-code) on the same computer, Graphite can hand jobs to it through files in the vault (with the companion `obsidian-chat` skill). It works only while that Claude window is connected. Claude Code and the local frameworks below can open files themselves, so they can also read scanned PDFs.
 
 - **A local agent framework (no key in Graphite):** [DeepSeek Harness](https://www.deepseek.com) (`dsh`) or the OpenAI **Codex CLI**, if installed. Graphite finds them (Settings → AI → *Local frameworks* shows the version, or why one can't run) and starts the one you chose with the task. It reads the files itself, read-only and only in the vault and the course folders you allow. For jobs that change files (find new course files, file inbox captures, update the Brain) you see the plan first; after you confirm, the framework writes the confirmed changes in a private stage folder with its own tools, Graphite checks every file and only then applies them, and puts everything back if anything fails. Graphite never switches to another AI on its own.
+
+**Study settings (one set for every AI):** course folders, course names, folders to leave out or keep read-only, the study record folder, a few words about you and your chat, reading and note languages are set once in **Settings → Study settings** and used by whichever AI does a job: Claude Code, DeepSeek Harness, Codex CLI, an API model, or a framework added later. They are kept in `~/.graphite/study.json` (Claude Code's own `~/.claude/graphite.json` is kept in step), and each job gets only the settings it needs; they never widen what an AI may read or write. The features keep Graphite's names whichever AI runs them.
 
 **Privacy:** keys are stored only on your computer, never in the vault, and never logged. A job sends only its own note or paper, and only to the provider you chose, which bills you for the use.
 

@@ -211,7 +211,12 @@ export function examDialog(path = '') {
     const noteTitles = [...H.S.files.values()].filter(f => isMd(f.path) && !SKIP.test(f.path) && (!course || top(f.path) === course) && !hidden(f)).map(f => base(f.path));
     const isPdf = /\.pdf$/i.test(file);
     let only = null;
-    if (isPdf && pagesStr) { try { only = parsePages(pagesStr); } catch (e) { H.toast(t('exam.badPages', { part: e.message })); return; } }
+    // Checked against the real page count before any AI (API, Claude Code or a local framework) is asked.
+    if (isPdf) {
+      const total = await pdfPageCount(file).catch(() => 0);
+      if (!total) { H.toast(t('exam.noText')); return; }
+      try { only = parsePages(pagesStr, total); } catch (e) { H.toast(pagesError(e)); return; }
+    }
     // API models get the paper as text: every chosen page (no hidden limit), sent in batches if it is long.
     // Claude Code reads the file itself and is told the page range.
     let batches = [{ text: '', pages: only }], numPages = 0, empty = [], read = [];
@@ -408,7 +413,13 @@ function mockMarkdown(r, { course, used, left, chapters, minutes, notes }) {
 }
 
 const BATCH_CHARS = 60000;
-async function pdfPageCount(path) {
+// The message for a page range parsePages() refused (0, past the end, or not understood).
+export function pagesError(e) {
+  if (e.code === 'zero') return t('exam.pagesZero', { part: e.part });
+  if (e.code === 'range') return t('exam.pagesRange', { part: e.part, n: e.max });
+  return t('exam.badPages', { part: e.part ?? e.message });
+}
+export async function pdfPageCount(path) {
   const lib = await import('/pdfview.js');
   return lib.pdfPageCount('/vault/' + path.split('/').map(encodeURIComponent).join('/'));
 }

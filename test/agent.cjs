@@ -1,4 +1,5 @@
 // The agent harness (agent.js): Find new course files and inbox filing with an API model only (DeepSeek key,
+require('./isolate.cjs'); // never touch the real ~/.graphite or ~/.claude
 // Claude Code not connected), in a real browser against a throwaway vault and a throwaway course folder.
 //   node test/agent.cjs [repo] [filter]
 // Needs Playwright (GRAPHITE_PLAYWRIGHT or the Codex runtime copy) and Chrome (GRAPHITE_CHROME).
@@ -80,7 +81,7 @@ async function main() {
   await put(path.join(courses, 'LA/Slide/lec2.pdf'), '%PDF-1.4 lecture two, longer');
   await put(path.join(courses, 'LA/Slide/old-slides.pdf'), '%PDF-1.4 old slides'); // already in the vault (same size)
   await put(path.join(courses, 'UPC/secret.pdf'), '%PDF-1.4 left out on purpose');
-  const plugSrc = path.join(repo, 'vault/.obsidian/plugins/claude-chat');
+  const plugSrc = path.join(repo, 'extensions/obsidian-plugins/claude-chat');
   await fs.writeFile(path.join(vault, '.obsidian/community-plugins.json'), JSON.stringify(['claude-chat'])).catch(async () => { await fs.mkdir(path.join(vault, '.obsidian'), { recursive: true }); await fs.writeFile(path.join(vault, '.obsidian/community-plugins.json'), JSON.stringify(['claude-chat'])); });
   await fs.cp(plugSrc, path.join(vault, '.obsidian/plugins/claude-chat'), { recursive: true, filter: s => !/[\\/](chat|imports\.json)([\\/]|$)/.test(s.slice(plugSrc.length)) });
 

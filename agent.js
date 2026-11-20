@@ -30,9 +30,12 @@ module.exports = function createAgent(h) {
   const norm = p => p.replace(/\\/g, '/');
   const today = () => { const d = new Date(); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`; };
   const MANIFEST = '.obsidian/plugins/claude-chat/imports.json';
-  const INBOX = 'Claude Inbox.md';
-  const BRAIN = 'Claude Brain';
-  const NO_WRITE = /^(\.|My Brain(\/|$)|我的大脑知识库(\/|$))|\/\./;
+  const INBOX = 'Claude Inbox.md'; // file name kept from earlier versions, so existing captures stay where they are
+  // The study record folder and the read-only folders come from Study settings (set per job in handle()).
+  let BRAIN = 'Claude Brain';
+  const BUILTIN_NO_WRITE = ['My Brain', '我的大脑知识库'];
+  let readOnly = BUILTIN_NO_WRITE.slice();
+  const NO_WRITE = { test: rel => /^\.|\/\./.test(rel) || readOnly.some(f => { const a = low(rel), b = low(f.replace(/\/+$/, '')); return a === b || a.startsWith(b + '/'); }) };
   const MAX_BYTES = 300 * 1024 * 1024;
   const DOC_EXT = /\.(pdf|pptx?|docx?)$/i, NOTE_EXT = /\.md$/i, OFFICE = /\.(pptx?|docx?)$/i;
   const SKIP_DIR = /^(\.git|\.vscode|node_modules|Videos?|Practice|artifacts|build|dist|out|bin|obj|__pycache__|\.venv|venv|env|\.idea|\.obsidian|\.trash)$/i;
@@ -158,6 +161,9 @@ module.exports = function createAgent(h) {
 
   /* ---------- the model loop (OpenAI-compatible providers and Anthropic) ---------- */
   async function loop(run, opts) {
+    if (run.settingsBlock) opts = { ...opts, system: opts.system + '\n\n' + run.settingsBlock };
+    // The study record folder has the name chosen in Study settings.
+    if (BRAIN !== 'Claude Brain') opts = { ...opts, system: opts.system.split('Claude Brain').join(BRAIN), user: String(opts.user).split('Claude Brain').join(BRAIN) };
     if (run.fw) return frameworkLoop(run, opts);
     return apiLoop(run, opts);
   }
@@ -397,7 +403,9 @@ module.exports = function createAgent(h) {
   async function readManifest() {
     try { return { imported: {}, ignored: {}, ...JSON.parse(await fsp.readFile(inVault(MANIFEST), 'utf8')) }; } catch { return { imported: {}, ignored: {} }; }
   }
-  async function scan(sb, extras, progress) {
+  async function scan(sb, extras, progress, opts = {}) {
+    const recentDays = Math.max(1, +opts.recentDays || 180);
+    const recentFolders = (Array.isArray(opts.recentFolders) && opts.recentFolders.length ? opts.recentFolders : ['Downloads', 'Desktop', 'Documents']).map(String);
     const manifest = await readManifest();
     const key = p => norm(p).toLowerCase();
     const bySize = new Set(), pdfNames = new Set(), folders = [];
@@ -444,7 +452,7 @@ module.exports = function createAgent(h) {
         if (!DOC_EXT.test(e.name) && !(course && NOTE_EXT.test(e.name))) continue;
         const st = await fsp.stat(p).catch(() => null);
         if (!st || st.size === 0 || st.size > MAX_BYTES) continue;
-        if (recentOnly && Date.now() - st.mtimeMs > 180 * 864e5) continue;
+        if (recentOnly && Date.now() - st.mtimeMs > recentDays * 864e5) continue;
         await consider(p, st, course, course ? norm(path.relative(base, p)) : null);
       }
     }
@@ -464,7 +472,7 @@ module.exports = function createAgent(h) {
     }
     if (extras) {
       const home = require('os').homedir();
-      for (const d of ['Downloads', 'Desktop', 'Documents']) { progress({ step: 'scan', path: norm(path.join(home, d)) }); await walk(path.join(home, d), null, null, { recentOnly: true, maxDepth: 2 }); }
+      for (const d of recentFolders) { progress({ step: 'scan', path: norm(path.join(home, d)) }); await walk(path.resolve(home, d), null, null, { recentOnly: true, maxDepth: 2 }); }
     }
     // The same file found twice: keep the course-folder one.
     const seen = new Map();
@@ -497,7 +505,7 @@ Write reasons, questions and the note in ${lang}.`;
       note: { type: 'string' } } } };
 
   async function importPlan(run) {
-    const { candidates, counts, folders, hints } = await scan(run.sb, !!run.body.extras, run.progress);
+    const { candidates, counts, folders, hints } = await scan(run.sb, !!run.body.extras, run.progress, run.body);
     if (!candidates.length) return { job: 'import', empty: true, counts, items: [], ignore: [], questions: [] };
     const shown = candidates.slice(0, 300);
     const user = `Today: ${today()}\n\n<candidates>\n${shown.map((c, i) => JSON.stringify({ id: i, ...c })).join('\n')}\n</candidates>\n` +
@@ -814,7 +822,21 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
     res.on('close', () => { if (!res.writableFinished) ctl.abort(); });
     res.writeHead(200, { 'Content-Type': 'application/x-ndjson; charset=utf-8', 'Cache-Control': 'no-store' });
     const line = o => { if (!res.writableEnded) res.write(JSON.stringify(o) + '\n'); };
-    const run = { provider, fw, key, body: { ...body, model }, model, sb: cleanRoots(body), langName: LANG_NAMES[body.lang] || 'English',
+    // Study settings decide the folders, not the request: course folders, left-out names, "look elsewhere", the
+    // study record folder, read-only folders and the language notes are written in. Same for every AI.
+    // (Before Study settings were ever saved, e.g. a caller of this API without the app, the request's own folders
+    // are used, as in earlier versions; the app saves them on its first start.)
+    const prof = h.study ? await h.study.load() : null;
+    if (prof) {
+      body.roots = prof.courseRoots; body.skip = prof.skipFolders; body.extras = prof.lookElsewhere;
+      body.recentFolders = prof.recentFolders; body.recentDays = prof.recentDays;
+      BRAIN = prof.brainFolder || 'Claude Brain';
+      readOnly = [...BUILTIN_NO_WRITE, ...prof.readOnlyFolders];
+    }
+    const uiName = LANG_NAMES[body.lang] || 'English';
+    const run = { provider, fw, key, body: { ...body, model }, model, sb: cleanRoots(body), prof,
+      langName: prof ? h.PROFILE.outputLanguage(body.job === 'brain' ? 'brain' : body.job, prof, uiName) : uiName,
+      settingsBlock: prof ? h.PROFILE.promptBlock(body.job, prof, h.study.file()) : '',
       signal: ctl.signal, seen: new Map(), edited: [], progress: p => line({ progress: p }) };
     try {
       let result;

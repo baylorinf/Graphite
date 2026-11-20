@@ -250,7 +250,10 @@ function createWindow(url) {
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false },
   });
   if (cfg.maximized) win.maximize();
-  win.once('ready-to-show', () => { if (SELFTEST) win.showInactive(); else win.show(); });
+  win.once('ready-to-show', () => {
+    if (!SELFTEST) win.show();
+    else if (!process.argv.includes('--selftest-hidden')) win.showInactive();
+  });
 
   const origin = new URL(url).origin;
   // Links: external pages open in the normal browser, vault attachments in their default program.
@@ -325,9 +328,12 @@ function createWindow(url) {
         const failed = [];
         for (const u of unsaved) {
           const name = String(u.path).split('/').pop() || 'note.md';
+          const ext = path.extname(name), stem = path.basename(name, ext);
           let dest = path.join(pick.filePaths[0], name), i = 1;
-          while (fs.existsSync(dest)) dest = path.join(pick.filePaths[0], name.replace(/(\.md)?$/i, ` (${++i})$1`));
-          try { fs.writeFileSync(dest, u.text, { flag: 'wx' }); } catch (err) { failed.push(name + ': ' + err.message); }
+          while (fs.existsSync(dest)) dest = path.join(pick.filePaths[0], `${stem} (${++i})${ext}`);
+          const ending = u.eol === 'CRLF' ? '\r\n' : u.eol === 'CR' ? '\r' : '\n';
+          const content = u.eol ? (u.bom ? '\uFEFF' : '') + u.text.replace(/\n/g, ending) : u.text;
+          try { fs.writeFileSync(dest, content, { flag: 'wx' }); } catch (err) { failed.push(name + ': ' + err.message); }
         }
         if (failed.length) { await dialog.showMessageBox(win, { type: 'error', title: t('unsavedTitle'), message: t('unsavedCopyFailed'), detail: failed.join('\n') }); continue; }
         quitting = true; win.destroy(); return; // copies are safe; the drafts also stay for next start

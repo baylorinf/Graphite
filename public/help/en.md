@@ -114,7 +114,9 @@ $$
 | Bold / Italic / Link | `Ctrl+B` / `Ctrl+I` / `Ctrl+K` |
 | Indent / Outdent | `Tab` / `Shift+Tab` |
 | Settings | `Ctrl+,` |
-| This guide | `F1` |
+| Save a code file | `Ctrl+S` |
+| Find in a code file | `Ctrl+F` |
+| This guide and the feature manual | `F1` |
 
 ## Review and memory
 Graphite helps you remember what you write. Your notes turn into questions automatically:
@@ -127,21 +129,42 @@ Graphite helps you remember what you write. Your notes turn into questions autom
 
 **Quiz:** the graduation cap at the top (`Ctrl+Shift+K`) quizzes you on the open note. With AI turned on, the AI adds its own questions about the note; they are written once per version of the note. When you leave a note you just wrote in, a small card offers **Check** or **Quiz me**. Both are also in the right-click menu.
 
-**Choosing the AI:** in **Settings → AI**, each job (Check, Quiz questions, Chat panel, Revision plans, Exam analysis, Tidy format) has its own choice. **Claude Code** uses the Claude window on this computer and needs no key, but only works while that window is connected (say "connect to Graphite" in it). **API models** work any time with your own key: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek, Qwen, Kimi, GLM, or any OpenAI-compatible service. Paste a key under **API keys** and press **Test the key**, which also loads that provider's current models. Keys stay on this computer, and only the note or paper for a job is sent, to that provider only. Check and the chat panel also have a menu to switch AI right where you use them.
-
 **Revision plan:** on the Review page (or the command palette), **Make a revision plan**. Enter the exam, its date, what is examined, tick the folders in range and set minutes per day. The AI plans every day up to the exam, weakest and due topics first, and saves the plan with checkboxes in `<Course>/复习计划 Review Plans`.
 
 **Exam paper analysis:** **Analyse an exam paper** on the Review page, or right-click a PDF or note in the file list. The AI lists every problem with its topic and your matching note, explains what went wrong if your answers or marks are on the paper, and adds suggestions and a plan, saved in `<Course>/考试分析 Exam Analysis`. For scanned PDFs, choose Claude Code.
 
 **Tidy format:** the 🪄 button at the top (`Ctrl+Shift+Y`) makes the open note follow the format of the other notes in its folder: frontmatter, headings, numbering, source and Related lines. Your content stays the same; you see a before/after preview first, and `Ctrl+Z` undoes it.
 
-**Study pages:** the interactive review pages are in each course's `学习页面 Study Pages` folder. Click one in the file list (or a link to it) to open it as a 🎓 tab.
+**Study pages:** the interactive review pages are in each course's study materials folder (by default `学习页面 Study Pages`). Click one in the file list (or a link to it) to open it as a 🎓 tab.
+
+**Mistake book and PDF cards:** on the Review page, search the mistake book or PDF cards by question or source. While redoing a mistake, open the original page and use **Return to review** to keep writing. You can also resume an unfinished answer after restarting Graphite.
 
 **Word and PowerPoint:** `.docx` files open as a readable page (press **Exact layout** to see them exactly as Word prints them). `.doc`, `.ppt` and `.pptx` files open as a PDF made by your installed Word or PowerPoint, with page numbers, zoom, search and "Link to a page…"; the first time takes a few seconds, after that they open instantly. **Save PDF copy** puts a PDF next to the original.
 
 **Daily review:** the brain button in the left ribbon (`Alt+R`) shows how many questions are due. Rate each answer **Again**, **Hard**, **Good** or **Easy**. The app then schedules the next review just before you would forget (spaced repetition).
 
 **Related notes:** the right sidebar suggests notes on similar topics that aren’t linked yet. Click **Link** to connect them.
+
+## Study with AI: who does the work, and Study settings
+Graphite's study features carry Graphite's own names: the **Graphite study assistant** (the chat on the right), **Graphite Capture** (✦ mark something unfamiliar or interesting, then file it into your notes), **Graphite practice & quizzes**, and Check, revision plans, exam analysis, mock papers, Tidy format, **Summarize this PDF** and Find new course files. The AI that does the work is the **executor** ("Run by"), chosen per job in **Settings → AI**:
+
+- **Claude Code**: the Claude Code window on this computer. No key; works while that window is connected (say "connect to Graphite" in it). Its skills and hooks are installed in **Settings → Claude Code**.
+- **Local frameworks**: **DeepSeek Harness**, **Codex CLI** and others, started by Graphite on this computer; they read the files themselves (read-only). Whether each is installed, its version and a custom path are under **Settings → AI → Local frameworks**. DeepSeek Harness uses your DeepSeek key.
+- **API models**: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek, Qwen, Kimi, GLM, or any OpenAI-compatible service. Paste a key under **API keys** and press **Test the key**. Only the note or PDF text of a job is sent, to that provider only.
+
+The study assistant shows "Run by …" in its header and under every answer; switching the executor never renames the feature.
+
+**Study settings:** **Settings → Study settings** keeps your course folders, course names (e.g. `LA = Linear Algebra`), folders to leave out, "also look elsewhere" (recent Downloads/Desktop/Documents), read-only folders, the study record folder, the study materials folder, a few words about you, and your chat, reading and note languages. Save once: every executor uses the same settings (kept on this computer in `~/.graphite/study.json`, which local agents added later can read too), and each job gets only what it needs: imports use the course folders and left-out names, filing captures uses the read-only and study record folders, notes an AI writes use your note language. The settings never widen what an AI may read or write. When you update from an earlier version, the values from the old Settings → AI and Settings → Claude Code pages are combined; where they differed both are kept and listed at the top of Study settings for you to check.
+
+## Summarize a PDF
+Press **Summarize** in the PDF toolbar, or right-click a PDF in the file tree and choose **Summarize this PDF** (also in the command palette). You can summarize some pages only: leave the field empty for all pages; `0`, a page past the end or a range running past it is refused and nothing is sent. The summary is saved in the PDF's folder by default; if the PDF was imported from a course folder outside the vault, or sits in a folder named by a course code, the mapped course folder is offered too. Read-only folders can't be chosen.
+
+The result is an editable Markdown note: an overview, the main points by section, key concepts and formulas, each followed by a `p. N` link that opens the PDF at that page. The preview shows where it will be saved; nothing is written until you press **Save**. If a summary with that name already exists, choose **Save as a new note** or, explicitly, **Update the existing note** (with one more warning if you edited it by hand). Scanned pages have no text an API model could read: choose Claude Code or a local framework. **Stop**, or a failed save, never changes an existing note.
+
+## Lecture beside notes, and the code editor
+**PDF beside notes:** open a lecture or a note and select **PDF beside notes** in the top bar. Choose the other document. While writing, use **Cite this page** to insert a link to the page on screen. Graphite remembers the lecture and page for this vault.
+
+**Code editor:** open a `.cpp`, `.h`, `.py` or other supported source file in the file tree, or choose **New code file** to begin an exercise. Edit it directly, search with `Ctrl+F`, indent a selection with `Tab` / `Shift+Tab` and save with `Ctrl+S` (the file's encoding and line endings stay as they were). **Copy line link** gives a link like `[[main.cpp#L42]]` for your solution note; clicking it later opens that line. If another program edits the same file, **Save a copy** keeps your version separately. Compiling and running code take place in your usual development environment.
 
 ## Syncing across devices
 Graphite syncs through a cloud folder. Put your vault inside OneDrive (built into Windows), Dropbox, Google Drive or iCloud Drive, and open the same folder on each computer. **Settings → Sync** shows whether your vault is synced and where your cloud folders are.
