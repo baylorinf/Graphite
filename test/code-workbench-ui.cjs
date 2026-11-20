@@ -438,6 +438,23 @@ async function main() {
     assert.ok(await p.locator(`${wb} .CodeMirror`).count() <= 1);
   });
 
+  await test('the Study / Code buttons speak the window language from the start, after switching language and after a restart', async p => {
+    const names = () => p.evaluate(() => [...document.querySelectorAll('#app-mode [data-mode]')].map(b => b.textContent));
+    assert.deepEqual(await names(), ['学习', '代码']);
+    // Switch the language with the language picker while in code mode: the buttons follow at once.
+    await p.evaluate(() => window.__fake.set('proj', { id: 'ext-1', workspaceId: 'ws-A', name: 'proj', root: 'C:/fake/proj' }));
+    await p.getByRole('button', { name: '代码', exact: true }).click();
+    await p.evaluate(() => window.app.commands.executeCommandById('language'));
+    await p.locator('#modal-input').fill('English');
+    await p.keyboard.press('Enter');
+    await p.waitForFunction(() => document.querySelector('#app-mode [data-mode=study]')?.textContent === 'Study');
+    assert.deepEqual(await names(), ['Study', 'Code']);
+    assert.equal(await p.getByRole('button', { name: 'Code', exact: true }).getAttribute('aria-pressed'), 'true');
+    // (This page sets Chinese again on every load: the restart below checks that the start shows Chinese.)
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    assert.deepEqual(await names(), ['学习', '代码']);
+  }, { lang: 'zh-CN' });
+
   /* ---------- code mode: Study / Code, assistant, run choices, shortcuts, workspaces, fonts ---------- */
   const modeBtn = (p, name) => p.getByRole('button', { name, exact: true });
   const cmOf = p => p.locator(`${wb} .wb-cm .CodeMirror`);

@@ -2812,6 +2812,7 @@ TABS.providers.set(codeWorkbench.id, codeWorkbench);
 let lastStudyTab = null;
 const isCodeTab = tab => tab?.kind === 'custom' && tab.provider === codeWorkbench.id;
 function updateMode() {
+  relabelMode(); // also after the saved language has loaded at start
   const tab = activeTab(), code = isCodeTab(tab);
   if (tab && !code) lastStudyTab = tab.id;
   document.body.classList.toggle('mode-code', code);
