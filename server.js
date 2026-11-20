@@ -265,7 +265,7 @@ function compatCaller(provider, key, body) {
   return { P, name, call };
 }
 
-async function compatTask(provider, key, body) {
+async function compatTask(provider, key, body, signal) {
   const { P, name, call } = compatCaller(provider, key, body);
   if (body.task === 'test') {
     let models = [];
@@ -296,7 +296,7 @@ async function compatTask(provider, key, body) {
   const plain = { model, messages, [tokens]: 16000 };
   for (let attempt = 0; attempt < 3; attempt++) {
     let r;
-    try { r = await call('/chat/completions', { method: 'POST', body: JSON.stringify(attempt === 0 ? full : plain) }); }
+    try { r = await call('/chat/completions', { method: 'POST', body: JSON.stringify(attempt === 0 ? full : plain), signal }); }
     catch (e) { if (attempt === 0 && (e.raw === 400 || e.raw === 422)) continue; throw e; } // optional fields not supported: retry without
     const choice = r.choices && r.choices[0];
     if (choice && choice.finish_reason === 'length') throw new HttpError(422, 'The answer was too long; try a shorter note');
@@ -329,7 +329,7 @@ function anthropicError(e, model) {
   if (e instanceof Anthropic.APIError) return new HttpError(502, `Anthropic error ${e.status ?? ''}: ${e.message}`);
   return e;
 }
-async function anthropicTask(key, body) {
+async function anthropicTask(key, body, signal) {
   const client = anthropicClient(key);
   const Anthropic = anthropicSDK();
   const model = String(body.model || '').trim() || ANTHROPIC_DEFAULT;
@@ -354,8 +354,8 @@ async function anthropicTask(key, body) {
     // Opus and Sonnet 5.5: if a safety check declines, Anthropic retries on a suitable model automatically.
     const fallback = /^claude-(opus|sonnet)-5-5$/.test(model);
     const r = fallback
-      ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' })
-      : await client.messages.create(params);
+      ? await client.beta.messages.create({ ...params, betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' }, { signal })
+      : await client.messages.create(params, { signal });
     if (r.stop_reason === 'refusal') throw new HttpError(422, 'Claude declined to answer this');
     if (r.stop_reason === 'max_tokens') throw new HttpError(422, 'The answer was too long; try a shorter note');
     const text = r.content.filter(b => b.type === 'text').map(b => b.text).join('');
@@ -873,6 +873,18 @@ async function api(req, res, u) {
   // Which cloud service (if any) the vault lives in, and which ones exist on this PC.
   if (route === 'sync-info' && m === 'GET') return send(res, 200, await syncInfo());
   if (route === 'ai' && m === 'POST') return send(res, 200, await aiTask(req));
+  if (route === 'code-assistant' && m === 'POST') {
+    const input = JSON.parse((await readBody(req, 1024 * 1024)).toString('utf8') || '{}');
+    const controller = new AbortController();
+    res.once('close', () => { if (!res.writableFinished) controller.abort(); });
+    if (res.destroyed) controller.abort();
+    try {
+      const answer = await require('./code-assistant')({ input, key: req.headers['x-ai-key'] || '', signal: controller.signal,
+        vault: VAULT, frameworks, compat: COMPAT, compatTask, anthropicTask, languages: LANG_NAMES, atomicWrite, HttpError });
+      if (!controller.signal.aborted) return send(res, 200, answer);
+    } catch (error) { if (!controller.signal.aborted) throw error; }
+    return;
+  }
   if (route === 'local-ai' && m === 'POST') return send(res, 200, await localAiTask(req, res));
   // Which local frameworks are installed. A custom program path can only come with a POST from the app itself
   // (X-Vault, like every other change), and must name the program (dsh / codex): a web page can't make

@@ -51,6 +51,7 @@
     "files": [
       "electron/**",
       "server.js",
+      "code-assistant.js",
       "code-projects.js",
       "canvas-*.js",
       "agent.js",
