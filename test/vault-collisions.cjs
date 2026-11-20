@@ -54,6 +54,13 @@ async function main() {
       assert.equal((await fs.readdir(vault)).some(name=>name.startsWith('.graphite-create-')),false);
     } finally { fs.link=realLink; }
     console.log('PASS exclusive creation also keeps the winner and cleans up on a drive without hard links');
+    await fs.writeFile(path.join(vault,'Grade 100%.md'),'final grade');
+    const link=tail=>fetch('http://127.0.0.1:'+port+'/vault/'+tail,{headers:{'X-App-Token':'fixture'}});
+    for(const url of ['Grade%20100%25.md','Grade%20100%.md']){
+      const response=await link(url);assert.equal(response.status,200);assert.equal(await response.text(),'final grade');
+    }
+    assert.equal((await link('broken%E4.md')).status,400);
+    console.log('PASS encoded and literal percent in filenames, invalid UTF-8 in a URL reports a client error');
     const bytes = Array.from({length:10},(_,i)=>Buffer.from([i,0,255,7]));
     const uploads = await Promise.all(bytes.map(b=>call('upload','附件/题图 一.png','POST',b)));
     for (const r of uploads) assert.equal(r.status,200);

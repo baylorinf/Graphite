@@ -1072,15 +1072,18 @@ const server = http.createServer(async (req, res) => {
       return await api(req, res, u);
     }
     if (LIBS[u.pathname]) return serveFile(res, LIBS[u.pathname]);
+    let decoded;
+    try { decoded = decodeURIComponent(u.pathname.replace(/%(?![a-f\d]{2})/gi, '%25')); }
+    catch { throw new HttpError(400, 'Invalid character encoding in the file link'); }
     if (u.pathname.startsWith('/lib/katex/')) { // KaTeX math: scripts, stylesheet and fonts
       const base = path.join(NM, 'katex', 'dist');
-      const abs = path.resolve(base, '.' + decodeURIComponent(u.pathname.slice('/lib/katex'.length)));
+      const abs = path.resolve(base, '.' + decoded.slice('/lib/katex'.length));
       if (!abs.startsWith(base + path.sep)) throw new HttpError(404, 'Not found');
       return serveFile(res, abs);
     }
     if (u.pathname.startsWith('/lib/pdfjs/')) { // PDF.js: the PDF viewer, its worker, fonts and character maps
       const base = path.join(NM, 'pdfjs-dist');
-      const abs = path.resolve(base, '.' + decodeURIComponent(u.pathname.slice('/lib/pdfjs'.length)));
+      const abs = path.resolve(base, '.' + decoded.slice('/lib/pdfjs'.length));
       const top = path.relative(base, abs).split(path.sep)[0];
       if (!['build', 'web', 'cmaps', 'standard_fonts', 'wasm', 'iccs'].includes(top) || abs.endsWith('.map')) throw new HttpError(404, 'Not found');
       return serveFile(res, abs);
@@ -1088,7 +1091,7 @@ const server = http.createServer(async (req, res) => {
     const icon = u.pathname.match(/^\/lib\/lucide\/([a-z0-9-]+)\.svg$/);
     if (icon) return serveFile(res, path.join(LUCIDE, icon[1] + '.svg'));
     if (u.pathname.startsWith('/vault/')) {
-      const abs = inVault(decodeURIComponent(u.pathname.slice(7)));
+      const abs = inVault(decoded.slice(7));
       const rel = path.relative(VAULT, abs).split(path.sep);
       if (rel[0]?.toLowerCase() === 'canvas' && /\.(html?|xhtml|xml|svg|js|mjs)$/i.test(abs)) {
         // Downloaded course materials are third-party documents, served outside the app's execution context.
@@ -1097,8 +1100,7 @@ const server = http.createServer(async (req, res) => {
       }
       return serveFile(res, abs, req);
     }
-    let p = decodeURIComponent(u.pathname);
-    if (p === '/') p = '/index.html';
+    const p = decoded === '/' ? '/index.html' : decoded;
     const abs = path.resolve(PUBLIC, '.' + p);
     if (!abs.startsWith(PUBLIC + path.sep)) throw new HttpError(404, 'Not found');
     return serveFile(res, abs);
