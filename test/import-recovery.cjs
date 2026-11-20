@@ -24,13 +24,13 @@ async function fixture(t) {
   const state={calls:[],error:'outside'};
   const exists=async p=>!!(await fs.stat(p).catch(()=>null));
   const config={
-    vault:()=>vault, inVault:rel=>path.join(vault,rel), toRel:p=>path.relative(vault,p).split(path.sep).join('/'), exists,
+    vault:()=>state.activeVault || vault, inVault:rel=>path.join(vault,rel), toRel:p=>path.relative(vault,p).split(path.sep).join('/'), exists,
     HttpError, COMPAT:{}, LANG_NAMES:{}, readBody:async req=>Buffer.from(JSON.stringify(req.body)),
     withFileLock:(_,f)=>f(), atomicWrite:(file,data)=>state.writeManifest ? state.writeManifest(file,data) : put(file,data),
     officeToPdf:async (source,pdf)=>state.convert ? state.convert(source,pdf) : put(pdf,Buffer.concat([Buffer.from('%PDF-1.4\n'),await fs.readFile(source)])),
     uniquePath:async file=>{ const ext=path.extname(file), stem=file.slice(0,-ext.length); let target=file, n=1;
       while(await exists(target)) target=stem+' ('+(++n)+')'+ext;return target; },
-    study:{load:async()=>({courseRoots:[courses],courses:{M:'Math'},skipFolders:[],readOnlyFolders:['Protected'],lookElsewhere:false}),file:()=>''},
+    study:{load:async()=>({courseRoots:state.courseRoots || [courses],courses:{M:'Math'},skipFolders:[],readOnlyFolders:state.readOnly || ['Protected'],lookElsewhere:false}),file:()=>''},
     PROFILE:{outputLanguage:()=> 'English',promptBlock:()=>''},
     frameworks:{ids:['codex','dsh'],run:async (id,options)=>{
       state.calls.push(id);
@@ -162,6 +162,22 @@ test('old import records require matching content, honor explicit ignores and re
 });
 
 const nativeScan={framework:null,provider:'graphite',phase:'plan',planning:'manual',lang:'zh-CN'};
+
+test('independently confirmed previews reuse a matching copy but keep later student edits',async t=>{
+  const f=await fixture(t);
+  const plans=await Promise.all([f.request(nativeScan),f.request(nativeScan),f.request(nativeScan)]);
+  async function confirm({result:plan}) {
+    const index=plan.items.findIndex(item=>item.name==='new.md');
+    return (await f.request({...nativeScan,phase:'apply',planId:plan.planId,accept:[index]})).result.done[0].dest;
+  }
+  const first=await confirm(plans[0]);
+  assert.equal(await confirm(plans[1]),first);
+  await f.put(path.join(f.vault,first),'student revision');
+  const copy=await confirm(plans[2]);
+  assert.notEqual(copy,first);
+  assert.equal(await fs.readFile(path.join(f.vault,first),'utf8'),'student revision');
+  assert.equal(await fs.readFile(path.join(f.vault,copy),'utf8'),'xyz');
+});
 const nativeApply=(p,indices)=>({...nativeScan,phase:'apply',planId:p.planId,accept:indices});
 const brokenOffice=input=>{const app=/\.pptx?$/i.test(input)?'PowerPoint':'Word';
   throw Object.assign(new Error(app+' · '+path.basename(input)+'：模拟转换器无法打开该文件\nlong diagnostic'),{code:'officeOpenFailed'});};
@@ -247,6 +263,188 @@ test('framework confirms exact staged Office bytes and preserves its other selec
   assert.deepEqual(await fs.readFile(path.join(f.vault,office.originalDest)),await fs.readFile(f.source('Lecture.docx')));
   assert.equal(await fs.readFile(path.join(f.vault,'Math','new.md'),'utf8'),'xyz');
   assert.equal(await fs.readFile(path.join(f.vault,'Math','Lecture.pdf'),'utf8'),'old unrelated PDF');
+});
+
+async function frameworkImport(t) {
+  const f=await fixture(t);
+  const documents=new Map([['A.md','locked source'],['B.md','good source'],['C.md','left unticked']]);
+  for (const [name,content] of documents) await f.put(f.source(name),content);
+  const locked=new Set(), writes=[];
+  const io=require('node:fs'), {Readable}=require('node:stream'), open=io.createReadStream;
+  t.mock.method(io,'createReadStream',function(file,options) {
+    if (locked.has(file)) return Readable.from((async function*(){
+      yield Buffer.from('partial input');
+      throw Object.assign(new Error('sharing violation'),{code:'EBUSY'});
+    })());
+    return open.call(this,file,options);
+  });
+  f.state.frameworkRun=async options=>{
+    if (options.mode==='read') {
+      const items=[];
+      for (const m of options.prompt.matchAll(/\{"id":(\d+),[^\n]*?"name":"([^"]+)"/g)) {
+        if (documents.has(m[2])) items.push({id:Number(m[1]),dest:'Math/'+m[2]});
+      }
+      return {result:{items},reads:[]};
+    }
+    const inputDir=(await fs.readdir(options.cwd)).find(entry=>entry.startsWith('.graphite-inputs-'));
+    const steps=[...options.prompt.matchAll(/\d+\. Copy the file "([^"]+)" to "([^"]+)"/g)];
+    const stagedInputs=await fs.readdir(path.join(options.cwd,inputDir));
+    assert.deepEqual(stagedInputs.sort(),steps.map(m=>path.basename(m[1])).sort());
+    assert.deepEqual(options.allow.roots,[options.cwd]);
+    writes.push(steps.map(m=>m[2]));
+    for (const m of steps) {
+      assert.equal(path.isAbsolute(m[1]),false);
+      await f.put(path.join(options.cwd,m[2]),await fs.readFile(path.join(options.cwd,m[1])));
+    }
+    await f.state.afterWrite?.(options);
+    return {};
+  };
+  const plan=async()=> (await f.request({phase:'plan'})).result;
+  const apply=(p,names,progress)=>f.request({phase:'apply',lang:'zh-CN',planId:p.planId,
+    accept:p.items.flatMap((it,i)=>names.includes(it.name)?[i]:[])},progress);
+  const saved=name=>path.join(f.vault,'Math',name);
+  return {...f,locked,writes,plan,apply,saved};
+}
+
+test('after confirmation a busy source fails individually; rescan retries only that source with the same framework',async t=>{
+  const f=await frameworkImport(t);
+  const first=await f.plan();
+  assert.deepEqual(first.items.map(i=>i.name).sort(),['A.md','B.md','C.md']);
+  assert.deepEqual(f.writes,[]);assert.equal(await f.exists(f.saved('B.md')),false);
+  const cancelled=await f.apply(first,[]);
+  assert.deepEqual(cancelled.result.done,[]);assert.deepEqual(f.writes,[]);
+  const confirmed=await f.plan();
+  f.locked.add(f.source('A.md'));
+  const {result}=await f.apply(confirmed,['A.md','B.md']);
+  assert.equal(result.framework,'codex');assert.deepEqual(result.done.map(i=>i.name),['B.md']);
+  assert.deepEqual(result.failed,[{src:confirmed.items.find(it=>it.name==='A.md').src,name:'A.md',dest:'Math/A.md',code:'sourceBusy',error:'来源文件正被占用，关闭后可重试。'}]);
+  assert.deepEqual(f.writes,[['Math/B.md']]);assert.equal(await fs.readFile(f.saved('B.md'),'utf8'),'good source');
+  assert.equal(await f.exists(f.saved('A.md')),false);assert.equal(await f.exists(f.saved('C.md')),false);
+  f.locked.clear();
+  const retry=await f.plan();
+  assert.deepEqual(retry.items.map(i=>i.name).sort(),['A.md','C.md']);
+  const {result:finished}=await f.apply(retry,['A.md']);
+  assert.equal(finished.framework,'codex');assert.deepEqual(finished.failed,[]);
+  assert.deepEqual(f.writes,[['Math/B.md'],['Math/A.md']]);assert.equal(await fs.readFile(f.saved('A.md'),'utf8'),'locked source');
+  assert.deepEqual((await fs.readdir(path.dirname(f.saved('B.md')))).filter(n=>/^[ABC]/.test(n)).sort(),['A.md','B.md']);
+  assert.deepEqual([...new Set(f.state.calls)],['codex']);
+});
+
+test('all selected sources unavailable reports every file without running the framework writer',async t=>{
+  const f=await frameworkImport(t), plan=await f.plan();
+  f.locked.add(f.source('A.md'));await fs.unlink(f.source('B.md'));
+  const {result}=await f.apply(plan,['A.md','B.md']);
+  assert.deepEqual(result.done,[]);assert.equal(result.framework,'codex');
+  assert.deepEqual(Object.fromEntries(result.failed.map(it=>[it.name,it.code])),{'A.md':'sourceBusy','B.md':'sourceMissing'});
+  assert.ok(result.failed.every(it=>it.error && it.src && it.dest));assert.deepEqual(f.writes,[]);
+  assert.equal(result.retry.count,2);assert.equal(result.retry.framework,'codex');
+  assert.deepEqual(f.state.calls,['codex']);assert.equal(await f.exists(path.join(f.vault,'.obsidian')),false);
+});
+
+test('one-click retry preserves the confirmed executor and only imports failed items, even when new files arrive',async t=>{
+  const f=await frameworkImport(t), plan=await f.plan();
+  f.locked.add(f.source('A.md'));
+  const {result}=await f.apply(plan,['A.md','B.md']);
+  assert.equal(result.retry.count,1);assert.equal(result.retry.framework,'codex');
+  const resume={job:'import',phase:'resumeImport',recoveryId:result.retry.id};
+  assert.equal((await f.request({...resume,framework:null,provider:'graphite'})).status,409);
+  assert.equal((await f.request({...resume,framework:'dsh'})).status,409);
+  assert.equal((await f.request({...resume,accept:[0,1]})).status,400);
+  assert.equal((await f.request({...resume,destinations:{0:'Other/A.md'}})).status,400);
+  assert.equal((await f.reopen(resume)).status,410);
+  f.state.activeVault=path.join(f.vault,'different');
+  assert.equal((await f.request(resume)).status,409);f.state.activeVault=null;
+  await f.put(f.source('D.md'),'arrived after selection');
+  const busy=(await f.request(resume)).result;
+  assert.equal(busy.framework,'codex');assert.equal(busy.retry.count,1);assert.notEqual(busy.retry.id,result.retry.id);
+  assert.equal((await f.request(resume)).status,410);
+  f.locked.clear();
+  const results=await Promise.all([1,2].map(()=>f.request({...resume,recoveryId:busy.retry.id})));
+  assert.equal(results.filter(r=>r.status===410).length,1);
+  const {result:saved}=results.find(r=>r.result);
+  assert.deepEqual(saved.done.map(it=>it.dest),['Math/A.md']);assert.deepEqual(saved.failed,[]);assert.equal(saved.retry,undefined);
+  assert.deepEqual(f.writes,[['Math/B.md'],['Math/A.md']]);assert.equal(await f.exists(f.saved('C.md')),false);
+  assert.equal(await f.exists(f.saved('D.md')),false);assert.equal(await fs.readFile(f.saved('A.md'),'utf8'),'locked source');
+});
+
+test('source retry honors current grants, expiry and the original manual destination',async t=>{
+  const f=await frameworkImport(t);
+  const {result:plan}=await f.request(nativeScan), i=plan.items.findIndex(it=>it.name==='A.md');
+  f.locked.add(f.source('A.md'));
+  async function fail(plan,i) {
+    return (await f.request({...nativeApply(plan,[i]),destinations:{[i]:'Chosen/A.md'}})).result.retry;
+  }
+  const token=await fail(plan,i);
+  assert.equal(token.provider,'graphite');
+  const request={...nativeScan,phase:'resumeImport',recoveryId:token.id};
+  f.state.courseRoots=[];assert.equal((await f.request(request)).status,409);f.state.courseRoots=null;
+  f.state.readOnly=['Chosen'];assert.equal((await f.request(request)).status,400);f.state.readOnly=null;
+  f.locked.clear();
+  assert.deepEqual((await f.request(request)).result.done.map(it=>it.dest),['Chosen/A.md']);
+  assert.equal(await f.exists(f.saved('A.md')),false);
+  const pending=(await f.request(nativeScan)).result, b=pending.items.findIndex(it=>it.name==='B.md');
+  f.locked.add(f.source('B.md'));
+  const last=(await f.request(nativeApply(pending,[b]))).result.retry;
+  const later=Date.now()+3600_001;
+  t.mock.method(Date,'now',()=>later);
+  assert.equal((await f.request({...request,recoveryId:last.id})).status,410);
+  assert.equal(await f.exists(f.saved('B.md')),false);
+});
+
+test('retry after another scan already imported the same source preserves the existing copy and collisions',async t=>{
+  const f=await frameworkImport(t), plan=await f.plan();
+  f.locked.add(f.source('A.md'));
+  const {result:failed}=await f.apply(plan,['A.md']);
+  await f.put(f.saved('A.md'),'unrelated existing notes');f.locked.clear();
+  const {result:other}=await f.apply(await f.plan(),['A.md']);
+  assert.equal(other.done[0].dest,'Math/A 1.md');
+  const {result:retry}=await f.request({phase:'resumeImport',recoveryId:failed.retry.id});
+  assert.deepEqual(retry.done.map(it=>it.dest),['Math/A 1.md']);assert.deepEqual(retry.failed,[]);
+  assert.equal(await fs.readFile(f.saved('A.md'),'utf8'),'unrelated existing notes');
+  assert.equal(await fs.readFile(f.saved('A 1.md'),'utf8'),'locked source');
+  assert.equal(await f.exists(f.saved('A 2.md')),false);
+});
+
+test('a genuine framework failure remains separate from unavailable inputs and publishes nothing',async t=>{
+  const f=await frameworkImport(t), plan=await f.plan(); f.locked.add(f.source('A.md'));
+  f.state.afterWrite=()=>{throw Object.assign(new Error('framework unavailable'),{code:'auth',framework:'codex'});};
+  const failure=await f.apply(plan,['A.md','B.md']);
+  assert.equal(failure.code,'auth');assert.equal(failure.framework,'codex');assert.equal(failure.result,undefined);
+  assert.deepEqual(failure.failed.map(item=>[item.name,item.code]),[['A.md','sourceBusy']]);
+  assert.equal(failure.recovery,undefined);assert.equal(await f.exists(f.saved('B.md')),false);
+  assert.deepEqual(f.writes,[['Math/B.md']]);
+  // The app retains a failed runner's own stage for inspection.
+  if (failure.stage) await fs.rm(failure.stage,{recursive:true,force:true});
+});
+
+test('a source changed while the framework was copying is not recorded as a successful import',async t=>{
+  const f=await frameworkImport(t), plan=await f.plan();
+  f.state.afterWrite=()=>f.put(f.source('A.md'),'edited source');
+  const {result}=await f.apply(plan,['A.md','B.md']);
+  assert.deepEqual(result.done.map(it=>it.name),['B.md']);assert.deepEqual(result.failed.map(it=>it.code),['sourceChanged']);
+  assert.equal(await f.exists(f.saved('A.md')),false);assert.equal(await fs.readFile(f.saved('B.md'),'utf8'),'good source');
+  assert.ok((await f.plan()).items.some(it=>it.name==='A.md'));
+});
+
+test('a full staging disk is reported as a job error before the framework runs',async t=>{
+  const f=await frameworkImport(t), plan=await f.plan(), write=fs.writeFile;
+  t.mock.method(fs,'writeFile',async function(file,...args) {
+    if (path.basename(path.dirname(file)).startsWith('.graphite-inputs-')) {
+      throw Object.assign(new Error('staging disk full'),{code:'ENOSPC'});
+    }
+    return write.call(this,file,...args);
+  });
+  const failure=await f.apply(plan,['A.md','B.md']);
+  assert.equal(failure.code,'ENOSPC');assert.equal(failure.failed,undefined);
+  assert.deepEqual(f.writes,[]);assert.equal(await f.exists(f.saved('A.md')),false);assert.equal(await f.exists(f.saved('B.md')),false);
+});
+
+test('closing the import during the framework check prevents publication',async t=>{
+  const f=await frameworkImport(t), plan=await f.plan();
+  const failure=await f.apply(plan,['A.md','B.md'],(progress,res)=>{if(progress.step==='check')res.emit('close');});
+  assert.ok(failure.error);assert.equal(failure.result,undefined);
+  assert.equal(await f.exists(f.saved('A.md')),false);assert.equal(await f.exists(f.saved('B.md')),false);
+  assert.equal(await f.exists(path.join(f.vault,'.obsidian')),false);
 });
 
 test('source edits made during conversion are not recorded as the version initially imported',async t=>{

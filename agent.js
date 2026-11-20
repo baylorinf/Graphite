@@ -299,6 +299,31 @@ module.exports = function createAgent(h) {
     for await (const chunk of fs.createReadStream(abs, {signal})) digest.update(chunk);
     return digest.digest('hex');
   }
+  function sourceReadError(run, cause) {
+    run.signal.throwIfAborted();
+    const zh = /^zh/i.test(run.body.lang || '');
+    const [code,en,cn] = cause.code === 'EBUSY'
+      ? ['sourceBusy','The source is in use. Close it and retry.','来源文件正被占用，关闭后可重试。']
+      : ['ENOENT','ENOTDIR'].includes(cause.code)
+        ? ['sourceMissing','The source was moved or deleted. Restore it and retry.','来源文件已被移动或删除，恢复后可重试。']
+        : ['sourceUnreadable','The source could not be read. Check access and retry.','来源文件无法读取，请检查读取权限后重试。'];
+    return Object.assign(new Error(zh ? cn : en), {sourceIssue:code});
+  }
+  const failedImport = (item, error) => ({src:item.src, name:item.name, dest:item.dest, error:error.message, ...(error.sourceIssue ? {code:error.sourceIssue} : {})});
+  async function snapshotSource(run, src, input) {
+    const digest = crypto.createHash('sha256');
+    // Only source reads become per-file failures. Opening/writing the stage and an
+    // interrupted operation still fail the job; never hand a partial input to the CLI.
+    async function* chunks() {
+      try {
+        for await (const chunk of fs.createReadStream(src,{signal:run.signal})) {
+          digest.update(chunk); yield chunk;
+        }
+      } catch (e) { throw sourceReadError(run,e); }
+    }
+    await fsp.writeFile(input,chunks(),{flag:'wx',mode:0o600,signal:run.signal});
+    return digest.digest('hex');
+  }
   async function walkFiles(dir, base = dir, out = []) {
     for (const e of await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])) {
       const abs = path.join(dir, e.name);
@@ -324,23 +349,36 @@ module.exports = function createAgent(h) {
     // The selected framework can read its workspace even when its own file policy excludes the
     // course directory. Give it exactly the selected inputs, with no dependency on drive access.
     let inputsDir;
-    const inputs = new Map();
+    const sourceFailures = [];
     if (importCopies) {
       inputsDir = await fsp.mkdtemp(path.join(stage,'.graphite-inputs-'));
       try {
+        const ready = [];
         for (const [i,op] of ops.entries()) {
-          const src = await checkedSource(run,op.src);
-          const input = path.join(inputsDir,String(i)+path.extname(src));
-          await fsp.copyFile(src,input,fs.constants.COPYFILE_EXCL);
-          inputs.set(i,norm(path.relative(stage,input)));
+          run.signal.throwIfAborted();
+          const input = path.join(inputsDir,String(i)+path.extname(op.src));
+          try {
+            const src = await checkedSource(run,op.src,true);
+            const stagedHash = await snapshotSource(run,src,input);
+            ready.push({...op,stagedHash,input:norm(path.relative(stage,input))});
+          } catch(e) {
+            if (!e.sourceIssue) throw e;
+            await fsp.rm(input,{force:true});
+            sourceFailures.push(failedImport(op,e));
+          }
         }
+        if (!ready.length) {
+          await fsp.rm(stage,{recursive:true,force:true});
+          return {done:[],failed:sourceFailures,extra:[]};
+        }
+        ops = ready;
       } catch (e) {
         await fsp.rm(stage,{recursive:true,force:true});
         throw e;
       }
     }
     const steps = ops.map((o, i) => (o.kind === 'copy'
-      ? `${i + 1}. Copy the file "${inputs.get(i) || o.src}" to "${o.rel}" (relative to your working directory), byte for byte. Create the folders it needs.`
+      ? `${i + 1}. Copy the file "${o.input || o.src}" to "${o.rel}" (relative to your working directory), byte for byte. Create the folders it needs.`
       : `${i + 1}. Write the file "${o.rel}" (relative to your working directory) with exactly the text between the markers, replacing the file if it is there. Create the folders it needs.\n<<<GRAPHITE-FILE\n${o.content.replace(/\s*$/, '')}\nGRAPHITE-FILE>>>`));
     const prompt = ['You are carrying out changes the user has just confirmed in Graphite, a notes app.',
       `Your working directory is a temporary stage folder: ${stage}`,
@@ -358,6 +396,7 @@ module.exports = function createAgent(h) {
       });
     } catch (e) {
       e.stage = stage;
+      if (sourceFailures.length) e.sourceFailures = sourceFailures;
       if (importCopies && (e.code === 'outside' || e.code === 'agentPermission')) e.canResumeImport = true;
       if (e.code === 'stopped') await fsp.rm(stage,{recursive:true,force:true}).catch(()=>{});
       throw e;
@@ -375,7 +414,7 @@ module.exports = function createAgent(h) {
           problems.push(`${o.rel} is not a regular staged copy`); continue;
         }
         o.sourceHash = await fileHash(f);
-        if (o.sourceHash !== await fileHash(o.src)) problems.push(`${o.rel} is not an exact copy`);
+        if (o.sourceHash !== (o.stagedHash || await fileHash(o.src))) problems.push(`${o.rel} is not an exact copy`);
       }
       else if (normText(await fsp.readFile(f, 'utf8')) !== normText(o.content)) problems.push(`${o.rel} does not have the confirmed text`);
     }
@@ -393,7 +432,10 @@ module.exports = function createAgent(h) {
     const known = new Set([...ops.map(o => o.rel), ...freeBase.keys()].map(r => low(norm(r))));
     const extra = (await walkFiles(stage)).filter(r => !known.has(low(r)));
     if (importCopies) {
-      try { return { ...await importCopies(stage), extra }; }
+      try {
+        const result = await importCopies(stage,ops);
+        return {done:result.done, failed:[...sourceFailures,...result.failed], extra};
+      }
       finally { await fsp.rm(stage, {recursive:true,force:true}).catch(()=>{}); }
     }
     // Apply: only the confirmed changes; undo everything if one fails.
@@ -679,13 +721,16 @@ Write reasons, questions and the note in ${lang}.`;
       const it = plan.items[i], dest = Object.hasOwn(destinations,i) ? destinations[i] : it.dest;
       const to = checkManualDest(dest, path.posix.basename(it.dest));
       await realInVault(to);
-      if (!it.retryPreviewId) await checkedSource(run,it.src);
+      if (!it.retryPreviewId) {
+        try { await checkedSource(run,it.src,true); }
+        catch (e) { if (!e.sourceIssue) throw e; } // Report unavailable individual sources alongside the others at apply.
+      }
       items.push({...it,dest});
     }
     return items;
   }
 
-  async function checkedSource(run, src) {
+  async function checkedSource(run, src, individual = false) {
     const roots = run.sb.roots.slice();
     if (run.body.extras) {
       const home = os.homedir();
@@ -694,10 +739,17 @@ Write reasons, questions and the note in ${lang}.`;
         if (inside(recent, home) && recent !== home) roots.push(recent);
       }
     }
-    const current = await fsp.realpath(src).catch(()=>null);
-    if (!current || low(current) !== low(path.resolve(src)) || !roots.some(root=>inside(current, root)) || skipped(current, run.sb) ||
-        !(await fsp.lstat(src)).isFile()) throw new HttpError(409, 'A source is no longer available in the approved folders; scan again');
-    return current;
+    const unavailable = () => new HttpError(409, 'A source is no longer available in the approved folders; scan again');
+    const expected = path.resolve(src);
+    if (!roots.some(root=>inside(expected,root)) || skipped(expected,run.sb)) throw unavailable();
+    try {
+      const current = await fsp.realpath(src);
+      if (low(current) !== low(expected) || !(await fsp.lstat(src)).isFile()) throw unavailable();
+      return current;
+    } catch (e) {
+      if (e.status) throw e;
+      throw individual ? sourceReadError(run,e) : unavailable();
+    }
   }
 
   // Copy a file into the vault, never overwriting (a numbered name is used instead).
@@ -784,8 +836,8 @@ Write reasons, questions and the note in ${lang}.`;
     const dir = await fsp.mkdtemp(path.join(os.tmpdir(),'graphite-convert-'));
     try {
       const input = path.join(dir,'source'+path.extname(src)), pdf = path.join(dir,'preview.pdf');
-      await fsp.copyFile(src,input);
-      const snapshot = {input,pdf,size:(await fsp.stat(input)).size,sourceHash:await fileHash(input,run.signal)};
+      const sourceHash = await snapshotSource(run,src,input);
+      const snapshot = {input,pdf,size:(await fsp.stat(input)).size,sourceHash};
       return await work(snapshot);
     } finally { await fsp.rm(dir,{recursive:true,force:true}).catch(()=>{}); }
   }
@@ -948,23 +1000,51 @@ Write reasons, questions and the note in ${lang}.`;
   async function importFiles(run,chosen,stage) {
     const done = [], failed = [];
     for (const it of chosen) {
+      run.signal.throwIfAborted();
       run.progress({ step: 'copy', path: it.dest, i: done.length + failed.length + 1, n: chosen.length });
       try {
         if (it.retryPreviewId) { done.push(await retryPreview(run,it.retryPreviewId,it.dest)); continue; }
-        const source = await checkedSource(run,it.src);
+        const source = await checkedSource(run,it.src,true);
         const bytes = stage ? path.join(stage,it.rel) : source;
+        let sourceHash;
+        if (stage || it.kind !== 'convert') {
+          sourceHash = await fileHash(source,run.signal).catch(e=>{throw sourceReadError(run,e);});
+          if (stage && sourceHash !== it.stagedHash) {
+            const msg = /^zh/i.test(run.body.lang || '') ? '来源文件已更改，请重新扫描。' : 'The source changed. Scan again to import the latest version.';
+            throw Object.assign(new Error(msg),{sourceIssue:'sourceChanged'});
+          }
+        }
         if (it.kind === 'convert') { done.push({...await keepOffice(it,bytes,run),src:it.src,name:it.name}); continue; }
-        const st = await fsp.stat(source);
-        const sourceHash = await fileHash(bytes,run.signal);
+        const st = await fsp.stat(source).catch(e=>{throw sourceReadError(run,e);});
         const dest = await updateManifest(async (manifest,publish)=>{
+          const key = importKey(it.src), previous = manifest.imported[key];
+          // A second preview can have the same source and destination. Reuse the
+          // earlier copy only while its bytes still match; keep any student edits.
+          if (typeof previous?.dest === 'string' && previous.sourceHash === sourceHash &&
+              path.relative(previous.plannedDest || previous.dest,it.dest) === '') {
+            const previousFile = await importLocation(previous.dest,false);
+            try {
+              if ((await fsp.lstat(previousFile)).isFile() && await fileHash(previousFile,run.signal) === sourceHash) return previous.dest;
+            } catch (err) {
+              if (!['ENOENT','ENOTDIR','EBUSY','EACCES','EPERM'].includes(err.code)) throw err;
+            }
+          }
           const saved = await publish(bytes,it.dest,sourceHash);
-          manifest.imported[importKey(it.src)] = {dest:saved,size:st.size,mtime:st.mtimeMs,sourceHash,at:new Date().toISOString(),...(run.fw ? {by:run.fw} : {})};
+          manifest.imported[key] = {dest:saved,plannedDest:it.dest,size:st.size,mtime:st.mtimeMs,sourceHash,at:new Date().toISOString(),...(run.fw ? {by:run.fw} : {})};
           return saved;
         });
         done.push({src:it.src,name:it.name,dest});
-      } catch (e) { failed.push({ src: it.src, name: it.name, error: e.message }); }
+      } catch (e) {
+        run.signal.throwIfAborted();
+        failed.push(failedImport(it,e));
+      }
     }
     return {done,failed};
+  }
+  function rememberImport(run,items,options) {
+    const id = crypto.randomBytes(16).toString('hex');
+    plans.set(id,{job:'import',items,ignore:[],owner:run.fw || run.provider,vault:run.vault,at:Date.now(),resumeOnly:true,...options});
+    return {id,count:items.length,...(run.fw ? {framework:run.fw} : {provider:run.provider})};
   }
   async function importApply(run,plan) {
     const manual = plan.planMode === 'manual';
@@ -976,13 +1056,13 @@ Write reasons, questions and the note in ${lang}.`;
     if (staged) {
       const seen = new Set(), ops = [];
       for (const it of external) {
-        await checkedSource(run,it.src); await realInVault(writeTargetAny(it.dest));
+        await realInVault(writeTargetAny(it.dest));
         let rel = it.kind === 'convert' ? it.dest.replace(/\.pdf$/i,path.extname(it.src)) : it.dest;
         while (seen.has(low(rel))) rel = 'input-' + ops.length + '/' + rel;
         seen.add(low(rel));
         ops.push({...it,rel,kind:'copy',importKind:it.kind});
       }
-      ({done, failed, extra} = await fwApply(run,ops,{importCopies:stage=>importFiles(run,ops.map(o=>({...o,kind:o.importKind})),stage)}));
+      ({done, failed, extra} = await fwApply(run,ops,{importCopies:(stage,ready)=>importFiles(run,ready.map(o=>({...o,kind:o.importKind})),stage)}));
       const retried = await importFiles(run,chosen.filter(i=>i.retryPreviewId));
       done.push(...retried.done); failed.push(...retried.failed);
     } else ({done,failed} = await importFiles(run,chosen));
@@ -1000,7 +1080,11 @@ Write reasons, questions and the note in ${lang}.`;
         }
       } catch (e) { indexError = e.message; }
     }
-    return {job:'import',...(manual ? {planMode:'manual'} : {}),done,failed,ignored:(plan.ignore || []).length,
+    const retrySources = new Set(failed.filter(it=>it.code).map(it=>it.src));
+    const retryItems = chosen.filter(it=>retrySources.has(it.src));
+    const retry = retryItems.length && run.vault === VAULT()
+      ? rememberImport(run,retryItems,{planMode:plan.planMode}) : null;
+    return {job:'import',...(manual ? {planMode:'manual'} : {}),done,failed,...(retry ? {retry} : {}),ignored:(plan.ignore || []).length,
       edited:run.edited,summary,indexError:previewNotice(done,run.body.lang,indexError),...(extra ? {extra} : {})};
   }
   async function frameworkIndex(run,notes) {
@@ -1314,7 +1398,7 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
     if (body.phase === 'apply' || resuming) {
       plan = plans.get(planId);
       if (!plan || plan.job !== body.job || !!plan.resumeOnly !== resuming) throw new HttpError(410, 'This plan has expired; start again');
-      const resumeWithGraphite = resuming && !fw && provider === 'graphite';
+      const resumeWithGraphite = resuming && plan.allowGraphiteFallback && !fw && provider === 'graphite';
       if (body.job === 'import' && ((!resumeWithGraphite && plan.owner !== (fw || provider)) || plan.vault !== VAULT())) {
         throw new HttpError(409, 'The chosen executor or vault changed; scan again');
       }
@@ -1348,7 +1432,7 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
     const run = { provider, fw, key, body: { ...body, model }, model, vault:VAULT(), sb: cleanRoots(body), prof,
       langName: prof ? h.PROFILE.outputLanguage(body.job === 'brain' ? 'brain' : body.job, prof, uiName) : uiName,
       settingsBlock: prof ? h.PROFILE.promptBlock(body.job, prof, h.study.file()) : '',
-      signal: ctl.signal, seen: new Map(), edited: [], progress: p => line({ progress: p }) };
+      signal: ctl.signal, sourceRetry:resuming && !plan.allowGraphiteFallback, seen: new Map(), edited: [], progress: p => line({ progress: p }) };
     try {
       let result;
       if (retrying) {
@@ -1363,12 +1447,10 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
         try {
           result = await job[1](run,manual ? {...plan,planMode:'manual'} : plan);
         } catch (e) {
-          if (e.canResumeImport && fw && body.job === 'import' && run.vault === VAULT()) {
+          if (e.canResumeImport && fw && body.job === 'import' && !run.sourceRetry && run.vault === VAULT()) {
             const accepted = acceptSet(body.accept,plan.items);
             const items = plan.items.filter((_,i)=>accepted.has(i));
-            const id = crypto.randomBytes(16).toString('hex');
-            plans.set(id,{job:'import',items,ignore:[],owner:fw,vault:run.vault,at:Date.now(),resumeOnly:true});
-            e.recovery = {id,framework:fw,count:items.length};
+            e.recovery = rememberImport(run,items,{allowGraphiteFallback:true});
           }
           throw e;
         }
@@ -1384,7 +1466,7 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
       }
       if (fw) result = { ...result, framework: fw, reads: (run.reads || []).slice(0, 50) };
       line({ result });
-    } catch (e) { line({ error: e.message || String(e), status: e.status || 500, ...(e.code ? { code: e.code } : {}), ...(e.framework ? { framework: e.framework, detail: e.detail || '' } : {}), ...(e.stage ? { stage: e.stage } : {}), ...(e.access ? {access:e.access} : {}), ...(e.recovery ? {recovery:e.recovery} : {}) }); }
+    } catch (e) { line({ error: e.message || String(e), status: e.status || 500, ...(e.code ? { code: e.code } : {}), ...(e.framework ? { framework: e.framework, detail: e.detail || '' } : {}), ...(e.stage ? { stage: e.stage } : {}), ...(e.access ? {access:e.access} : {}), ...(e.recovery ? {recovery:e.recovery} : {}), ...(e.sourceFailures ? {failed:e.sourceFailures} : {}) }); }
     res.end();
   }
   return { handle, parseInbox, scan, copyIntoVault };
