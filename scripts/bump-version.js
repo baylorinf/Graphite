@@ -1,6 +1,6 @@
 // Runs before every installer build (npm run dist):
 //  - raises the version by one patch step (1.1.0 → 1.1.1), or sets it: node scripts/bump-version.js 2.0.0
-//  - removes installers from older builds, so dist/ only holds the newest one.
+// The previous update stays available until a complete replacement has been built.
 const fs = require('fs');
 const path = require('path');
 
@@ -20,14 +20,11 @@ if (wanted) {
 const before = pkg.version;
 pkg.version = next;
 // The installed app watches this folder for newer installers and offers to update itself.
-pkg.myobsidian = { ...(pkg.myobsidian || {}), updateFolder: path.join(root, 'dist') };
+pkg.myobsidian = { updateFolder: path.join(root, 'dist'), ...(pkg.myobsidian || {}) };
+const lockPath = path.join(root,'package-lock.json');
+const lock = JSON.parse(fs.readFileSync(lockPath,'utf8'));
+lock.version = next;
+lock.packages[''].version = next;
 fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2) + '\n');
-
-const dist = path.join(root, 'dist');
-let removed = 0;
-if (fs.existsSync(dist)) {
-  for (const f of fs.readdirSync(dist)) {
-    if (/^(Graphite|MyObsidian)-Setup-.*\.exe(\.blockmap)?$/.test(f) || f === 'latest.yml') { fs.rmSync(path.join(dist, f)); removed++; }
-  }
-}
-console.log(`Version ${before} → ${next}${removed ? ` (removed ${removed} old installer file${removed > 1 ? 's' : ''})` : ''}`);
+fs.writeFileSync(lockPath, JSON.stringify(lock, null, 2) + '\n');
+console.log(`Version ${before} → ${next}`);

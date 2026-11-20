@@ -1,0 +1,41 @@
+'use strict';
+const test=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs');
+const path=require('node:path');
+const os=require('node:os');
+const {spawnSync}=require('node:child_process');
+
+test('starting or interrupting a build preserves the last usable local update',t=>{
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'graphite-build-cycle-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true,maxRetries:3}));
+  const dist=path.join(root,'dist'),scripts=path.join(root,'scripts');
+  fs.mkdirSync(dist);fs.mkdirSync(scripts);
+  const setup='Graphite-Setup-8.0.3.exe',old=path.join(dist,setup),feed=path.join(dist,'latest.yml');
+  const pkg={version:'8.0.3',myobsidian:{updateFolder:'Z:/configured-feed'}};
+  fs.writeFileSync(path.join(root,'package.json'),JSON.stringify(pkg));
+  fs.writeFileSync(path.join(root,'package-lock.json'),JSON.stringify({version:pkg.version,packages:{'':{version:pkg.version}}}));
+  fs.writeFileSync(old,'previous installer');fs.writeFileSync(old+'.blockmap','previous map');fs.writeFileSync(feed,'previous manifest');
+  for(const name of ['bump-version','legacy-installer-name','publish-github'])fs.copyFileSync(path.join(__dirname,'../scripts',name+'.js'),path.join(scripts,name+'.js'));
+  fs.mkdirSync(path.join(root,'electron'));
+  fs.copyFileSync(path.join(__dirname,'../electron/updater.js'),path.join(root,'electron/updater.js'));
+  const run=name=>spawnSync(process.execPath,[path.join(scripts,name+'.js')],{cwd:root,windowsHide:true,encoding:'utf8',
+    env:{...process.env,NODE_PATH:path.resolve(__dirname,'../node_modules')}});
+  assert.equal(run('bump-version').status,0);
+  assert.equal(fs.readFileSync(old,'utf8'),'previous installer');
+  assert.equal(fs.readFileSync(old+'.blockmap','utf8'),'previous map');
+  assert.equal(fs.readFileSync(feed,'utf8'),'previous manifest');
+  const next=JSON.parse(fs.readFileSync(path.join(root,'package.json'),'utf8')),lock=JSON.parse(fs.readFileSync(path.join(root,'package-lock.json'),'utf8'));
+  assert.equal(next.version,'8.0.4');assert.equal(next.myobsidian.updateFolder,pkg.myobsidian.updateFolder);
+  assert.equal(lock.version,next.version);assert.equal(lock.packages[''].version,next.version);
+  assert.notEqual(run('legacy-installer-name').status,0);assert.ok(fs.existsSync(old));
+  const latest='Graphite-Setup-8.0.4.exe';
+  fs.writeFileSync(path.join(dist,latest),'next installer');fs.writeFileSync(path.join(dist,latest+'.blockmap'),'next map');
+  assert.notEqual(run('legacy-installer-name').status,0);assert.ok(fs.existsSync(old));
+  const digest=require('node:crypto').createHash('sha512').update('next installer').digest('base64');
+  fs.writeFileSync(feed,'version: 8.0.4\nfiles:\n  - url: '+latest+'\n    sha512: '+digest+'\n    size: 14\npath: '+latest+'\nsha512: '+digest+'\n');
+  assert.equal(run('legacy-installer-name').status,0);
+  assert.equal(fs.readFileSync(path.join(dist,'MyObsidian-Setup-8.0.4.exe'),'utf8'),'next installer');
+  assert.equal(fs.readFileSync(path.join(dist,'MyObsidian-Setup-8.0.4.exe.blockmap'),'utf8'),'next map');
+  assert.equal(fs.existsSync(old),false);assert.equal(fs.existsSync(old+'.blockmap'),false);
+});
