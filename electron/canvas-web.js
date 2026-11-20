@@ -200,6 +200,7 @@ async function readCourses(loadPage, options = {}) {
   const courses=[], seen=new Set(), warnings=[];
   const previous=options.previousSnapshot;
   const previousCourses=index.webIdentity && previous?.webIdentity===index.webIdentity ? previous.courses || [] : [];
+  const sameDisplayName=!index.webIdentity && !previous?.webIdentity && index.user && index.user===options.previousUser;
   for (const item of index.enrollments || []) {
     const id=valid(item.href)?.pathname.match(/^\/courses\/(\d+)\/?$/)?.[1];
     if(!id || seen.has(id))continue;
@@ -207,6 +208,7 @@ async function readCourses(loadPage, options = {}) {
     const url=SITE+'/courses/'+id;
     const c={id,name:item.title,code:'',url,files:[],assignments:[],announcements:[],quizzes:[],modules:[],events:[],pages:[],discussions:[],warnings:[]};
     const old=previousCourses.find(course=>course.id===id);
+    const previousMaterial=old || (sameDisplayName && previous?.courses?.find(course=>course.id===id));
     const moduleFiles=new Map();
     courses.push(c);
     let home;
@@ -320,9 +322,12 @@ async function readCourses(loadPage, options = {}) {
       let checked=0;
       for(const a of c.assignments){
         const past=old?.assignments?.find(other=>other.id===a.id);
-        if(options.background && past){
-          for(const field of ['description','attachments','submissionTypes']) if(past[field]!=null)a[field]=past[field];
+        const material=previousMaterial?.assignments?.find(other=>other.id===a.id);
+        if(options.background && material){
+          for(const field of ['description','attachments','submissionTypes']) if(material[field]!=null)a[field]=material[field];
           for(const file of a.attachments||[])record('files',{href:file.url,title:file.name});
+        }
+        if(options.background && past){
           if(!a.dueLabel && !a.dueAt){a.dueAt=past.dueAt || null;a.dueLabel=past.dueLabel || '';}
           if(a.submitted==null && past.checkedAt){a.submitted=past.submitted;a.checkedAt=past.checkedAt;}
           if(a.submitted===false)a.attempt=0;

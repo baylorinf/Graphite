@@ -91,3 +91,29 @@ test('background checks have a detail budget, trust previous receipts only for a
   const different=await run('44');assert.notEqual(different[0].submitted,true);assert(!different[0].attempt);
   const unknown=await run(null);assert.notEqual(unknown[0].submitted,true);
 });
+
+test('a matching school display name keeps downloaded coursework on refresh without reusing a personal receipt',async()=>{
+  const file={id:'12',name:'Sheet.pdf',url:url('/courses/7/files/12')};
+  const previousSnapshot={webIdentity:null,courses:[{id:'7',assignments:[{id:'1',description:'Solve both questions',attachments:[file],
+    submissionTypes:['online_upload'],submitted:true,attempt:2,submittedAt:'2026-11-10',checkedAt:'old'}]}]};
+  const run=async user=>{
+    const result=await readCourses(async href=>{
+      const p=new URL(href).pathname;
+      if(p==='/courses')return {logged:true,user,hasCourseTable:true,enrollments:[{href:url('/courses/7'),title:'Course'}]};
+      if(p==='/courses/7')return {logged:true,tabs:[url('/courses/7/assignments')]};
+      if(p==='/courses/7/assignments')return {logged:true,links:[{href:url('/courses/7/assignments/1'),title:'Task',dueLabel:'Friday'}]};
+      throw Error('Unexpected page '+p);
+    },{background:true,previousUser:'Student A',previousSnapshot});
+    return result.snapshot.courses[0];
+  };
+  const same=await run('Student A');
+  assert.equal(same.assignments[0].description,'Solve both questions');
+  assert.deepEqual(same.assignments[0].submissionTypes,['online_upload']);
+  assert.equal(same.files[0].id,'12');
+  assert.notEqual(same.assignments[0].submitted,true);
+  assert.equal(same.assignments[0].attempt,undefined);
+  for(const user of ['Student B','']){
+    const other=await run(user);
+    assert.equal(other.assignments[0].description,undefined);assert.equal(other.files.length,0);
+  }
+});
