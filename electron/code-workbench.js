@@ -28,7 +28,7 @@ function registerCodeWorkbench({ipcMain, url, getWindow, projects, runner}) {
       }
     });
   }
-  register('code-project', projects, ['status', 'choose', 'useVault', 'list', 'read', 'write', 'create', 'mkdir']);
+  register('code-project', projects, ['status', 'choose', 'useVault', 'list', 'findFiles', 'read', 'write', 'create', 'mkdir']);
   register('code-run', runner, ['tools', 'start', 'stop', 'debug']);
   return data => {
     const win = getWindow();
