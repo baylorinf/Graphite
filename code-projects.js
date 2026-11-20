@@ -2,6 +2,7 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
+const { createFile } = require('./new-file');
 
 const LIMIT = 2 * 1024 * 1024; // same as the Graphite source editor
 const error = (status, code, message) => Object.assign(new Error(message), { status, code });
@@ -205,23 +206,12 @@ function createCodeProjects({ stateFile, pickDirectory, getVault, atomicWrite, w
     return {...result,path:target.path};
   }
   async function publishNew(input, target, bytes) {
-    const temp=path.join(path.dirname(target),'.graphite-create-'+randomUUID()+'.tmp');
-    const handle=await fs.open(temp,'wx');
     try {
-      try { await handle.writeFile(bytes); } finally { await handle.close(); }
-      await resolveEntry(input,'file',true);
-      try {
-        // Publish complete contents without replacing an entry created since the preview.
-        await fs.link(temp,target);
-      } catch (err) {
-        if (!['EPERM','ENOSYS','ENOTSUP','EOPNOTSUPP'].includes(err.code)) throw err;
-        // Some removable drives do not implement hard links. copyFile also supports exclusive creation.
-        await fs.copyFile(temp,target,fs.constants.COPYFILE_EXCL);
-      }
+      await createFile(target, bytes, {beforePublish:()=>resolveEntry(input,'file',true)});
     } catch (err) {
       if(err.code==='EEXIST') throw error(409,'exists','A file or folder already exists at this path.');
       throw err;
-    } finally { await fs.unlink(temp).catch(()=>{}); }
+    }
   }
   async function writeFile(input, creating) {
     if (!input || typeof input.content!=='string' || input.content.includes('\0') || !input.content.isWellFormed()) {

@@ -10,6 +10,7 @@ const fsp = fs.promises;
 const path = require('path');
 const { createHash, randomUUID } = require('node:crypto');
 const { exec } = require('child_process');
+const { createFile } = require('./new-file');
 
 let VAULT = '', CONFIG_DIR = '', PLUGIN_DIR = '';
 let TOKEN = null; // desktop app: every request must carry this secret, so other programs can't use the server
@@ -626,10 +627,7 @@ async function sourceFile(req, res, rel) {
       if (bytes.length > SOURCE_LIMIT) throw new HttpError(413, 'Source file is too large');
       const revision = sourceRevision(bytes);
       if (creating) {
-        const handle = await fsp.open(abs, 'wx');
-        try { await handle.writeFile(bytes); }
-        catch (e) { await handle.close(); await fsp.unlink(abs).catch(() => {}); throw e; }
-        await handle.close();
+        await createFile(abs, bytes);
       } else if (current.revision !== revision) {
         if (current.revision !== base) throw new HttpError(409, 'changed');
         if (!(current.mode & 0o222)) throw new HttpError(403, 'File is read-only');
@@ -739,7 +737,7 @@ async function api(req, res, u) {
       // Create only: exclusive, so a new file (e.g. a sync conflict copy) never replaces one already on disk.
       const body = await readBody(req);
       await fsp.mkdir(path.dirname(abs), { recursive: true });
-      try { await fsp.writeFile(abs, body, { flag: 'wx' }); }
+      try { await createFile(abs, body); }
       catch (e) { if (e.code === 'EEXIST') throw new HttpError(409, 'A file with that name already exists'); throw e; }
       const st = await fsp.stat(abs);
       return send(res, 200, { path: toRel(abs), mtime: st.mtimeMs });
@@ -797,22 +795,9 @@ async function api(req, res, u) {
     if (requested === VAULT) throw new HttpError(400,'Choose an attachment name');
     const body = await readBody(req);
     await fsp.mkdir(path.dirname(requested),{recursive:true});
-    for (;;) {
-      const abs = await uniquePath(requested);
-      let file;
-      try { file = await fsp.open(abs,'wx'); }
-      catch (e) { if (e.code === 'EEXIST') continue; throw e; }
-      try {
-        await file.writeFile(body);
-        const st = await file.stat();
-        await file.close();
-        return send(res,200,{path:toRel(abs),mtime:st.mtimeMs,size:st.size});
-      } catch (e) {
-        await file.close().catch(()=>{});
-        await fsp.unlink(abs).catch(()=>{});
-        throw e;
-      }
-    }
+    const abs = await createFile(requested, body, {choosePath:uniquePath});
+    const st = await fsp.stat(abs);
+    return send(res,200,{path:toRel(abs),mtime:st.mtimeMs,size:st.size});
   }
 
   // ---- Study settings (shared by every AI): read, save, and the one-time move from the two old places

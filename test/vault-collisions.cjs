@@ -18,6 +18,42 @@ async function main() {
     return {status:response.status,body:await response.json()};
   };
   try {
+    const noteName='Retry after a full disk.md',target=path.join(vault,noteName),marker='Real note after retry';
+    const originalOpen=fs.open,originalWrite=fs.writeFile;
+    let failureCount=0;
+    function partialFault(){failureCount++;throw Object.assign(new Error('Synthetic shortage while creating a note'),{code:'ENOSPC'});}
+    fs.writeFile=async(file,body,...other)=>{
+      if(file===target && Buffer.from(body).toString()===marker){
+        await originalWrite(file,Buffer.from(body).subarray(0,4),...other);partialFault();
+      }
+      return originalWrite(file,body,...other);
+    };
+    fs.open=async(file,...args)=>{
+      const handle=await originalOpen(file,...args),write=handle.writeFile.bind(handle);
+      handle.writeFile=async(body,...other)=>{
+        if(typeof file==='string' && path.dirname(file)===vault && Buffer.from(body).toString()===marker){
+          await write(Buffer.from(body).subarray(0,4),...other);partialFault();
+        }
+        return write(body,...other);
+      };
+      return handle;
+    };
+    try { assert.equal((await call('file',noteName,'POST',marker)).status,500); }
+    finally { fs.writeFile=originalWrite;fs.open=originalOpen; }
+    assert.equal(failureCount,1);
+    await assert.rejects(fs.stat(target),{code:'ENOENT'},'A failed create must not leave a truncated note');
+    assert.equal((await call('file',noteName,'POST',marker)).status,200,'Retry the original filename');
+    assert.equal(await fs.readFile(target,'utf8'),marker);
+    console.log('PASS failed first save leaves no truncated note, retry preserves name and contents');
+    const realLink=fs.link;
+    fs.link=async()=>{throw Object.assign(new Error('Synthetic removable drive'),{code:'ENOTSUP'});};
+    try {
+      const competing=await Promise.all(['one','two'].map(text=>call('file','Removable.md','POST',text)));
+      assert.deepEqual(competing.map(r=>r.status).sort(),[200,409]);
+      assert.equal(await fs.readFile(path.join(vault,'Removable.md'),'utf8'),competing[0].status===200?'one':'two');
+      assert.equal((await fs.readdir(vault)).some(name=>name.startsWith('.graphite-create-')),false);
+    } finally { fs.link=realLink; }
+    console.log('PASS exclusive creation also keeps the winner and cleans up on a drive without hard links');
     const bytes = Array.from({length:10},(_,i)=>Buffer.from([i,0,255,7]));
     const uploads = await Promise.all(bytes.map(b=>call('upload','附件/题图 一.png','POST',b)));
     for (const r of uploads) assert.equal(r.status,200);

@@ -54,6 +54,7 @@
       "server.js",
       "code-assistant.js",
       "code-projects.js",
+      "new-file.js",
       "canvas-*.js",
       "agent.js",
       "extensions/**",
