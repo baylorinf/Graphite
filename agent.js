@@ -411,10 +411,10 @@ module.exports = function createAgent(h) {
           const staged = await fsp.readFile(path.join(stage, o.rel));
           run.progress({ step: 'write', path: o.target || o.rel });
           await withFileLock(abs, async () => {
-            const cur = await fsp.readFile(abs, 'utf8').catch(() => null);
-            if ((cur == null ? null : hash(cur)) !== (o.base ?? null)) throw new Error(`${o.target || o.rel} changed since the plan was made`);
-            if (cur == null) { await fsp.mkdir(path.dirname(abs), { recursive: true }); await fsp.writeFile(abs, staged, { flag: 'wx' }); }
-            else await atomicWrite(abs, staged);
+            const compare = () => verifyRecordVersion(abs, o.base ?? null, o.target || o.rel);
+            const cur = await compare();
+            if (cur == null) await createRecord(abs, staged, compare);
+            else await atomicWrite(abs, staged, {beforeReplace:compare});
             undo.push({abs,rel:o.target || o.rel,expected:crypto.createHash('sha256').update(staged).digest('hex'),previous:cur});
           });
           applied.push(o);
@@ -1061,28 +1061,84 @@ Then call submit_plan once. "shown" is the short link label, e.g. "投影 Projec
         text: { type: 'string', description: 'Markdown to append, or the whole new note' }, shown: { type: 'string' } } } },
       edits: EDITS_SCHEMA, summary: { type: 'string' } } } };
 
-  async function checkEdits(edits) {
+  // Local frameworks read independently of Graphite's read_file tool. Remember the original versions
+  // of editable study records before asking either kind of model to propose whole-file replacements.
+  async function studyRecordVersions() {
+    const versions = new Map();
+    async function visit(rel) {
+      if (NO_WRITE.test(rel)) return;
+      const dir = await realInVault(inVault(rel));
+      let entries;
+      try { entries = await fsp.readdir(dir, {withFileTypes:true}); }
+      catch (e) { if (['ENOENT','ENOTDIR','EACCES','EPERM'].includes(e.code)) return; throw e; }
+      for (const entry of entries) {
+        const child = rel+'/'+entry.name;
+        if (NO_WRITE.test(child)) continue;
+        if (entry.isDirectory()) { await visit(child); continue; }
+        if (!entry.isFile() || !NOTE_EXT.test(entry.name) || /^quiz-results\.md$/i.test(entry.name)) continue;
+        const file = await realInVault(inVault(child));
+        try { versions.set(low(file), hash(await fsp.readFile(file,'utf8'))); }
+        catch (e) { if (!['ENOENT','EACCES','EPERM'].includes(e.code)) throw e; }
+      }
+    }
+    await visit(BRAIN);
+    return versions;
+  }
+  async function checkEdits(edits, original) {
     const out = [];
     for (const e of Array.isArray(edits) ? edits : []) {
+      let target;
+      try { target = writeTarget(e.path); } catch { continue; }
+      const { abs, rel } = target;
+      if (!rel.startsWith(BRAIN + '/') || /quiz-results\.md$/i.test(rel)) continue;
       try {
-        const { abs, rel } = writeTarget(e.path);
-        if (!rel.startsWith(BRAIN + '/') || /quiz-results\.md$/i.test(rel)) continue;
-        const cur = await fsp.readFile(abs, 'utf8').catch(() => null);
-        const content = String(e.content || '');
-        if (!content.trim() || content === cur) continue;
-        const a = new Set((cur || '').split(/\r?\n/)), b = new Set(content.split(/\r?\n/));
-        out.push({ path: rel, content, why: String(e.why || ''), base: cur == null ? null : hash(cur),
-          added: [...b].filter(l => l.trim() && !a.has(l)).length, removed: [...a].filter(l => l.trim() && !b.has(l)).length });
-      } catch { /* not allowed: dropped */ }
+        await realInVault(abs);
+      } catch { continue; }
+      const content = String(e.content || '');
+      if (!content.trim()) continue;
+      const cur = await readExistingRecord(abs), base = original.get(low(abs)) ?? null;
+      if (content === cur) continue;
+      if ((cur === null ? null : hash(cur)) !== base) {
+        throw new HttpError(409, rel+' changed while preparing these edits. Review a new plan.');
+      }
+      const a = new Set((cur || '').split(/\r?\n/)), b = new Set(content.split(/\r?\n/));
+      out.push({ path: rel, content, why: String(e.why || ''), base,
+        added: [...b].filter(l => l.trim() && !a.has(l)).length, removed: [...a].filter(l => l.trim() && !b.has(l)).length });
     }
     return out;
   }
+  async function readExistingRecord(abs) {
+    try { return await fsp.readFile(abs,'utf8'); }
+    catch (e) { if (e.code === 'ENOENT') return null; throw e; }
+  }
+  async function verifyRecordVersion(abs, base, rel) {
+    await realInVault(abs);
+    const current = await readExistingRecord(abs);
+    if ((current === null ? null : hash(current)) !== base) throw new Error(rel+' changed since the plan was made');
+    return current;
+  }
+  async function createRecord(abs, content, compare) {
+    await fsp.mkdir(path.dirname(abs),{recursive:true});
+    const stage = path.join(path.dirname(abs),'.graphite-record-'+crypto.randomUUID()+'.tmp');
+    try {
+      await fsp.writeFile(stage,content,{flag:'wx'});
+      await compare();
+      try { await fsp.link(stage,abs); }
+      catch (error) {
+        // FAT and some network shares do not support hard links. Still require a new name.
+        if (!['ENOTSUP','ENOSYS','EPERM','EXDEV'].includes(error.code)) throw error;
+        await fsp.copyFile(stage,abs,fs.constants.COPYFILE_EXCL);
+      }
+    } finally { await fsp.unlink(stage).catch(()=>{}); }
+  }
   async function writeEdit(e) {
-    const abs = inVault(e.path);
+    const {abs,rel} = writeTarget(e.path);
+    if (!rel.startsWith(BRAIN+'/')) throw new Error('The study record folder changed. Review a new plan.');
     return withFileLock(abs, async () => {
-      const cur = await fsp.readFile(abs, 'utf8').catch(() => null);
-      if ((cur == null ? null : hash(cur)) !== e.base) throw new Error('changed since the plan was made');
-      await atomicWrite(abs, e.content);
+      const compare = () => verifyRecordVersion(abs, e.base, rel);
+      await compare();
+      if (e.base === null) await createRecord(abs, e.content, compare);
+      else await atomicWrite(abs, e.content, {beforeReplace:compare});
     });
   }
 
@@ -1093,6 +1149,7 @@ Then call submit_plan once. "shown" is the short link label, e.g. "投影 Projec
     if (!caps.length) return { job: 'inbox', empty: true, items: [], edits: [] };
     run.progress({ step: 'inbox', n: caps.length });
     const brain = await exists(inVault(BRAIN));
+    const versions = brain ? await studyRecordVersions() : null;
     const user = `Today: ${today()}\nClaude Brain folder: ${brain ? 'exists' : 'none (no edits)'}\n\n<captures>\n${caps.map(c => JSON.stringify({ id: c.id, kind: c.kind, when: c.when, source: c.source, quote: c.quote, thought: c.thought })).join('\n')}\n</captures>`;
     const out = await loop(run, { system: INBOX_SYSTEM(run.langName), user, toolNames: ['list_dir', 'read_file', 'submit_plan'], submit: INBOX_SUBMIT, maxTurns: 6 + caps.length * 4 });
     const items = [];
@@ -1107,7 +1164,7 @@ Then call submit_plan once. "shown" is the short link label, e.g. "投影 Projec
       items.push({ id: cap.id, fingerprint: cap.fingerprint, occurrence: cap.occurrence, copyCount: cap.copyCount,
         kind: cap.kind, quote: cap.quote.slice(0, 160), target: t.rel, mode: has ? 'append' : 'new', text: body, shown: String(it.shown || '') });
     }
-    return { job: 'inbox', items, edits: brain ? await checkEdits(out.edits) : [], summary: String(out.summary || ''), total: caps.length };
+    return { job: 'inbox', items, edits: brain ? await checkEdits(out.edits,versions) : [], summary: String(out.summary || ''), total: caps.length };
   }
 
   function selectedCaptures(run, plan) {
@@ -1217,8 +1274,9 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
     const hist = (Array.isArray(run.body.history) ? run.body.history : []).slice(-30).filter(m => m && m.content)
       .map(m => `${m.role === 'assistant' ? 'Assistant' : 'Student'}: ${String(m.content).slice(0, 4000)}`).join('\n\n');
     if (!hist.trim()) return { job: 'brain', empty: true, edits: [] };
+    const versions = await studyRecordVersions();
     const out = await loop(run, { system: BRAIN_SYSTEM(run.langName), user: `Today: ${today()}\n\n<conversation>\n${hist}\n</conversation>`, toolNames: ['list_dir', 'read_file', 'submit_plan'], submit: BRAIN_SUBMIT, maxTurns: 14 });
-    return { job: 'brain', edits: await checkEdits(out.edits), summary: String(out.summary || '') };
+    return { job: 'brain', edits: await checkEdits(out.edits,versions), summary: String(out.summary || '') };
   }
   async function brainApply(run, plan) {
     const accept = acceptSet(run.body.acceptEdits ?? run.body.accept, plan.edits);
