@@ -22,13 +22,21 @@ export const today = () => Math.floor((Date.now() - new Date().getTimezoneOffset
 
 // Connect to the app right away (related notes are needed before the review progress has loaded).
 export function attach(host) { H = host; }
+// Ready once the progress has been read (and kept ratings put back). Anything drawn from it before then (the
+// Review panel opened right after starting, say) waits for this and is drawn again.
+let markReady, readyNow = false;
+const ready = new Promise(resolve => { markReady = resolve; });
+export const whenReady = () => ready;
+export const isReady = () => readyNow;
 export async function initReview(host) {
   H = host;
-  try { state = { ...fresh(), ...JSON.parse((await H.api('GET', 'file', { path: FILE })).content) }; }
-  catch { state = fresh(); }
-  // Ratings from last time that never reached the disk: put them back and save them now.
-  const kept = takeKeptPending();
-  if (kept.length) { pending = kept.concat(pending); state = apply(state, kept); save(); }
+  try {
+    try { state = { ...fresh(), ...JSON.parse((await H.api('GET', 'file', { path: FILE })).content) }; }
+    catch { state = fresh(); }
+    // Ratings from last time that never reached the disk: put them back and save them now.
+    const kept = takeKeptPending();
+    if (kept.length) { pending = kept.concat(pending); state = apply(state, kept); save(); }
+  } finally { readyNow = true; markReady(); }
 }
 // Saving merges instead of overwriting. Two windows (or two computers syncing the vault) may review at the
 // same time; each records its own changes as small operations, and a save re-reads the file, applies only
@@ -192,6 +200,7 @@ function showUnsaved(on) {
 // Pick up what other windows saved, keeping this window's unsaved changes.
 export async function reloadReview() {
   if (!H) return;
+  await ready; // never before the first read (it would race it)
   await flush();
   state = apply(await readDisk(), pending);
   cardCache.clear();

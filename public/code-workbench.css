@@ -46,7 +46,8 @@
 .wb-debug-controls { display: inline-flex; gap: 4px; }
 .wb-debug-controls[hidden] { display: none; }
 .code-wb .wb-tree-toggle { display: none; }
-.wb-problem:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 12px; background: color-mix(in srgb, #e0a030 16%, var(--bg)); border-bottom: 1px solid var(--border); }
+.wb-persist:not([hidden]), .wb-problem:not([hidden]) { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 12px; background: color-mix(in srgb, #e0a030 16%, var(--bg)); border-bottom: 1px solid var(--border); }
+.wb-persist:not([hidden]) { background: color-mix(in srgb, #d84c51 13%, var(--bg)); }
 .wb-cm { flex: 1; min-height: 0; position: relative; }
 .wb-cm .CodeMirror { position: absolute; inset: 0; height: auto; background: var(--bg); color: var(--text); font: 14px/1.6 var(--font-code, Consolas, 'SFMono-Regular', monospace); }
 .wb-cm .CodeMirror-gutters { background: var(--bg-2); border-color: var(--border); }

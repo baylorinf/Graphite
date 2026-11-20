@@ -2210,13 +2210,21 @@ function refreshSidePanels() {
 /* Graph view: see graph.js */
 
 /* ---------- Review page & badge ---------- */
+// Startup restores the tabs of last time (after reading the vault and the review progress). Where you went before
+// that finished is applied again afterwards, so the restored tab never takes your place.
+let booting = true, bootNav = null;
+function afterBoot(go) { if (booting) bootNav = go; }
 function showReview() {
+  afterBoot(showReview);
   if (S.dirty) saveNow();
   setView('review');
-  RV.renderReviewPage($('#review-view'));
-  $('#review-view').scrollTop = 0;
-  // Then refresh with whatever other windows have saved meanwhile.
-  RV.reloadReview().then(() => { if (S.view === 'review') RV.renderReviewPage($('#review-view')); });
+  const el = $('#review-view');
+  // Opened right after starting, before the progress (and the vault) is read: say so, and draw it once ready.
+  if (RV.isReady()) RV.renderReviewPage(el);
+  else el.innerHTML = `<p class="empty-hint" role="status">${esc(t('review.loading'))}</p>`;
+  el.scrollTop = 0;
+  // Then refresh with whatever other windows have saved meanwhile (a failed read still draws what is known).
+  RV.whenReady().then(() => RV.reloadReview()).catch(() => {}).then(() => { if (S.view === 'review') RV.renderReviewPage(el); });
 }
 function updateReviewBadge() {
   const btn = $('#review-btn');
@@ -2230,7 +2238,7 @@ function updateReviewBadge() {
 }
 function onReviewChange() {
   updateReviewBadge();
-  if (S.view === 'review') RV.renderReviewPage($('#review-view'));
+  if (S.view === 'review' && RV.isReady()) RV.renderReviewPage($('#review-view'));
 }
 
 function setView(name) {
@@ -3306,7 +3314,11 @@ async function boot() {
   void last; void welcome;
   // Review progress first: a restored Review tab (or plan / mistake book) draws from it right away.
   await RV.initReview(host);
-  await restoreTabs();
+  try { await restoreTabs(); }
+  finally {
+    booting = false;
+    if (bootNav) { const go = bootNav; bootNav = null; go(); } // e.g. Review opened while this was loading
+  }
 
   const es = new EventSource('/api/events');
   const resync = debounce(() => sync().catch(console.error), 250);
@@ -3387,11 +3399,15 @@ window.__moFlush = async () => {
   await retryDrafts().catch(() => {});
   const unsaved = [...drafts].map(([path, d]) => ({ path, text: d.text }));
   unsaved.push(...await codeEditor.flush());
-  codeWorkbench.flush(); // project files: their unsaved text is kept as drafts and comes back next time
+  // Code workbench project files: their unsaved text is kept as drafts (checked by reading it back). If it couldn't
+  // be kept, the desktop app offers only Retry / Go back (projectMessage, in this window's language); if it was,
+  // hasProjectDrafts asks the desktop to make sure storage reaches the disk before closing.
+  const wb = codeWorkbench.flush();
+  const project = wb.ok ? (wb.hasDrafts ? { hasProjectDrafts: true } : {}) : { projectUnsaved: true, projectMessage: wb.message };
   // Review ratings that could not be written: the desktop app asks before closing, updating or switching vaults,
   // and shows reviewMessage (in this window's language). `unsaved` stays the real note and code drafts only.
-  if (RV.reviewUnsaved()) return { ok: false, reviewUnsaved: true, reviewMessage: t('review.unsavedMsg'), unsaved };
-  return { ok: !unsaved.length, unsaved };
+  if (RV.reviewUnsaved()) return { ok: false, reviewUnsaved: true, reviewMessage: t('review.unsavedMsg'), unsaved, ...project };
+  return { ok: !unsaved.length && wb.ok, unsaved, ...project };
 };
 // Ask once more on startup for drafts left from last time.
 setTimeout(() => { if (drafts.size) retryDrafts(); }, 3000);

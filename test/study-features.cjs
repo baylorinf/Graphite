@@ -347,6 +347,7 @@ async function main() {
         const field = p.locator('.study-modal [data-f='+(kind === 'mistake' ? 'question' : 'q')+']');
         await field.fill((await field.inputValue())+' edited');
         await p.locator('.study-modal [data-a=save]').click();
+        await entry.filter({hasText:/edited/}).waitFor();
         assert.match(await entry.innerText(), /edited/);
         await search.fill('');
       }
@@ -380,8 +381,23 @@ async function main() {
       assert.equal(await p.locator('.review-try').inputValue(), draft);
       assert.ok(await p.locator('.review-a').isHidden());
       await p.locator('.review-x').click();
-      await p.reload();
-      await p.locator('#review-btn').click();
+      // Open the Review panel while Graphite is still starting after a restart: the vault list (/api/all) and then
+      // the review progress are held back on purpose until the panel is open. It says it is loading; once startup
+      // (with restoring last time's tabs) is done, the panel is still in front, with its list and "resume draft".
+      for (const [pattern, name] of [[/\/api\/all(\?|$)/, 'vault list'], [/\/api\/file\?path=[^&]*review\.json/, 'review progress']]) {
+        let release, held = 0;
+        const gate = new Promise(r => { release = r; });
+        await p.route(pattern, async r => { if (r.request().method() === 'GET' && !held++) await gate; return r.continue(); });
+        await p.reload({ waitUntil: 'domcontentloaded' });
+        await p.locator('#review-btn').click();
+        await p.locator('#review-view [role=status]').waitFor();
+        assert.equal(await p.locator('[data-resume-draft]').count(), 0, name);
+        release();
+        await p.locator('#review-view [data-study-list=mistake]').waitFor();
+        await p.locator('[data-resume-draft]').waitFor();
+        assert.equal(await p.evaluate(() => document.querySelector('#main').dataset.view), 'review', name + ': Review stays in front');
+        await p.unroute(pattern);
+      }
       await p.locator('[data-resume-draft]').click();
       assert.equal(await p.locator('.review-try').inputValue(), draft);
       let disk = await review();

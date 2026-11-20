@@ -39,6 +39,7 @@ function fakeDesktop(opts) {
       if (action === 'choose') { save('proj', ext); return { ok: true, canceled: false, project: { ...ext, available: true } }; }
       if (action === 'useVault') { const v = (await (await fetch('/api/all')).json()).vault.replace(/\\/g, '/'); const vp = { id: 'vault-1', name: v.split('/').pop(), root: v }; save('proj', vp); const f = files(); f['vault-1'] ||= {}; save('files', f); return { ok: true, project: { ...vp, available: true } }; }
       if (!p || args.projectId !== p.id) return fail('project_changed', 'The selected project changed. Reopen the file.');
+      if (action === 'read') { const wait = (window.__readDelay || {})[args.path]; if (wait) await new Promise(r => setTimeout(r, wait)); }
       const all = files(), mine = all[p.id] || {};
       if (action === 'list') {
         const base = args.path ? args.path + '/' : '', seen = new Map();
@@ -97,6 +98,16 @@ async function main() {
     await ctx.route('**/*', r => (r.request().url().startsWith(origin + '/') ? r.continue() : r.abort()));
     await ctx.addInitScript(({ lang }) => localStorage.setItem('mo:lang', JSON.stringify(lang)), { lang });
     await ctx.addInitScript(fakeDesktop, { noGdb });
+    // Storage trouble on demand for Graphite's own keys: window.__storage = 'full' (quota error) or 'blocked'
+    // (writes silently dropped, as with some privacy settings).
+    await ctx.addInitScript(() => {
+      const set = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, v) {
+        if (String(k).startsWith('mo:wb:') && window.__storage === 'full') throw new DOMException('The quota has been exceeded.', 'QuotaExceededError');
+        if (String(k).startsWith('mo:wb:') && window.__storage === 'blocked') return;
+        return set.call(this, k, v);
+      };
+    });
     if (setup) await ctx.addInitScript(setup);
     const p = await ctx.newPage();
     p.setDefaultTimeout(8000);
@@ -285,6 +296,142 @@ async function main() {
     const overflow = await p.evaluate(() => Math.max(...[...document.querySelectorAll('#code-workbench > *')].map(e => e.getBoundingClientRect().right)) - document.querySelector('#code-workbench').getBoundingClientRect().right);
     assert.ok(overflow <= 1, 'no sideways scrolling: ' + overflow);
   }, { lang: 'zh-CN', width: 600 });
+
+  const typeIn = async (p, text) => { await p.locator(`${wb} .CodeMirror`).click(); await p.keyboard.press('Control+End'); await p.keyboard.type(text); };
+  const cmText = p => p.evaluate(() => document.querySelector('#code-workbench .CodeMirror').CodeMirror.getValue());
+
+  await test('storage full: the warning with Retry shows, closing is held back (projectUnsaved + message), switching is refused; after Retry all is kept', async p => {
+    await openExternal(p);
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await p.locator(`${wb} .CodeMirror`).waitFor();
+    await p.evaluate(() => { window.__storage = 'full'; });
+    await typeIn(p, '// typed while storage is full');
+    await p.locator(`${wb} .wb-persist:not([hidden]) [data-wb=retry-persist]`).waitFor();
+    const flushed = await p.evaluate(() => window.__moFlush());
+    assert.equal(flushed.ok, false); assert.equal(flushed.projectUnsaved, true);
+    assert.match(flushed.projectMessage, /couldn’t be kept/); assert.deepEqual(flushed.unsaved, []);
+    await p.locator(`${wb} [data-wb=vault]`).click();
+    await sleep(200);
+    assert.equal((await calls(p, 'project', 'useVault')).length, 0, 'the desktop app was not asked to switch');
+    assert.match(await cmText(p), /typed while storage is full/);
+    assert.equal(await p.locator(`${wb} .wb-proj-root`).innerText(), 'C:/fake/proj');
+    await p.locator(`${wb} [data-wb=retry-persist]`).click();                // still full: stays
+    assert.equal(await p.locator(`${wb} .wb-persist`).isVisible(), true);
+    await p.evaluate(() => { window.__storage = null; });
+    await p.locator(`${wb} [data-wb=retry-persist]`).click();
+    await p.locator(`${wb} .wb-persist`).waitFor({ state: 'hidden' });
+    const ok = await p.evaluate(() => window.__moFlush());
+    assert.equal(ok.projectUnsaved, undefined); assert.equal(ok.hasProjectDrafts, true);
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    await run(p, 'code-workbench');
+    await p.locator(`${wb} .wb-tab.is-dirty`).waitFor();
+    assert.match(await cmText(p), /typed while storage is full/);
+  });
+
+  await test('Chinese: the close-window message comes in the window\'s language', async p => {
+    await openExternal(p);
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await p.locator(`${wb} .CodeMirror`).waitFor();
+    await p.evaluate(() => { window.__storage = 'full'; });
+    await typeIn(p, '// 输入');
+    const flushed = await p.evaluate(() => window.__moFlush());
+    assert.equal(flushed.projectUnsaved, true);
+    assert.match(flushed.projectMessage, /没能留存/);
+  }, { lang: 'zh-CN' });
+
+  await test('storage silently blocked, project changed elsewhere: the switch waits with the text open; Retry after storage recovers finishes it', async p => {
+    await openExternal(p);
+    await p.locator(`${wb} [data-node="util.cpp"]`).click();
+    await p.locator(`${wb} .CodeMirror`).waitFor();
+    await p.evaluate(() => { window.__storage = 'blocked'; });
+    await typeIn(p, '// blocked storage');
+    await p.locator(`${wb} .wb-persist:not([hidden])`).waitFor();
+    // The desktop app now reports another project (chosen in another window, say); refreshing must not drop the text.
+    await p.evaluate(async () => { const r = await fetch('/api/all').then(r => r.json()); const v = r.vault.replace(/\\/g, '/'); window.__fake.set('proj', { id: 'vault-1', name: v.split('/').pop(), root: v }); const f = window.__fake.get('files'); f['vault-1'] = {}; window.__fake.set('files', f); });
+    await p.locator(`${wb} [data-wb=refresh]`).click();
+    await sleep(200);
+    assert.match(await p.locator(`${wb} .wb-persist`).innerText(), /was not switched/);
+    assert.match(await cmText(p), /blocked storage/);
+    assert.equal(await p.locator(`${wb} .wb-proj-root`).innerText(), 'C:/fake/proj');
+    const held = await p.evaluate(() => window.__moFlush());
+    assert.equal(held.projectUnsaved, true);
+    await p.evaluate(() => { window.__storage = null; });
+    await p.locator(`${wb} [data-wb=retry-persist]`).click();
+    await p.waitForFunction(() => /This vault/.test(document.querySelector('#code-workbench .wb-proj-name').textContent));
+    assert.equal(await p.locator(`${wb} .wb-persist`).isVisible(), false);
+    const kept = await p.evaluate(() => JSON.parse(localStorage.getItem('mo:wb:draft:ext-1:util.cpp') || 'null'));
+    assert.match(kept?.text || '', /blocked storage/, 'the old project\'s text is in its draft');
+  });
+
+  await test('a draft whose file changed on disk is never written over it silently: Save and Compile are refused until you choose', async p => {
+    await openExternal(p);
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await typeIn(p, '// my draft');
+    await sleep(400);
+    await p.evaluate(() => { const f = window.__fake.get('files'); f['ext-1']['main.cpp'] = '// changed by another program\n'; window.__fake.set('files', f); });
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    await run(p, 'code-workbench');
+    await p.locator(`${wb} .wb-tab.is-conflict`).waitFor();
+    await p.keyboard.press('Control+s');                                      // Save itself is greyed out
+    await p.locator(`${wb} [data-wb=build]`).click();
+    await sleep(300);
+    await p.locator(`${wb} .wb-problem [data-wb=keep-mine]`).waitFor();       // the choice is offered
+    assert.equal((await calls(p, 'project', 'write')).length, 0);
+    assert.equal((await calls(p, 'run', 'start')).length, 0, 'nothing compiled over a conflict');
+    assert.equal(await p.evaluate(() => window.__fake.get('files')['ext-1']['main.cpp']), '// changed by another program\n');
+    assert.match(await cmText(p), /my draft/);
+  });
+
+  await test('files opened at the same time: exactly one editor, the last one chosen is shown with its own text', async p => {
+    await p.evaluate(() => { window.__readDelay = { 'main.cpp': 400, 'util.cpp': 50 }; });
+    await openExternal(p);
+    await p.evaluate(() => { const n = s => document.querySelector(`#code-workbench [data-node="${s}"]`); n('main.cpp').click(); n('util.cpp').click(); n('util.cpp').click(); });
+    await sleep(800);
+    assert.equal(await p.locator(`${wb} .CodeMirror`).count(), 1);
+    assert.equal(await p.locator(`${wb} .wb-tab`).count(), 2);
+    assert.match(await p.locator(`${wb} .wb-tab.is-active`).innerText(), /util\.cpp/);
+    assert.equal(await cmText(p), 'int util() { return 1; }\n');
+    assert.equal((await calls(p, 'project', 'read')).filter(c => c.path === 'util.cpp').length, 1, 'read once');
+    // Reopening the project and switching quickly: still one editor, the right text.
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    await p.evaluate(() => { window.__readDelay = { 'main.cpp': 200, 'util.cpp': 200 }; });
+    await run(p, 'code-workbench');
+    await p.locator(`${wb} .wb-tab >> nth=1`).waitFor();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await sleep(300);
+    assert.equal(await p.locator(`${wb} .CodeMirror`).count(), 1);
+    assert.match(await cmText(p), /int x = 42/);
+  });
+
+  await test('storage refusing every write and removal: a clean open file still lets you choose another project; closing is fine', async p => {
+    await openExternal(p);
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await p.locator(`${wb} .CodeMirror`).waitFor();
+    await p.evaluate(() => {
+      window.__storage = 'full';                       // setItem throws for the workbench's keys…
+      const remove = Storage.prototype.removeItem;     // …and so does removeItem
+      Storage.prototype.removeItem = function (k) { if (String(k).startsWith('mo:wb:') && window.__storage) throw new DOMException('denied', 'SecurityError'); return remove.call(this, k); };
+    });
+    // An old draft of this file that can't be removed now (equal to the disk, so nothing is lost).
+    const flushed = await p.evaluate(() => window.__moFlush());
+    assert.equal(flushed.ok, true); assert.equal(flushed.projectUnsaved, undefined);
+    await p.locator(`${wb} [data-wb=choose]`).click();
+    await sleep(200);
+    assert.equal((await calls(p, 'project', 'choose')).length, 1, 'the folder picker opened');
+    assert.equal(await p.locator(`${wb} .wb-persist`).isVisible(), false);
+    await p.locator(`${wb} [data-wb=vault]`).click();
+    await p.waitForFunction(() => /This vault/.test(document.querySelector('#code-workbench .wb-proj-name').textContent));
+  });
+
+  await test('a file still loading when the project changes does not land in the new project', async p => {
+    await openExternal(p);
+    await p.evaluate(() => { window.__readDelay = { 'main.cpp': 500 }; document.querySelector('#code-workbench [data-node="main.cpp"]').click(); });
+    await p.locator(`${wb} [data-wb=vault]`).click();
+    await p.waitForFunction(() => /This vault/.test(document.querySelector('#code-workbench .wb-proj-name').textContent));
+    await sleep(700);
+    assert.equal(await p.locator(`${wb} .wb-tab`).count(), 0);
+    assert.ok(await p.locator(`${wb} .CodeMirror`).count() <= 1);
+  });
 
   await browser.close();
   await fs.rm(vault, { recursive: true, force: true }).catch(() => {});

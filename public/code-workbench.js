@@ -26,7 +26,18 @@ async function runner(action, args = {}) {
 }
 const store = {
   get(k, d) { try { const v = localStorage.getItem('mo:' + k); return v == null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { if (v == null) localStorage.removeItem('mo:' + k); else localStorage.setItem('mo:' + k, JSON.stringify(v)); } catch { /* storage full or blocked */ } },
+  // Writes, then reads back: true only when storage now holds exactly that (storage can be full or blocked).
+  set(k, v) {
+    try {
+      const key = 'mo:' + k;
+      if (v == null) { localStorage.removeItem(key); return localStorage.getItem(key) === null; }
+      const text = JSON.stringify(v);
+      localStorage.setItem(key, text);
+      return localStorage.getItem(key) === text;
+    } catch { return false; }
+  },
+  // Any unsaved project text kept in storage (also of files whose tabs are closed or of other projects)?
+  hasDrafts() { try { for (let i = 0; i < localStorage.length; i++) if (localStorage.key(i)?.startsWith('mo:wb:draft:')) return true; } catch { /* blocked */ } return false; },
 };
 const dirOf = p => p.split('/').slice(0, -1).join('/');
 const baseOf = p => p.split('/').pop();
@@ -46,6 +57,8 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
   let outText = '', diagnostics = [], paused = null;
   let panel = store.get('wb:panel', { open: true, tab: 'output' });
   let unsubscribe = null, built = false, visible = false, cursorLine = null, pausedMark = null;
+  let persistBad = false;          // unsaved text couldn't be kept in storage: switching projects waits, Retry shows
+  let pendingProject = undefined;  // a project switch held back until the unsaved text is kept
 
   /* ---------- layout ---------- */
   function build() {
@@ -75,6 +88,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
             <button type="button" data-wb="build"></button><button type="button" data-wb="run" class="wb-primary"></button><button type="button" data-wb="debug"></button><button type="button" data-wb="stop"></button>
             <span class="wb-debug-controls"><button type="button" data-wb="continue"></button><button type="button" data-wb="next"></button><button type="button" data-wb="step"></button><button type="button" data-wb="finish"></button></span>
           </div>
+          <div class="wb-persist" role="alert" hidden></div>
           <div class="wb-problem" hidden></div>
           <div class="wb-cm"><div class="wb-empty"></div></div>
           <div class="wb-tools" role="status"></div>
@@ -128,11 +142,16 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
   }
   async function loadProject(p) {
     const changed = !proj || !p || proj.id !== p.id;
-    if (changed) persistOpen();
+    // Leaving a project: its unsaved text must be safely kept first. If storage fails, stay (the text stays open
+    // here) and offer Retry, which then finishes the switch.
+    if (changed && proj && !persistOpen()) { pendingProject = p; toast(t('wb.switchBlocked')); renderPersist(); return false; }
+    pendingProject = undefined;
     proj = p;
     if (changed) {
+      for (const timer of draftTimers.values()) clearTimeout(timer); // already written by persistOpen above
+      draftTimers.clear();
       for (const b of buffers.values()) b.doc = null;
-      buffers.clear(); order = []; active = null; dirs.clear(); expanded.clear(); expanded.add(''); selectedDir = '';
+      buffers.clear(); order = []; active = null; wanted = null; openListBad = false; checkPersist(); dirs.clear(); expanded.clear(); expanded.add(''); selectedDir = '';
       breakpoints = new Map(Object.entries(proj ? store.get('wb:bp:' + proj.id, {}) : {}).map(([k, v]) => [k, new Set(v)]));
       const stdin = root.querySelector('#wb-stdin'); if (stdin) stdin.value = proj ? store.get('wb:stdin:' + proj.id, '') : '';
       if (cm) cm.swapDoc(CM.Doc('', 'text/plain'));
@@ -154,7 +173,24 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     try { const r = await project('status'); await loadProject(r.project); }
     catch (e) { toast(e.message); }
   }
+  // Before asking the desktop app to change the project, the current project's unsaved text must be kept.
+  function canLeave() {
+    if (!proj || persistOpen()) return true;
+    toast(t('wb.switchBlocked')); renderPersist(); return false;
+  }
+  async function retryPersist() {
+    if (!persistOpen()) { toast(t('wb.persistFailed')); return; }
+    toast(t('wb.persistOk'));
+    if (pendingProject !== undefined) await loadProject(pendingProject);
+  }
+  function renderPersist() {
+    const el = root.querySelector('.wb-persist');
+    if (!el) return;
+    el.hidden = !persistBad;
+    if (persistBad) el.innerHTML = `<span>${esc(t(pendingProject !== undefined ? 'wb.switchBlocked' : 'wb.persistFailed'))}</span><button type="button" data-wb="retry-persist">${esc(t('wb.retry'))}</button>`;
+  }
   async function choose() {
+    if (!canLeave()) return;
     try {
       const r = await project('choose');
       if (r.canceled) return;
@@ -163,6 +199,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     } catch (e) { toast(e.message); }
   }
   async function useVault() {
+    if (!canLeave()) return null;
     try { const r = await project('useVault'); await loadProject(r.project); return r.project; }
     catch (e) { toast(e.message); return null; }
   }
@@ -202,12 +239,19 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
   }
 
   /* ---------- open files ---------- */
-  const draftKey = path => 'wb:draft:' + proj.id + ':' + path;
+  const draftKey = (pid, path) => 'wb:draft:' + pid + ':' + path;
   const dirty = b => !!b?.doc && b.doc.getValue() !== b.disk;
-  async function ensureEditor() {
-    if (cm) return cm;
+  // Exactly one editor: files opened at the same time share one load; a failed load can be tried again.
+  let editorPending = null;
+  function ensureEditor() {
+    if (cm) return Promise.resolve(cm);
+    editorPending ||= buildEditor().catch(e => { editorPending = null; throw e; });
+    return editorPending;
+  }
+  async function buildEditor() {
     const host = root.querySelector('.wb-cm');
     CM = await editorFor(sourceFormat('main.cpp'));
+    if (cm) return cm;
     host.querySelector('.wb-empty')?.remove();
     cm = CM(host, {
       lineNumbers: true, tabSize: 4, indentUnit: 4, indentWithTabs: false, theme: 'graphite', viewportMargin: 12,
@@ -229,45 +273,83 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
   }
   // Drafts: the text of every open file that differs from the disk, with the revision it was based on.
   const draftTimers = new Map();
+  // Returns whether the draft is now really in storage (written and read back). The text always stays in memory.
   function keepDraft(b, now = false) {
-    clearTimeout(draftTimers.get(b.path));
-    const write = () => store.set(draftKey(b.path), dirty(b) ? { text: b.doc.getValue(), revision: b.revision } : null);
-    if (now) write(); else draftTimers.set(b.path, setTimeout(write, 250));
+    clearTimeout(draftTimers.get(b));
+    draftTimers.delete(b);
+    const write = () => {
+      // Only unsaved text that couldn't be kept counts; a clean file whose old draft can't be removed loses nothing
+      // (an old draft equal to the disk is dropped when the file opens again).
+      const ok = store.set(b.key, dirty(b) ? { text: b.doc.getValue(), revision: b.revision } : null) || !dirty(b);
+      b.unkept = !ok;
+      if (!ok || persistBad) checkPersist();
+      return ok;
+    };
+    if (now) return write();
+    draftTimers.set(b, setTimeout(write, 250));
+    return !b.unkept;
   }
+  function checkPersist() {
+    const bad = [...buffers.values()].some(b => b.unkept && dirty(b)) || openListBad;
+    if (bad !== persistBad) { persistBad = bad; renderPersist(); }
+  }
+  let openListBad = false;
+  // Every open file's unsaved text, and the list of open files (which brings the drafts back next time), written now
+  // and checked. False when any of it couldn't be kept.
   function persistOpen() {
-    if (!proj) return;
-    for (const b of buffers.values()) if (b.doc) keepDraft(b, true);
-    store.set('wb:open:' + proj.id, { files: order.slice(0, 30), active });
+    if (!proj) return true;
+    let ok = true;
+    for (const b of buffers.values()) if (b.doc && !keepDraft(b, true)) ok = false;
+    openListBad = !store.set('wb:open:' + proj.id, { files: order.slice(0, 30), active });
+    // Without unsaved text a list that couldn't be kept loses nothing.
+    if (openListBad && ![...buffers.values()].some(dirty)) openListBad = false;
+    checkPersist();
+    return ok && !openListBad;
   }
+  // Files opened at the same time: one read per file, nothing from a previous project lands in the next one, and
+  // the file chosen last is the one shown.
+  const opening = new Map();
+  let wanted = null;
   async function openFile(path, { line = 0, quiet = false, focus = true } = {}) {
     if (!proj) return;
     if (!sourceFormat(path)) { if (!quiet) toast(t('wb.notCode')); return; }
-    if (focus) root.classList.remove('show-tree'); // on a narrow pane the tree is a drawer over the editor
+    if (focus) { root.classList.remove('show-tree'); wanted = path; } // on a narrow pane the tree is a drawer over the editor
+    const pid = proj.id;
     let b = buffers.get(path);
     if (!b) {
-      const r = await project('read', { projectId: proj.id, path });
-      await ensureEditor();
-      const format = sourceFormat(path);
-      b = { path, disk: r.editable ? r.content : null, revision: r.revision, eol: r.eol, bom: r.bom, editable: !!r.editable, reason: r.reason || '', conflict: false, problem: '' };
-      const draft = store.get(draftKey(path), null);
-      let text = r.editable ? r.content : (r.content || '');
-      if (draft && typeof draft.text === 'string' && draft.text !== b.disk) {
-        // Your unsaved text from before comes back. If the file changed on disk since, it is kept, and saving it
-        // needs your decision (keep yours, or load the disk version).
-        text = draft.text;
-        if (draft.revision !== r.revision) { b.conflict = true; b.problem = t('wb.conflict'); }
-      } else if (draft) store.set(draftKey(path), null);
-      if (!r.editable) { b.problem = t('wb.readonly'); }
-      b.doc = CM.Doc(text, format.mode);
-      if (!r.editable) b.doc.cantEdit = true;
-      buffers.set(path, b);
-      if (!order.includes(path)) order.push(path);
+      const key = pid + '\n' + path;
+      if (!opening.has(key)) opening.set(key, loadBuffer(pid, path).finally(() => opening.delete(key)));
+      b = await opening.get(key);
+      if (!b || proj?.id !== pid) return;
     }
     await revealIn(path);
-    if (focus || !active) activate(path);
-    if (line) goToLine(line);
+    if (proj?.id !== pid || !buffers.has(path)) return;
+    if (focus ? wanted === path : !active) activate(path);
+    if (line && active === path) goToLine(line);
     persistOpen();
     renderAll();
+  }
+  async function loadBuffer(pid, path) {
+    const r = await project('read', { projectId: pid, path });
+    await ensureEditor();
+    if (proj?.id !== pid) return null;            // the project changed meanwhile
+    if (buffers.has(path)) return buffers.get(path);
+    const format = sourceFormat(path);
+    const b = { path, key: draftKey(pid, path), disk: r.editable ? r.content : null, revision: r.revision, eol: r.eol, bom: r.bom, editable: !!r.editable, reason: r.reason || '', conflict: false, problem: '' };
+    const draft = store.get(b.key, null);
+    let text = r.editable ? r.content : (r.content || '');
+    if (draft && typeof draft.text === 'string' && draft.text !== b.disk) {
+      // Your unsaved text from before comes back. If the file changed on disk since, it is kept, and saving it
+      // needs your decision (keep yours, or load the disk version); it is never written over the disk silently.
+      text = draft.text;
+      if (draft.revision !== r.revision) { b.conflict = true; b.problem = t('wb.conflict'); }
+    } else if (draft) store.set(b.key, null);
+    if (!r.editable) { b.problem = t('wb.readonly'); }
+    b.doc = CM.Doc(text, format.mode);
+    if (!r.editable) b.doc.cantEdit = true;
+    buffers.set(path, b);
+    if (!order.includes(path)) order.push(path);
+    return b;
   }
   function activate(path) {
     const b = buffers.get(path);
@@ -289,7 +371,8 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     const b = buffers.get(path);
     if (!b) return;
     if (dirty(b) && !confirm(t('wb.closeDirty', { name: baseOf(path) }))) return;
-    store.set(draftKey(path), null);
+    clearTimeout(draftTimers.get(b)); draftTimers.delete(b);
+    store.set(b.key, null);
     buffers.delete(path); order = order.filter(p => p !== path);
     if (active === path) { active = null; if (order.length) activate(order[order.length - 1]); else cm?.swapDoc(CM.Doc('', 'text/plain')); }
     persistOpen(); renderAll();
@@ -580,6 +663,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     if (a === 'new-file') return newEntry('file');
     if (a === 'new-folder') return newEntry('folder');
     if (a === 'save') return saveActive();
+    if (a === 'retry-persist') return retryPersist();
     if (a === 'keep-mine') return resolveConflict(true);
     if (a === 'load-disk') return resolveConflict(false);
     if (['build', 'run', 'debug'].includes(a)) return start(a);
@@ -624,9 +708,15 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     currentProject: () => proj,
     isVaultProject: () => !!proj && norm(proj.root).toLowerCase() === norm(vaultRoot()).toLowerCase(),
     async status() { await init(); return proj; },
-    // Before closing, updating or switching vaults: every open file's unsaved text is written to its draft now, so
-    // it comes back next time. (These are project files, not vault notes, so they are not reported as `unsaved`.)
-    flush() { persistOpen(); return [...buffers.values()].filter(dirty).length; },
+    // Before closing, updating or switching vaults: every open file's unsaved text is written to its draft now and
+    // read back, so it comes back next time. (Project files, not vault notes: never reported as `unsaved`.)
+    //   ok: false      some unsaved text couldn't be kept (it is still open here); message says what to do
+    //   hasDrafts      unsaved project text is kept in storage (open or closed tabs, any project)
+    flush() {
+      const ok = persistOpen() || ![...buffers.values()].some(dirty);
+      return { ok, hasDrafts: [...buffers.values()].some(dirty) || store.hasDrafts(), message: ok ? '' : t('wb.closeBlocked') };
+    },
+    retryPersist,
     get visible() { return visible; },
   };
 }

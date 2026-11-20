@@ -1,6 +1,6 @@
 import { getLang } from '/i18n.js';
 import { canvasText } from '/canvas-strings.js';
-import { createSubmissionDialog, supportedTypes } from '/canvas-submit.js';
+import { createSubmissionDialog, supportedTypes, answersDraft, evidenceOf, explicitEvidence, verdict } from '/canvas-submit.js';
 
 const ORIGIN = 'https://oc.sjtu.edu.cn';
 const GROUPS = ['files', 'assignments', 'requirements', 'announcements', 'modules', 'quizzes', 'events', 'discussions', 'pages'];
@@ -102,23 +102,33 @@ export function createCanvasView(root, { api, openFile }) {
   let selected = '', group = 'files', limit = STEP, dateLimit = STEP, confirmDisconnect = false;
   let receipt = null, bulkFailures = [], visible = false, lastPull = null, progressTimer = 0;
   const call = (method, name, body) => api(method, 'canvas/' + name, {}, body);
+  // By ID only (two courses or assignments can share a name).
+  const findAssignment = (courseId, assignmentId) => state?.snapshot?.courses?.find(c => String(c.id) === String(courseId))?.assignments?.find(a => String(a.id) === String(assignmentId)) || null;
   const submission = createSubmissionDialog({
     esc, formatTime, getState: () => state, listFiles: () => api('GET', 'list'),
     authorize: async () => { const error = await perform('connect', {submit:true}); if (error) throw new Error(error); },
     openOfficial: async (courseId, assignmentId) => { const error = await perform('portal', {courseId, assignmentId}); if (error) throw new Error(error); },
-    onAccepted(courseId, assignmentId, result) {
-      const item = state?.snapshot?.courses?.find(c => String(c.id) === String(courseId))?.assignments?.find(a => String(a.id) === String(assignmentId));
-      if (item) Object.assign(item, {submitted:true, attempt:result.attempt, submittedAt:result.submittedAt});
+    onAccepted(courseId, assignmentId, result, owner) {
+      // Written into the course list only while the same account is still signed in: never into another student's
+      // list (even one with a course or assignment of the same name or ID).
+      if (!owner || owner !== state?.accountKey) return;
+      const item = findAssignment(courseId, assignmentId);
+      if (item) Object.assign(item, {submitted:true, attempt:result.attempt, submittedAt:result.submittedAt,
+        submissionEvidence:{status:'submitted', attempt:result.attempt ?? null, submittedAt:result.submittedAt ?? null}});
       summaryReceipt = [label('receipt'), item?.title, label('attempt') + ' ' + result.attempt, formatTime(result.submittedAt)].filter(Boolean).join(' · ');
       render();
     },
     // An unclear submission: ask Canvas what it has for this assignment and this account. A network error or an
     // answer without the same identifiers leaves the result unknown (the dialog decides).
     verify: async (courseId, assignmentId, accountKey) => {
-      const result = await call('POST', 'verify-submission', { courseId, assignmentId, accountKey: accountKey || state?.accountKey || null });
-      if (result?.status === 'submitted') {
-        const item = state?.snapshot?.courses?.find(c => String(c.id) === String(courseId))?.assignments?.find(a => String(a.id) === String(assignmentId));
-        if (item && result.attempt != null) Object.assign(item, { submitted: true, attempt: result.attempt, submittedAt: result.submittedAt });
+      if (!accountKey) return null; // no account to check against: the dialog keeps the result unknown
+      const result = await call('POST', 'verify-submission', { courseId, assignmentId, accountKey });
+      // Before writing into the course list: the answer names this account, course and assignment, and that account
+      // is still the one signed in (an answer for A that arrives after switching to B is not written into B's list).
+      if (result?.status === 'submitted' && result.attempt != null && answersDraft(result, accountKey, courseId, assignmentId) && state?.accountKey === accountKey) {
+        const item = findAssignment(courseId, assignmentId);
+        if (item) Object.assign(item, { submitted: true, attempt: result.attempt, submittedAt: result.submittedAt,
+          submissionEvidence: { status: 'submitted', attempt: result.attempt, submittedAt: result.submittedAt ?? null } });
       }
       return result;
     },
@@ -306,7 +316,7 @@ export function createCanvasView(root, { api, openFile }) {
         if (visible) {
           try {
             const result = await call('GET', 'status');
-            if (busy !== 'pull' || !state) return;
+            if (busy !== 'pull' || !state || result?.accountKey !== state.accountKey) return; // another account by now
             state.pullProgress = result.pullProgress;
             busyControls();
           } catch { /* The active request still owns the final result. */ }
@@ -339,12 +349,17 @@ export function createCanvasView(root, { api, openFile }) {
         if (action === 'calendar') { const input = root.querySelector('#cv-feed-input'); if (input) input.value = ''; }
         if (action === 'disconnect') { submission.clear(); pendingVerification = null; summaryReceipt = ''; }
         if (action === 'sync' && pendingVerification) {
+          // Submitted on the school site: ask Canvas for this assignment's record, and compare it with the record
+          // from before (never with the list's default attempt 0). Only for the account that opened it.
           const v = pendingVerification;
-          const item = state.snapshot?.courses?.find(c => String(c.id) === String(v.courseId))?.assignments?.find(a => String(a.id) === String(v.assignmentId));
-          if (item && (item.attempt > v.attempt || (item.submitted && !v.submitted))) {
-            summaryReceipt = [label('receipt'), item.title, item.attempt ? label('attempt') + ' ' + item.attempt : '', formatTime(item.submittedAt)].filter(Boolean).join(' · ');
+          let answer = null;
+          if (v.owner && v.owner === state?.accountKey) answer = await call('POST', 'verify-submission', {courseId:v.courseId, assignmentId:v.assignmentId, accountKey:v.owner}).catch(() => null);
+          const same = v === pendingVerification && v.owner === state?.accountKey && answersDraft(answer, v.owner, v.courseId, v.assignmentId);
+          if (same && verdict(v.baseline, answer) === 'received') {
+            const item = findAssignment(v.courseId, v.assignmentId);
+            summaryReceipt = [label('receipt'), item?.title || v.title, answer.attempt != null ? label('attempt') + ' ' + answer.attempt : '', formatTime(answer.submittedAt)].filter(Boolean).join(' · ');
             pendingVerification = null;
-          } else { notice(label('noNewAttempt')); }
+          } else if (v === pendingVerification) { notice(label(same && evidenceOf(answer)?.status === 'unsubmitted' && v.baseline?.status === 'submitted' ? 'recordConflict' : 'noNewAttempt')); }
         }
       }
     } catch (error) {
@@ -377,7 +392,12 @@ export function createCanvasView(root, { api, openFile }) {
       const item = course?.assignments?.find(a => String(a.id) === el.dataset.assignment);
       if (!item) return;
       if (!canOpenSubmission(item)) {
-        pendingVerification = {courseId:course.id, assignmentId:item.id, attempt:item.attempt || 0, submitted:item.submitted, title:item.title, checkOnReturn:true};
+        const v = pendingVerification = {courseId:course.id, assignmentId:item.id, owner:state.accountKey || null, baseline:evidenceOf(item.submissionEvidence), title:item.title, checkOnReturn:true};
+        // No clear record in the list (older data, or the web portal): read it from Canvas before the student submits there.
+        if (!explicitEvidence(v.baseline) && v.owner) call('POST', 'verify-submission', {courseId:v.courseId, assignmentId:v.assignmentId, accountKey:v.owner}).then(answer => {
+          const e = evidenceOf(answer);
+          if (pendingVerification === v && state?.accountKey === v.owner && answersDraft(answer, v.owner, v.courseId, v.assignmentId) && explicitEvidence(e) && !explicitEvidence(v.baseline)) v.baseline = e;
+        }).catch(() => {});
         return void perform('portal',{courseId:course.id,assignmentId:item.id});
       }
       return submission.open(course,item);

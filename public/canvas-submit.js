@@ -13,6 +13,44 @@ export function supportedTypes(assignment, mode) {
   return TYPES.filter(value => assignment.submissionTypes?.includes(value));
 }
 
+// What Canvas said about the student's submission when the assignment was read: `submissionEvidence`
+// {status: submitted | unsubmitted | unknown, attempt, submittedAt}. Old records have no such field, and the
+// `attempt` shown in lists defaults to 0, which is no evidence of anything, so it is never used here.
+const count = value => (typeof value === 'number' || (typeof value === 'string' && /^\d+$/.test(value))) && Number.isSafeInteger(Number(value)) && Number(value) >= 0 ? Number(value) : null;
+export function evidenceOf(raw) {
+  if (!raw || typeof raw !== 'object' || !['submitted', 'unsubmitted', 'unknown'].includes(raw.status)) return null;
+  return Object.freeze({status: raw.status, attempt: count(raw.attempt), submittedAt: typeof raw.submittedAt === 'string' ? raw.submittedAt : null});
+}
+// Evidence clear enough to compare against later: not submitted (and no attempt counted), or submitted with a
+// known attempt number.
+export function explicitEvidence(e) {
+  return !!e && ((e.status === 'unsubmitted' && !(e.attempt > 0)) || (e.status === 'submitted' && e.attempt != null));
+}
+// A Canvas answer counts for a draft only when it names the same account (a non-empty string, exactly the draft's
+// owner; an array or a number is never an identity), the same course and the same assignment (each a non-empty
+// string or a whole number, never an array or an object that merely prints the same).
+const accountId = value => typeof value === 'string' && value.trim() !== '';
+const recordId = value => (typeof value === 'string' && value.trim() !== '') || (typeof value === 'number' && Number.isSafeInteger(value) && value > 0);
+export function answersDraft(v, owner, courseId, assignmentId) {
+  return !!v && typeof v === 'object' && accountId(owner) && accountId(v.accountKey) && v.accountKey === owner &&
+    [v.courseId, v.assignmentId, courseId, assignmentId].every(recordId) &&
+    String(v.courseId) === String(courseId) && String(v.assignmentId) === String(assignmentId);
+}
+// After an unclear submission, what a fresh Canvas answer means compared with the draft's baseline:
+// 'received' | 'not-received' | 'unknown'. Contradictions (the baseline had a submission, and now Canvas says
+// nothing was submitted) stay unknown: no restoring, nothing sent again.
+export function verdict(baseline, v) {
+  if (!explicitEvidence(baseline)) return 'unknown';
+  const now = evidenceOf(v);
+  if (!now) return 'unknown';
+  if (now.status === 'submitted') {
+    if (baseline.status === 'unsubmitted') return 'received';
+    return now.attempt != null && now.attempt > baseline.attempt ? 'received' : 'unknown';
+  }
+  if (now.status === 'unsubmitted' && !(now.attempt > 0) && baseline.status === 'unsubmitted') return 'not-received';
+  return 'unknown';
+}
+
 // Submission drafts, including File handles, live in this tab's memory. The final request is sent only
 // from the explicit confirmation button. A missing network response can still mean Canvas accepted it.
 //
@@ -161,11 +199,33 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
       ${d.error ? `<p role="alert" class="cv-feedback cv-error">${esc(d.error)}</p>` : ''}
       <footer class="cv-submit-actions">${!d.sending ? control('portal','origTask') : ''}${actions}</footer></div>`;
   }
+  // Old records (no evidence) and records Canvas left unclear: before the first submission, ask Canvas for the
+  // current record of this assignment and this account. Kept only when it answers for this draft, clearly; set once.
+  async function ensureBaseline(d) {
+    if (explicitEvidence(d.baseline)) return true;
+    if (!verify || !accountId(d.owner)) return false;
+    const mine = epoch;
+    try {
+      const v = await verify(d.course.id, d.item.id, d.owner);
+      if (mine !== epoch || !answersDraft(v, d.owner, d.course.id, d.item.id)) return false;
+      const e = evidenceOf(v);
+      if (!explicitEvidence(e)) return false;
+      if (!explicitEvidence(d.baseline)) d.baseline = e;
+      return true;
+    } catch { return false; }
+  }
   async function send(d) {
     if (d.sending || d.phase !== 'preview' || !allowedToSend(d)) return;
+    if (!explicitEvidence(d.baseline)) {
+      d.verifying = true; d.error = ''; draw();
+      const ok = await ensureBaseline(d).finally(() => { d.verifying = false; });
+      // No clear record: the draft stays as it is (nothing is sent); the student can try again or check the original.
+      if (!ok) { if (d.phase === 'preview') d.error = t('baselineUnknown'); if (d === active) draw(); return; }
+      if (d.phase !== 'preview' || !allowedToSend(d)) { if (d === active) draw(); return; }
+    }
     const form = new FormData();
     const common = {courseId: d.course.id, assignmentId: d.item.id, type: d.type,
-      expectedAttempt: d.attempt, requestId: d.requestId || crypto.randomUUID(), confirmed: 'true'};
+      expectedAttempt: d.baseline.attempt ?? 0, requestId: d.requestId || crypto.randomUUID(), confirmed: 'true'};
     d.requestId = common.requestId;
     for (const [key, value] of Object.entries(common)) form.set(key, String(value));
     if (d.type === 'online_text_entry') form.set('text', d.text);
@@ -178,7 +238,7 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
       const result = await response.json().catch(() => null);
       if (response.ok && result?.attempt != null && String(result.assignmentId) === String(d.item.id)) {
         d.receipt = result; d.phase = 'done'; d.files = []; d.vault.clear(); d.prepared = []; d.text = ''; d.url = '';
-        if (mine === epoch && keyOf(getState()) === d.owner) onAccepted(d.course.id, d.item.id, result);
+        if (mine === epoch && keyOf(getState()) === d.owner) onAccepted(d.course.id, d.item.id, result, d.owner);
       } else if (!result || response.ok || result.code === 'submission_unknown') {
         d.phase = 'unknown';
       } else if (mine !== epoch) {
@@ -202,17 +262,16 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     const mine = epoch;
     d.verifying = true; d.error = ''; draw();
     try {
+      if (!accountId(d.owner)) { d.error = t('noNewAttempt'); return; } // no account to check against: still unknown
       const v = await verify(d.course.id, d.item.id, d.owner);
       if (mine !== epoch) return;
-      const same = v && String(v.courseId) === String(d.course.id) && String(v.assignmentId) === String(d.item.id) && (!v.accountKey || v.accountKey === d.owner);
-      const attempt = same && v.attempt != null && v.attempt !== '' && Number.isInteger(Number(v.attempt)) ? Number(v.attempt) : null;
-      const wasUnsubmitted = d.item.submitted === false && !(Number(d.item.attempt) > 0);
-      if (same && v.status === 'submitted' && ((attempt != null && attempt > d.attempt) || wasUnsubmitted)) {
-        d.receipt = {attempt: v.attempt, submittedAt: v.submittedAt, assignmentId: d.item.id};
+      const result = answersDraft(v, d.owner, d.course.id, d.item.id) ? verdict(d.baseline, v) : 'unknown';
+      if (result === 'received') {
+        d.receipt = {attempt: count(v.attempt), submittedAt: v.submittedAt, assignmentId: d.item.id};
         d.phase = 'done'; d.files = []; d.vault.clear(); d.prepared = []; d.text = ''; d.url = '';
-        if (keyOf(getState()) === d.owner) onAccepted(d.course.id, d.item.id, d.receipt);
-      } else if (same && v.status === 'unsubmitted') d.phase = 'not-received';
-      else d.error = t('noNewAttempt'); // no clear answer: still unknown
+        if (keyOf(getState()) === d.owner) onAccepted(d.course.id, d.item.id, d.receipt, d.owner);
+      } else if (result === 'not-received') d.phase = 'not-received';
+      else d.error = t(evidenceOf(v)?.status === 'unsubmitted' ? 'recordConflict' : 'noNewAttempt'); // still unknown
     } catch (error) { if (mine === epoch) d.error = error.message || t('error'); }
     finally { d.verifying = false; if (d === active) draw(); }
   }
@@ -222,10 +281,14 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     const owner = keyOf(getState()) || lastKey;
     const key = (owner || 'none') + '/' + String(course.id) + '/' + String(item.id);
     const attempt = Number.isInteger(Number(item.attempt)) ? Number(item.attempt) : 0;
+    const evidence = evidenceOf(item.submissionEvidence);
     let d = drafts.get(key);
-    if (d?.phase === 'done' || (!d?.sending && ['unknown', 'not-received'].includes(d?.phase) && attempt > d.attempt)) d = null;
+    // An unclear draft is replaced only when the list now clearly shows a newer attempt than its own baseline.
+    const newer = explicitEvidence(d?.baseline) && d.baseline.attempt != null && evidence?.status === 'submitted' && evidence.attempt != null && evidence.attempt > d.baseline.attempt;
+    if (d?.phase === 'done' || (!d?.sending && ['unknown', 'not-received'].includes(d?.phase) && newer)) d = null;
     if (!d) {
-      d = {course,item,owner,type:supportedTypes(item, getState()?.authMode)[0],text:'',url:'',files:[],vault:new Map(),prepared:[],filter:'',limit:40,index:null,phase:'edit',error:'',requestId:null,attempt,sending:false};
+      // baseline: what Canvas said when this draft was created (null for old records; fetched before the first send).
+      d = {course,item,owner,baseline:evidence,type:supportedTypes(item, getState()?.authMode)[0],text:'',url:'',files:[],vault:new Map(),prepared:[],filter:'',limit:40,index:null,phase:'edit',error:'',requestId:null,attempt,sending:false};
       drafts.set(key,d); // also while the school can't identify the session (owner null); see sessionChanged
     }
     d.paused = !getState()?.connected || keyOf(getState()) !== owner;

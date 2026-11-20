@@ -2496,7 +2496,8 @@ Object.entries({
 }).forEach(([key, labels]) => ["en", "fr", "es", "ja", "ko", "zh-CN", "zh-TW"].forEach((c, i) => { D[c][key] = labels[i]; }));
 Object.entries({
   "plan.readingPdf":["Reading PDF {i} of {n}: {name}","Lecture du PDF {i} sur {n} : {name}","Leyendo el PDF {i} de {n}: {name}","PDF {i}/{n} を読み込み中：{name}","PDF {i}/{n} 읽는 중: {name}","正在读取 PDF {i}/{n}：{name}","正在讀取 PDF {i}/{n}：{name}"],
-  "plan.noReadable":["The chosen range has no notes and no PDF with readable text.","La sélection ne contient ni note ni PDF avec du texte lisible.","El rango elegido no tiene notas ni PDF con texto legible.","選んだ範囲にはノートも文字を読める PDF もありません。","선택한 범위에 노트도, 텍스트를 읽을 수 있는 PDF도 없습니다.","所选范围里没有笔记，也没有能读出文字的 PDF。","所選範圍裡沒有筆記，也沒有能讀出文字的 PDF。"],
+  "review.loading":["Loading your review progress…","Chargement de votre progression…","Cargando tu progreso de repaso…","復習の進み具合を読み込み中…","복습 진행 상황을 불러오는 중…","正在读取复习进度…","正在讀取複習進度…"],
+  "plan.noReadable":["The chosen range has no notes and no PDF with readable text: its PDFs are scanned images. To plan from it, choose PDFs that have a text layer, add a text note for this range, or run OCR on the scanned PDFs first (to recognise their text), then try again.","La sélection ne contient ni note ni PDF avec du texte lisible : ses PDF sont des images scannées. Pour planifier, choisissez des PDF avec une couche texte, ajoutez une note texte pour cette partie, ou passez d’abord les PDF scannés à l’OCR (reconnaissance du texte), puis réessayez.","El rango elegido no tiene notas ni PDF con texto legible: sus PDF son imágenes escaneadas. Para planificar, elige PDF con capa de texto, añade una nota de texto para este rango o pasa antes los PDF escaneados por OCR (reconocimiento de texto) y vuelve a intentarlo.","選んだ範囲にはノートも文字を読める PDF もありません（PDF はスキャン画像です）。計画を作るには、テキスト層のある PDF を選ぶ、この範囲のテキストノートを追加する、またはスキャン PDF に先に OCR（文字認識）をかけてから、もう一度試してください。","선택한 범위에 노트도, 텍스트를 읽을 수 있는 PDF도 없습니다(PDF가 스캔 이미지입니다). 계획을 만들려면 텍스트 레이어가 있는 PDF를 고르거나, 이 범위의 텍스트 노트를 추가하거나, 스캔 PDF에 먼저 OCR(문자 인식)을 실행한 뒤 다시 시도하세요.","所选范围里没有笔记，也没有能读出文字的 PDF（这些 PDF 都是扫描图片）。要生成计划，可以：选择含文字层的 PDF、为这个范围添加文字笔记，或先对扫描件运行 OCR 识别文字，然后再试。","所選範圍裡沒有筆記，也沒有能讀出文字的 PDF（這些 PDF 都是掃描圖片）。要產生計畫，可以：選擇含文字層的 PDF、為這個範圍新增文字筆記，或先對掃描檔執行 OCR 辨識文字，然後再試。"],
 }).forEach(([key, labels]) => ["en", "fr", "es", "ja", "ko", "zh-CN", "zh-TW"].forEach((c, i) => { D[c][key] = labels[i]; }));
 Object.entries({
   "mock.addPaper":["Add","Ajouter","Añadir","追加","추가","添加","新增"],
@@ -2520,6 +2521,10 @@ Object.entries({
       'wb.notCode': 'Graphite can’t edit this kind of file here.', 'wb.readonly': 'Read-only', 'wb.unsaved': 'Unsaved changes', 'wb.saved0': 'Saved', 'wb.saving': 'Saving…', 'wb.saved': 'Saved {name}', 'wb.lnCol': 'Ln {line}, Col {col}',
       'wb.conflict': 'This file changed on disk while you were editing. Your text is kept. Keep yours (saves over the disk version), or load the disk version.', 'wb.keepMine': 'Keep mine and save', 'wb.loadDisk': 'Load the disk version', 'wb.discardMine': 'Replace your unsaved text with the version on disk?',
       'wb.deleted': 'This file is no longer on disk. Your text is kept; save it under a new name with + File.', 'wb.projectGone': 'The project changed or can’t be reached. Your text is kept; open the project again.', 'wb.saveFailed': 'Not saved: {msg}. Your text is kept.',
+      'wb.persistFailed': 'Your unsaved code couldn’t be kept for next time (this app’s storage is full or blocked). It is still open here: save the files to the project, or free some space and press Retry.',
+      'wb.switchBlocked': 'The project was not switched: your unsaved code couldn’t be kept. Save the files, or press Retry once storage works again.',
+      'wb.closeBlocked': 'Unsaved code in the Code workbench couldn’t be kept (storage is full or blocked). Go back and save the files to the project, or retry.',
+      'wb.persistOk': 'Your unsaved code is kept.', 'wb.retry': 'Retry',
       'wb.closeDirty': '{name} has unsaved changes. Close it and discard them?', 'wb.closeFile': 'Close {name}',
       'wb.newFileName': 'File name (e.g. main.cpp)', 'wb.newFolderName': 'Folder name', 'wb.inFolder': 'In {folder}', 'wb.inRoot': 'In the project’s top folder', 'wb.badName': 'Use a file name with a code extension (e.g. main.cpp), without \\ / or :.', 'wb.exists': 'A file or folder with that name already exists.',
       'wb.breakpoint': 'Breakpoint, line {line} (click to remove)', 'wb.breakpoints': 'Breakpoints', 'wb.noBreakpoints': 'Click left of a line number (or press F9) to stop there when debugging.',
@@ -2546,6 +2551,10 @@ Object.entries({
       'wb.notCode': 'Graphite 无法在这里编辑这类文件。', 'wb.readonly': '只读', 'wb.unsaved': '有未保存的修改', 'wb.saved0': '已保存', 'wb.saving': '正在保存…', 'wb.saved': '已保存 {name}', 'wb.lnCol': '第 {line} 行，第 {col} 列',
       'wb.conflict': '编辑期间这个文件在磁盘上被改动了。你的内容已保留。可以保留你的版本（覆盖磁盘上的版本并保存），或载入磁盘上的版本。', 'wb.keepMine': '保留我的并保存', 'wb.loadDisk': '载入磁盘版本', 'wb.discardMine': '用磁盘上的版本替换你未保存的内容吗？',
       'wb.deleted': '这个文件已不在磁盘上。你的内容已保留，可以用“+ 文件”另存为新文件。', 'wb.projectGone': '项目已变化或无法访问。你的内容已保留，请重新打开项目。', 'wb.saveFailed': '未保存：{msg}。你的内容已保留。',
+      'wb.persistFailed': '未保存的代码没能留存到下次（应用存储已满或被禁用）。内容仍在这里打开：请把文件保存到项目，或腾出空间后点“重试”。',
+      'wb.switchBlocked': '没有切换项目：未保存的代码没能留存。请先保存文件，或在存储恢复后点“重试”。',
+      'wb.closeBlocked': '代码工作台中未保存的代码没能留存（存储已满或被禁用）。请返回把文件保存到项目，或重试。',
+      'wb.persistOk': '未保存的代码已留存。', 'wb.retry': '重试',
       'wb.closeDirty': '{name} 有未保存的修改。关闭并放弃这些修改吗？', 'wb.closeFile': '关闭 {name}',
       'wb.newFileName': '文件名（例如 main.cpp）', 'wb.newFolderName': '文件夹名', 'wb.inFolder': '位于 {folder}', 'wb.inRoot': '位于项目顶层文件夹', 'wb.badName': '请使用带代码扩展名的文件名（例如 main.cpp），不要包含 \\ / 或 :。', 'wb.exists': '已存在同名的文件或文件夹。',
       'wb.breakpoint': '断点，第 {line} 行（点击取消）', 'wb.breakpoints': '断点', 'wb.noBreakpoints': '点击行号左侧（或按 F9）设置断点，调试时会停在那里。',

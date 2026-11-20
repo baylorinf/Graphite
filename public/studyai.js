@@ -180,7 +180,12 @@ export function planDialog() {
       }
       if (msg) summary();
     }
-    if (!notes.length && !readable.length) { H.toast(t('plan.noReadable')); return; }
+    if (!notes.length && !readable.length) {
+      // Only scanned PDFs: say what to do next, and keep it in the form (a toast is gone too soon to act on).
+      const hint = body.querySelector('.ai-range-summary');
+      if (hint) { hint.textContent = t('plan.noReadable'); hint.setAttribute('role', 'alert'); hint.dataset.noReadable = ''; }
+      H.toast(t('plan.noReadable')); return;
+    }
     const mem = p => { const m = RV.noteMemory(p); return !m || !m.total ? 'no quiz questions' : m.strength == null ? 'not studied yet' : `memory ${Math.round(m.strength * 100)}%${m.due ? `, ${m.due} due` : ''}`; };
     const heads = f => (f.headings || []).map(h => h.text || h).filter(Boolean).slice(0, 8).join('; ');
     const daysLeft = Math.max(0, Math.round((new Date(form.date) - new Date(day())) / 86400000));

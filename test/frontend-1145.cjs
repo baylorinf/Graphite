@@ -20,7 +20,8 @@ function pdf(n, label) {
   add('<< /Type /Pages /Count ' + n + ' /Kids [' + Array.from({ length: n }, (_, i) => (4 + i * 2) + ' 0 R').join(' ') + '] >>');
   add('<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>');
   for (let i = 1; i <= n; i++) {
-    const data = 'BT /F1 9 Tf 20 220 Td (' + label + '-page-' + i + ' words about the topic) Tj ET\n';
+    // label null: a "scanned" page, a grey block and no text at all
+    const data = label == null ? '0.6 g 20 20 360 200 re f\n' : 'BT /F1 9 Tf 20 220 Td (' + label + '-page-' + i + ' words about the topic) Tj ET\n';
     add('<< /Type /Page /Parent 2 0 R /MediaBox [0 0 400 240] /Resources << /Font << /F1 3 0 R >> >> /Contents ' + (3 + i * 2) + ' 0 R >>');
     add('<< /Length ' + data.length + ' >>\nstream\n' + data + 'endstream');
   }
@@ -43,6 +44,7 @@ async function main() {
     'LA/作业/说明 v2.txt': 'LA instructions',
     'MA/作业/附件/作业 1.pdf': pdf(2, 'MAHW'), // same name, another course
     'Phys/Slides.pdf': pdf(3, 'PHYS'),         // a course with PDFs only
+    'Scans/Exam scan.pdf': pdf(2, null),       // a course with scanned PDFs only (no text layer)
     'Cards.md': '# Cards\n\n## Chapter A\n\nWhat is the rule? :: Rule A\n\nUnique here? :: Yes\n\n## Chapter B\n\nWhat is the rule? :: Rule B\n',
   };
   for (let i = 0; i < 205; i++) files[`Big/item-${String(i).padStart(3, '0')}.txt`] = 'x';
@@ -259,6 +261,21 @@ async function main() {
     assert.match(calls[0].content, /--- Slides\.pdf page 1 ---\nPHYS-page-1/);
   });
 
+  for (const [lang, next] of [['en', /choose PDFs that have a text layer, add a text note for this range, or run OCR/], ['zh-CN', /选择含文字层的 PDF、为这个范围添加文字笔记，或先对扫描件运行 OCR 识别文字/]]) {
+    await test('plan (' + lang + '): a range of scanned PDFs only says what to do next, stays in the form, and sends nothing', async p => {
+      const calls = [];
+      await p.route(origin + '/api/ai', r => { calls.push(1); return r.fulfill({ json: {} }); });
+      await run(p, 'revision-plan');
+      await p.locator('[data-folder="Scans"]').check();
+      await p.locator('[data-f=exam]').fill('Scan exam');
+      await p.locator('[data-a=go]').click();
+      await p.locator('.ai-range-summary[data-no-readable]').waitFor();
+      assert.match(await p.locator('.ai-range-summary').innerText(), next);
+      assert.equal(await p.locator('.ai-range-summary').getAttribute('role'), 'alert');
+      assert.equal(calls.length, 0);
+    }, { lang });
+  }
+
   await test('plan: a local framework receives the chosen PDFs and notes as files', async p => {
     const calls = [];
     await p.route(origin + '/api/local-ai', r => { calls.push(JSON.parse(r.request().postData())); return r.fulfill({ json: { title: 'Phys plan', markdown: '# x' } }); });
@@ -352,7 +369,8 @@ async function main() {
       const s = createSubmissionDialog({ esc: x => String(x), formatTime: () => '', getState: () => state, listFiles: async () => ({ files: [] }), authorize: async () => {}, openOfficial: async () => {}, onAccepted: () => {},
         verify: async (c, a, k) => { asked.push([c, a, k]); if (answer === 'network') throw new Error('offline'); return answer; } });
       s.statusChanged(null, state);
-      s.open({ id: 1, name: 'Algebra' }, { id: 9, title: 'HW3', submissionTypes: ['online_text_entry'], attempt: 0 });
+      // Canvas's record when the draft was made: clearly not submitted yet.
+      s.open({ id: 1, name: 'Algebra' }, { id: 9, title: 'HW3', submissionTypes: ['online_text_entry'], attempt: 0, submissionEvidence: { status: 'unsubmitted', attempt: null, submittedAt: null } });
       const q = s => document.querySelector(s), tick = () => new Promise(r => setTimeout(r, 30));
       q('#cv-submit-text').value = 'answer'; q('#cv-submit-text').dispatchEvent(new Event('input', { bubbles: true }));
       q('[data-submit-action=preview]').click(); await tick();
@@ -364,8 +382,8 @@ async function main() {
       q('[data-submit-action=verify]').click(); await tick();          // network error
       answer = { ...ids, assignmentId: 10, status: 'unsubmitted', attempt: 0, submittedAt: null };
       q('[data-submit-action=verify]').click(); await tick();          // an answer about another assignment
-      answer = { ...ids, status: 'submitted', attempt: 0, submittedAt: null };
-      q('[data-submit-action=verify]').click(); await tick();          // "submitted" but the attempt count did not go up
+      answer = { courseId: 1, assignmentId: 9, status: 'unsubmitted', attempt: null, submittedAt: null };
+      q('[data-submit-action=verify]').click(); await tick();          // an answer that names no account
       out.stillUnknownAfterAll = !!q('[data-submit-unknown]') && !q('[data-submit-not-received]') && !q('[data-submit-receipt]');
       out.askedWith = asked[0];
       answer = { ...ids, status: 'unsubmitted', attempt: 0, submittedAt: null };
@@ -382,6 +400,138 @@ async function main() {
       return out;
     });
     assert.deepEqual(r, { unknown: true, firstId: r.firstId, stillUnknown: true, stillUnknownAfterAll: true, askedWith: [1, 9, 'A'], notReceived: true, sendsBeforeRestore: 1, restoredText: 'answer', secondIdNew: true });
+  });
+
+  // A dialog with a simulated school, sent to "unknown" (the school's answer was lost). Returns helpers.
+  const unclearDraft = `async (evidence, item = {}) => {
+      const { createSubmissionDialog } = await import('/canvas-submit.js');
+      const state = window.__state = { connected: true, accountKey: 'A', authMode: 'oauth', canSubmit: true };
+      const forms = window.__forms = [], real = window.fetch;
+      window.fetch = async (url, o) => { if (!String(url).includes('/api/canvas/submit')) return real(url, o); forms.push(Object.fromEntries(o.body.entries())); return new Response(JSON.stringify({ code: 'submission_unknown', error: 'x' }), { status: 502 }); };
+      window.__answers = []; window.__accepted = [];
+      const s = window.__s = createSubmissionDialog({ esc: x => String(x), formatTime: () => '', getState: () => window.__state, listFiles: async () => ({ files: [] }), authorize: async () => {}, openOfficial: async () => {},
+        onAccepted: (...a) => window.__accepted.push(a),
+        verify: async () => { const a = window.__answers.shift(); if (a === 'network' || a === undefined) throw new Error('offline'); return a; } });
+      s.statusChanged(null, state);
+      s.open({ id: 1, name: 'Algebra' }, { id: 9, title: 'HW3', submissionTypes: ['online_text_entry'], attempt: 0, ...(evidence === undefined ? {} : { submissionEvidence: evidence }), ...item });
+      const q = s => document.querySelector(s), tick = () => new Promise(r => setTimeout(r, 30));
+      q('#cv-submit-text').value = 'answer'; q('#cv-submit-text').dispatchEvent(new Event('input', { bubbles: true }));
+      q('[data-submit-action=preview]').click(); await tick();
+      q('[data-submit-action=confirm]').click(); await tick();
+    }`;
+  const verifyWith = (p, answer) => p.evaluate(async a => {
+    window.__answers.push(a);
+    document.querySelector('[data-submit-action=verify]')?.click();
+    await new Promise(r => setTimeout(r, 40));
+    const q = s => document.querySelector(s);
+    return q('[data-submit-receipt]') ? 'received' : q('[data-submit-not-received]') ? 'not-received' : q('[data-submit-unknown]') ? 'unknown' : 'other';
+  }, answer);
+
+  await test('canvas #16: a check counts only with the exact account (a non-empty string, never an array or a number), course and assignment', async p => {
+    await p.evaluate(`(${unclearDraft})({ status: 'unsubmitted', attempt: null, submittedAt: null })`);
+    const ok = { courseId: '1', assignmentId: '9', accountKey: 'A', status: 'unsubmitted', attempt: null, submittedAt: null };
+    for (const wrong of [
+      { ...ok, accountKey: undefined }, { ...ok, accountKey: '' }, { ...ok, accountKey: ['A'] }, { ...ok, accountKey: 'B' },
+      { ...ok, courseId: '' }, { ...ok, courseId: ['1'] }, { ...ok, assignmentId: undefined }, { ...ok, assignmentId: '10' }, { ...ok, assignmentId: { id: '9' } }, { ...ok, courseId: 1.5 },
+    ]) assert.equal(await verifyWith(p, wrong), 'unknown', JSON.stringify(wrong));
+    assert.equal(await verifyWith(p, ok), 'not-received');
+    assert.equal(await p.evaluate(() => window.__forms.length), 1, 'nothing sent again');
+  });
+
+  await test('canvas #16: a number as the account never matches an account written as text', async p => {
+    await p.evaluate(`(${unclearDraft})({ status: 'unsubmitted', attempt: null, submittedAt: null })`);
+    await p.evaluate(() => { const next = { ...window.__state, accountKey: '123' }; window.__s.statusChanged(window.__state, next); window.__state = next; });
+    // Another account clears the drafts; open again as "123" and get to "unknown" once more.
+    await p.evaluate(async () => {
+      window.__s.open({ id: 1, name: 'Algebra' }, { id: 9, title: 'HW3', submissionTypes: ['online_text_entry'], attempt: 0, submissionEvidence: { status: 'unsubmitted', attempt: null, submittedAt: null } });
+      const q = s => document.querySelector(s), tick = () => new Promise(r => setTimeout(r, 30));
+      q('#cv-submit-text').value = 'answer'; q('#cv-submit-text').dispatchEvent(new Event('input', { bubbles: true }));
+      q('[data-submit-action=preview]').click(); await tick(); q('[data-submit-action=confirm]').click(); await tick();
+    });
+    assert.equal(await verifyWith(p, { courseId: 1, assignmentId: 9, accountKey: 123, status: 'unsubmitted', attempt: null }), 'unknown');
+    assert.equal(await verifyWith(p, { courseId: 1, assignmentId: 9, accountKey: '123', status: 'unsubmitted', attempt: null }), 'not-received');
+  });
+
+  await test('canvas #16: the record had a submission and Canvas now says "not submitted": stays unknown with the reason, no restore; only a higher attempt counts', async p => {
+    await p.evaluate(`(${unclearDraft})({ status: 'submitted', attempt: 2, submittedAt: '2026-11-01T10:00:00Z' }, { submitted: true, attempt: 2 })`);
+    const ids = { courseId: '1', assignmentId: '9', accountKey: 'A' };
+    assert.equal(await p.evaluate(() => window.__forms[0].expectedAttempt), '2', 'the baseline attempt is what Canvas is told to expect');
+    assert.equal(await verifyWith(p, { ...ids, status: 'unsubmitted', attempt: null }), 'unknown');
+    assert.match(await p.locator('.cv-error').innerText(), /earlier record showed a submission/);
+    assert.equal(await p.locator('[data-submit-action=restore]').count(), 0);
+    assert.equal(await verifyWith(p, { ...ids, status: 'submitted', attempt: 2 }), 'unknown', 'the same attempt is no proof');
+    assert.equal(await verifyWith(p, { ...ids, status: 'submitted', attempt: 3, submittedAt: '2026-11-20T10:00:00Z' }), 'received');
+    assert.deepEqual(await p.evaluate(() => window.__accepted.map(a => [a[0], a[1], a[2].attempt, a[3]])), [[1, 9, 3, 'A']]);
+    assert.equal(await p.evaluate(() => window.__forms.length), 1);
+  });
+
+  await test('canvas #16: a record Canvas left unclear ("unknown") that it cannot confirm now: nothing is sent, the draft stays, ready to try again', async p => {
+    // An old-style row with a displayed attempt 0, and evidence "unknown": the baseline is read from Canvas first.
+    await p.evaluate(`(${unclearDraft})({ status: 'unknown', attempt: null, submittedAt: null })`);
+    // No answer queued: the baseline couldn't be read, so nothing was sent and the draft is kept.
+    assert.equal(await p.evaluate(() => window.__forms.length), 0);
+    assert.match(await p.locator('.cv-error').innerText(), /Couldn’t read this assignment’s current submission record/);
+    assert.equal(await p.evaluate(() => document.querySelector('[data-submit-action=confirm]') !== null), true, 'still in the preview, ready to try again');
+  });
+
+  await test('canvas #16: an old record (no evidence, shown attempt 0): Canvas is asked before the first send; its attempt is used, not the 0', async p => {
+    await p.evaluate(`(${unclearDraft})(undefined)`);
+    assert.equal(await p.evaluate(() => window.__forms.length), 0, 'no baseline: nothing sent');
+    const r = await p.evaluate(async () => {
+      window.__answers.push({ courseId: '1', assignmentId: '9', accountKey: 'A', status: 'submitted', attempt: 4, submittedAt: '2026-10-01T00:00:00Z' });
+      document.querySelector('[data-submit-action=confirm]').click();
+      await new Promise(r => setTimeout(r, 60));
+      return { sent: window.__forms.length, expected: window.__forms[0]?.expectedAttempt, text: window.__forms[0]?.text };
+    });
+    assert.deepEqual(r, { sent: 1, expected: '4', text: 'answer' });
+    // The baseline (submitted, attempt 4) is fixed now: "not submitted" later is a contradiction, attempt 5 is a receipt.
+    assert.equal(await verifyWith(p, { courseId: '1', assignmentId: '9', accountKey: 'A', status: 'unsubmitted', attempt: null }), 'unknown');
+    assert.equal(await verifyWith(p, { courseId: '1', assignmentId: '9', accountKey: 'A', status: 'submitted', attempt: 5 }), 'received');
+  });
+
+  await test('canvas #16: A\'s answer arriving after switching to B (same course and assignment IDs and names) changes nothing in B\'s list; nothing is sent', async p => {
+    const r = await p.evaluate(async () => {
+      const { createCanvasView } = await import('/canvas-view.js');
+      const course = (submitted, attempt) => ({ id: '1', name: 'Algebra', code: 'MATH', files: [], announcements: [], modules: [], quizzes: [], events: [], discussions: [], pages: [],
+        assignments: [{ id: '9', title: 'HW3', dueAt: null, submissionTypes: ['online_text_entry'], submitted, attempt, submissionEvidence: { status: submitted ? 'submitted' : 'unsubmitted', attempt: submitted ? attempt : null, submittedAt: null } }] });
+      const statusOf = key => ({ connected: true, accountKey: key, user: 'Same Name', authMode: 'oauth', canSubmit: true, syncedAt: '2026-11-20T00:00:00Z', snapshot: { courses: [course(false, 0)], warnings: [] } });
+      let current = statusOf('A'), release, submits = 0;
+      const lateAnswer = new Promise(r => { release = r; });
+      const api = async (method, path, query, body) => {
+        if (path === 'canvas/status') return JSON.parse(JSON.stringify(current));
+        if (path === 'canvas/verify-submission') { await lateAnswer; return { courseId: '1', assignmentId: '9', accountKey: 'A', status: 'submitted', attempt: 5, submittedAt: '2026-11-20T10:00:00Z' }; }
+        return {};
+      };
+      const real = window.fetch;
+      window.fetch = async (url, o) => { if (String(url).includes('/api/canvas/submit')) { submits++; return new Response(JSON.stringify({ code: 'submission_unknown' }), { status: 502 }); } return real(url, o); };
+      const root = document.createElement('div'); document.body.append(root);
+      const view = createCanvasView(root, { api, openFile: async () => {} });
+      const tick = (ms = 40) => new Promise(r => setTimeout(r, ms)), q = s => document.querySelector(s);
+      view.show(); await tick(80);
+      root.querySelector('[data-group=assignments]').click(); await tick();
+      root.querySelector('[data-cv=submission]').click(); await tick();
+      q('#cv-submit-text').value = 'answer'; q('#cv-submit-text').dispatchEvent(new Event('input', { bubbles: true }));
+      q('[data-submit-action=preview]').click(); await tick();
+      q('[data-submit-action=confirm]').click(); await tick();
+      const unknown = !!q('[data-submit-unknown]');
+      q('[data-submit-action=verify]').click(); await tick();      // A's check is on its way…
+      current = statusOf('B');                                         // …and the student switches to B
+      view.hide(); view.show(); await tick(80);
+      const before = (root.querySelector('[data-group=assignments]')?.click(), await tick(), root.querySelector('[data-cv=submission]')?.textContent);
+      release(); await tick(80);                                       // A's answer arrives now
+      view.hide(); view.show(); await tick(80);                        // draw B's list again from memory
+      root.querySelector('[data-group=assignments]')?.click(); await tick();
+      const bButton = root.querySelector('[data-cv=submission]')?.textContent;
+      const shown = root.textContent;
+      view.close(); root.remove();
+      return { unknown, submits, dialogOpen: !!q('#cv-submit-dialog'), before, bButton, receiptShown: /\b5\b/.test(shown) };
+    });
+    assert.equal(r.unknown, true);
+    assert.equal(r.before, 'Submit assignment');
+    assert.equal(r.bButton, 'Submit assignment', 'B\'s assignment with the same ID is still not submitted');
+    assert.equal(r.submits, 1, 'never sent again');
+    assert.equal(r.dialogOpen, false, 'the dialog for A closed when B signed in');
+    assert.equal(r.receiptShown, false, 'no receipt from A shown to B');
   });
 
   await browser.close();
