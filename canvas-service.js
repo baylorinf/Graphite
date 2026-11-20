@@ -27,15 +27,23 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
     if (storage) await storage.save(next);
     data = next;
   }
+  const waitingForWebLogin = () => !!pending?.web && pending.until > Date.now();
   function view() {
-    const web = !!data.portalSyncEnabled;
-    return { connected: web ? !!data.webVerified : !!data.auth, configured, sessionOnly: !storage, user: data.user || '',
-      portalSupported: !!desktop?.openWebLogin, portalSyncEnabled: web,syncing:readingSchool, canSubmit: !web && !!data.auth && !!data.writeEnabled,
-      canSubmitFiles: web ? !!data.webVerified && !!desktop?.submitWeb : !!data.auth && !!data.writeEnabled,
-      lastPull: data.lastPull || null, pullProgress,
-      authMode: web ? 'web' : (data.auth || configured ? 'oauth' : null), authPending: !!pending && pending.until > Date.now(),
-      authError, syncedAt: data.syncedAt || null, snapshot: data.snapshot || { courses: [], warnings: [] },
-      calendar: data.calendar || null, portalOpened: !!data.portalOpened, lastDownload: desktop?.lastDownload?.() || null };
+    const hidden = waitingForWebLogin() || data.webReconnect;
+    const visible = hidden ? {} : data;
+    const web = waitingForWebLogin() || !!data.portalSyncEnabled;
+    // Remains comparable during an expired session. Only connected accounts may send.
+    // A display name (or a temporary cache owner) cannot identify the owner of a draft.
+    const id = String((web ? visible.snapshot?.webIdentity : visible.accountId || visible.auth?.userId) || '').trim();
+    const accountKey = id ? createHash('sha256').update(JSON.stringify([SITE, web ? 'web' : 'oauth', id])).digest('hex') : null;
+    return { connected: web ? !!visible.webVerified : !!visible.auth, configured, sessionOnly: !storage, user: visible.user || '',
+      accountKey,
+      portalSupported: !!desktop?.openWebLogin, portalSyncEnabled: web,syncing:readingSchool, canSubmit: !web && !!visible.auth && !!visible.writeEnabled,
+      canSubmitFiles: web ? !!visible.webVerified && !!desktop?.submitWeb : !!visible.auth && !!visible.writeEnabled,
+      lastPull: visible.lastPull || null, pullProgress: hidden ? null : pullProgress,
+      authMode: web ? 'web' : (visible.auth || configured ? 'oauth' : null), authPending: !!pending && pending.until > Date.now(),
+      authError, syncedAt: visible.syncedAt || null, snapshot: visible.snapshot || { courses: [], warnings: [] },
+      calendar: visible.calendar || null, portalOpened: !!visible.portalOpened, lastDownload: hidden ? null : desktop?.lastDownload?.() || null };
   }
   async function tokenRequest(parameters) {
     let res;
@@ -59,11 +67,13 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
       try {
         if (!auth.refreshToken) throw error(401, '授权已过期，请重新连接交大 Canvas。');
         const t = await tokenRequest({ grant_type: 'refresh_token', refresh_token: auth.refreshToken });
+        const previousId = String(data.accountId || auth.userId || '');
+        if (previousId && t.userId && t.userId !== previousId) throw error(401, '学校账户已改变，请重新连接交大 Canvas。');
         await save({ ...data, auth: { ...t, refreshToken: t.refreshToken || auth.refreshToken,
-          userId: t.userId || auth.userId } });
+          userId: t.userId || previousId }, accountId: t.userId || previousId });
         return t.accessToken;
       } catch (e) {
-        if (e.status === 401) { authError = '授权已过期，请重新连接交大 Canvas。'; await save({ ...data, auth: null }); }
+        if (e.status === 401) { authError = e.message; await save({ ...data, accountId: data.accountId || auth.userId || null, auth: null }); }
         throw e;
       }
     })();
@@ -74,12 +84,15 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
   async function syncWeb(background=false,fullMaterials=false) {
     readingSchool=true;
     try {
-      const result = await desktop.syncWeb({background,fullMaterials,previousSnapshot:data.snapshot,previousUser:data.user});
+      const keepPrevious = !data.webReconnect || !!data.snapshot?.webIdentity;
+      const result = await desktop.syncWeb({background,fullMaterials,previousSnapshot:keepPrevious ? data.snapshot : undefined,previousUser:keepPrevious ? data.user : ''});
       if (!data.portalSyncEnabled) return;
       const oldUser=String(data.user||'').trim(), user=String(result.user||'').trim();
       const previousIdentity=data.snapshot?.webIdentity, nextIdentity=result.snapshot.webIdentity;
       const changedName=oldUser && user && oldUser!==user;
-      const switched=previousIdentity && nextIdentity ? previousIdentity!==nextIdentity : Boolean(changedName);
+      const switched=previousIdentity || nextIdentity ? String(previousIdentity || '') !== String(nextIdentity || '')
+        : !!data.webReconnect || Boolean(changedName);
+      if (switched) desktop.clearLastDownload?.();
       let calendar=switched?null:data.calendar, url=switched?null:data.feed;
       const muted=switched?false:data.feedMuted;
       if (!muted && result.feed) {
@@ -104,7 +117,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
       }
       authError='';
       await save({...data, ...(switched ? {requests:undefined,lastPull:null,pullCache:undefined,pullSessionId:null} : {}),
-        webVerified:true, user:result.user, snapshot:result.snapshot, syncedAt:result.syncedAt,
+        webVerified:true, webReconnect:false, user:result.user, snapshot:result.snapshot, syncedAt:result.syncedAt,
         feed:url, calendar, feedMuted:muted, feedAutomatic:!!result.feed && !muted});
     } catch(e) {
       authError=e.message;
@@ -173,13 +186,15 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
           expected.until < Date.now() || cb.searchParams.get('state') !== expected.state) throw error(400, '授权请求已失效，请重新连接。');
       if (!cb.searchParams.get('code') || cb.searchParams.has('error')) throw error(401, '本次连接未获授权。');
       const t = await tokenRequest({ grant_type: 'authorization_code', code: cb.searchParams.get('code'), redirect_uri: OOB });
-      const same = !!t.userId && data.accountId === t.userId;
-      await save({ ...data, auth: t, user: t.user, accountId: t.userId, portalSyncEnabled:false,
+      const previousId = String(data.accountId || data.auth?.userId || '');
+      const same = !data.portalSyncEnabled && !!t.userId && previousId === t.userId;
+      if (!same) desktop.clearLastDownload?.();
+      await save({ ...data, auth: t, user: t.user, accountId: t.userId, portalSyncEnabled:false,webReconnect:false,
         writeEnabled:expected.submit,requests:same?data.requests:undefined,
         pullCache:same?data.pullCache:undefined,lastPull:same?data.lastPull:null,
         snapshot: same ? data.snapshot : null, syncedAt: same ? data.syncedAt : null,
         // A separately added private feed belongs to its own subscription; never carry it across a known account switch.
-        ...(data.accountId && !same ? { feed: null, calendar: null } : {}) });
+        ...((previousId || data.portalSyncEnabled) && !same ? { feed: null, calendar: null } : {}) });
       authError = '';
     } catch (e) { authError = e.message; }
   }
@@ -232,6 +247,8 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
       await ready();
       if (method === 'GET' && action === 'status') return view();
       if (method !== 'POST') throw error(405, 'Method not allowed');
+      if ((waitingForWebLogin() || data.webReconnect) && !['portal','connect','web-connect','disconnect'].includes(action) &&
+          !(action === 'sync' && !waitingForWebLogin())) throw error(401,'请先完成学校登录并核对账户。');
       if (action === 'portal') {
         let target;
         if(body.courseId || body.assignmentId) {
@@ -251,9 +268,10 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
           if(pending!==request)return;
           if(!ok){pending=null;return;}
           try{
-            await save({...data,portalSyncEnabled:true,portalOpened:true,webVerified:true,user:'',snapshot:null,syncedAt:null,
-              calendar:null,feed:null,feedAutomatic:false,feedMuted:false,auth:null,accountId:null,requests:undefined,
-              lastPull:null,pullCache:undefined,pullSessionId:null,writeEnabled:false});
+            // Keep previous web data private until the school page identifies its owner.
+            // Network errors may outlive this process. A retry can still confirm the account.
+            await save({...(data.portalSyncEnabled ? data : {}),portalSyncEnabled:true,portalOpened:true,
+              webVerified:false,webReconnect:true,auth:null,accountId:null,writeEnabled:false});
             await syncWeb();
           } catch(e){authError=e.message;}finally{if(pending===request)pending=null;}
         }));

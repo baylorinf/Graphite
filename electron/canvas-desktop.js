@@ -230,6 +230,7 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
       lastDownload = null;
     },
     lastDownload: () => lastDownload || null,
+    clearLastDownload: () => { lastDownload = null; },
   };
   return { desktop, storage };
 }

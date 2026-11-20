@@ -95,6 +95,105 @@ test('expired authorization leaves the calendar usable', async () => {
   const result=await f.handle('sync');
   assert.equal(result.connected,false); assert.equal(result.calendar.events.length,2); assert.ok(result.snapshot.warnings.length);
 });
+test('draft owner survives an expired OAuth session and a new authorization for the same person', async () => {
+  const f = fake();
+  assert.equal((await f.handle('status')).accountKey,null);
+  f.expire();
+  await f.login('81234');
+  const signedIn = await f.handle('status');
+  assert.match(signedIn.accountKey,/^[a-f0-9]{64}$/);
+  await assert.rejects(f.handle('sync'));
+  const expired = await f.handle('status');
+  assert.equal(expired.connected,false); assert.equal(expired.accountKey,signedIn.accountKey);
+  await f.login('81234');
+  assert.equal((await f.handle('status')).accountKey,signedIn.accountKey);
+  await f.login('81235');
+  const switched = await f.handle('status');
+  assert.equal(switched.user,signedIn.user); assert.notEqual(switched.accountKey,signedIn.accountKey);
+  assert.equal((await f.handle('disconnect')).accountKey,null);
+});
+test('legacy OAuth owner survives refresh failure, including a refresh for a different user', async () => {
+  for (const mismatch of [false,true]) {
+    let state = {user:'同名同学',auth:{accessToken:'fixture-a',refreshToken:'fixture-b',userId:'81234',expires:1}};
+    const svc = createCanvasService({storage:{load:async()=>state,save:async v=>{state=v;}},
+      fetch:async () => mismatch ? Response.json({access_token:'wrong',user:{id:'81235',name:'同名同学'}}) : Response.json({}, {status:401})});
+    const signedIn = await svc.handle('GET','status');
+    assert.match(signedIn.accountKey,/^[a-f0-9]{64}$/);
+    await assert.rejects(svc.handle('POST','sync'));
+    const expired = await svc.handle('GET','status');
+    assert.equal(expired.connected,false); assert.equal(expired.accountKey,signedIn.accountKey);
+    assert.equal(state.auth,null);
+  }
+});
+test('jAccount drafts use school identity, independent of display name and the OAuth namespace', async () => {
+  const oauth = fake(); await oauth.login('81234');
+  const oauthKey = (await oauth.handle('status')).accountKey;
+  let state={}, id='81234',expired=false,finish;
+  const desktop = {
+    openWebLogin:cb=>{finish=cb;},clearSession:async()=>{},
+    syncWeb:async()=>{
+      if (expired) throw Object.assign(new Error('return to login'),{status:401});
+      return {user:'同名同学',snapshot:{courses:[],warnings:[],webIdentity:id},syncedAt:new Date().toISOString()};
+    },
+  };
+  const svc=createCanvasService({desktop,storage:{load:async()=>state,save:async next=>{state=next;}}});
+  const login=async()=>{await svc.handle('POST','web-connect'); await finish(true); return svc.handle('GET','status');};
+  const initial = await login();
+  assert.equal(initial.connected,true); assert.match(initial.accountKey,/^[a-f0-9]{64}$/);
+  assert.notEqual(initial.accountKey,oauthKey);
+  expired=true; await assert.rejects(svc.handle('POST','sync'));
+  assert.equal((await svc.handle('GET','status')).accountKey,initial.accountKey);
+  assert.equal((await svc.handle('GET','status')).connected,false);
+  expired=false; assert.equal((await login()).accountKey,initial.accountKey);
+  id='81235'; const switched=await svc.handle('POST','sync');
+  assert.equal(switched.user,initial.user); assert.notEqual(switched.accountKey,initial.accountKey);
+  id=null; const unidentified=await svc.handle('POST','sync');
+  assert.equal(unidentified.connected,true); assert.equal(unidentified.accountKey,null);
+  assert.equal((await svc.handle('POST','disconnect')).accountKey,null);
+});
+test('web reconnection temporarily hides history and restores it only after confirming the same school ID', async () => {
+  const initial={portalSyncEnabled:true,webVerified:true,user:'同名同学',snapshot:{webIdentity:'801',courses:[{id:'6',name:'旧课程'}]},
+    calendar:{events:[]},lastPull:{saved:4},pullCache:{owner:'web:801',files:{a:'previous attachment'}},
+    requests:{pendingAttempt:{pending:true},confirmedAttempt:{receipt:{id:'31'}}},pullSessionId:'previous session'};
+  let state, finish, nextId, broken, lastPath;
+  const service=()=>createCanvasService({
+    storage:{load:async()=>structuredClone(state),save:async next=>{state=structuredClone(next);}},
+    desktop:{openWebLogin:cb=>{finish=cb;},lastDownload:()=>lastPath,clearLastDownload:()=>{lastPath=null;},
+      syncWeb:async options=>{
+        if (broken) throw Error('network unavailable');
+        assert.equal(options.previousSnapshot?.webIdentity,'801');
+        return {user:'同名同学',snapshot:{webIdentity:nextId,courses:[{id:'7',name:'当前课程'}]},syncedAt:new Date().toISOString()};
+      },
+    },
+  });
+  for(const next of ['801','802',null]) {
+    state=structuredClone(initial); nextId=next; broken=false; lastPath='old-local.pdf';
+    let svc=service();
+    const handle=(action,body)=>svc.handle(action==='status'?'GET':'POST',action,body);
+    const first=await handle('status');
+    await handle('web-connect');
+    function hidden(v) {
+      assert.equal(v.connected,false); assert.equal(v.accountKey,null); assert.deepEqual(v.snapshot.courses,[]);
+      assert.equal(v.canSubmitFiles,false); assert.equal(v.lastPull,null); assert.equal(v.lastDownload,null); assert.equal(v.calendar,null);
+    }
+    hidden(await handle('status')); await assert.rejects(handle('pull')); await assert.rejects(handle('download',{}));
+    await finish(false); assert.deepEqual((await handle('status')).snapshot,initial.snapshot);
+    assert.deepEqual(state,initial);
+    broken=true; await handle('web-connect'); await finish(true);
+    hidden(await handle('status')); assert.deepEqual(state.pullCache,initial.pullCache);
+    svc=service(); hidden(await handle('status')); await assert.rejects(handle('pull')); await assert.rejects(handle('submit',{}));
+    broken=false; const after=await handle('sync');
+    assert.equal(after.connected,true); assert.equal(after.snapshot.courses[0].name,'当前课程');
+    if(next==='801') {
+      assert.equal(after.accountKey,first.accountKey); assert.deepEqual(after.lastPull,initial.lastPull); assert.deepEqual(state.requests,initial.requests);
+      assert.deepEqual(state.pullCache,initial.pullCache); assert.equal(after.lastDownload,'old-local.pdf');
+    } else {
+      assert.notEqual(after.accountKey,first.accountKey); assert.equal(after.accountKey===null,next===null); assert.equal(after.lastPull,null);
+      assert.equal(state.pullCache,undefined); assert.equal(state.requests,undefined); assert.equal(state.pullSessionId,null);
+      assert.equal(after.calendar,null); assert.equal(after.lastDownload,null);
+    }
+  }
+});
 test('official window downloads keep same-name material and hide unfinished files', async () => {
   const vault=await fs.mkdtemp(path.join(os.tmpdir(),'graphite-canvas-docs-'));
   try {
