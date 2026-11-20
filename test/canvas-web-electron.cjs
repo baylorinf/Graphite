@@ -34,7 +34,7 @@ async function runElectron() {
   let logged=true, denyFiles=false, submitted=false, windowShown=false, pledge=false, attempt=0, enhanced=false, previousDraft=false;
   const received=[];
   function html(main, extra='') {
-    const account=logged ? '<a id="global_nav_profile_link" href="/profile/settings"><span class="avatar-name">Native Fixture</span></a>' : '';
+    const account=logged ? '<a id="global_nav_profile_link" href="/users/55/profile"><span class="avatar-name">Native Fixture</span></a>' : '';
     return '<!doctype html><meta charset="utf-8">'+account+extra+'<main id="content">'+main+'</main>';
   }
   function link(url,text) { return '<a href="'+url+'">'+text+'</a>'; }
@@ -133,6 +133,8 @@ async function runElectron() {
     const s=await until(status,s=>s.syncedAt && !s.authPending,'isolated school sync');
     assert.equal(s.connected,true);assert.equal(s.canSubmit,false);assert.equal(s.authMode,'web');
     assert.equal(s.user,'Native Fixture');
+    const verify=()=>act('verify-submission',{courseId:'110',assignmentId:'310',accountKey:s.accountKey});
+    assert.equal((await verify()).status,'unsubmitted');
     const [course]=s.snapshot.courses;
     assert.equal(course.name,'示例代数');assert.deepEqual(course.assignments.map(x=>[x.id,x.dueAt,x.submitted]),[['310','2026-11-25T10:00:00.000Z',false]]);
     assert.deepEqual(course.files.map(x=>[x.id,x.name]),[['510','讲义.txt'],['511','题目.pdf']]);
@@ -167,11 +169,14 @@ async function runElectron() {
     const another={...body,requestId:require('node:crypto').randomUUID()};
     const fresh=await act('sync');
     assert.deepEqual(fresh.snapshot.courses[0].assignments[0].submissionTypes,['online_upload']);
+    assert.deepEqual(fresh.snapshot.courses[0].assignments[0].submissionEvidence,{status:'unsubmitted',attempt:0,submittedAt:null});
+    assert.equal((await verify()).status,'unsubmitted');
     await assert.rejects(act('submit',another),e=>e.code==='school_form');
     assert.equal(received.length,1);
     previousDraft=false;
     const enhancedReceipt=await Promise.race([act('submit',another),sleep(30000).then(()=>{throw Error('Enhanced upload did not produce a receipt');})]);
     assert.equal(enhancedReceipt.attempt,1);assert.deepEqual(received[1],received[0]);
+    const verified=await verify();assert.equal(verified.status,'submitted');assert.equal(verified.attempt,1);assert.equal(received.length,2);
     console.log('PASS enhanced first attempt through file picker, exact draft and submitted file table, preserving other school drafts');
     enhanced=false;
     const downloaded=await Promise.race([act('download',{courseId:'110',fileId:'510'}),

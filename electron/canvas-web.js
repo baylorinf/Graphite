@@ -162,6 +162,7 @@ function readSchoolPage() {
     const progress=/^(?:in progress|进行中|正在进行|進行中)$/i.test(text(status));
     // An editable first draft and a published file preview are distinct Canvas states.
     if(number===1 && progress && visible(submit) && (visible(pane)||visible(choice))){
+      receipt.verification=receipt.verification==='submitted' ? 'unknown' : 'unsubmitted';
       receipt.submitted=false;receipt.attempt=0;enhancedUpload=true;
     }
     const preview=enhanced.querySelector('[data-testid="file-preview"] [data-testid="uploaded_files_table"]');
@@ -175,6 +176,9 @@ function readSchoolPage() {
         const fullName=nameCell.lastElementChild?.textContent?.trim() || text(nameCell);
         if(fullName)receiptFiles.push({name:fullName});
       }
+      // Only a published preview with a named attachment and a positive official tracker proves delivery.
+      const confirmed=/^(?:submitted\b|review feedback\b|已提交|提交于|提交於|查看反馈|查看回饋)/i.test(text(status));
+      receipt.verification=confirmed && receiptFiles.length && receipt.verification!=='unsubmitted' ? 'submitted' : 'unknown';
     }
   }
   if (receipt.submitted == null && visible(opener) && /^(?:start assignment|开始作业|開始作業)$/i.test(text(opener))) receipt.submitted=false;
@@ -366,7 +370,8 @@ async function readCourses(loadPage, options = {}) {
               new URL(page.pageUrl).href.replace(/\/$/,'')===a.url && !page.busy && !page.denied && !page.notFound &&
               ['submitted','unsubmitted'].includes(page.verification)) {
             a.submissionEvidence={status:page.verification,
-              attempt:page.verification==='submitted' && Number.isSafeInteger(page.attempt) && page.attempt>0 ? page.attempt : null,
+              attempt:page.verification==='unsubmitted' && page.attempt===0 ? 0 :
+                page.verification==='submitted' && Number.isSafeInteger(page.attempt) && page.attempt>0 ? page.attempt : null,
               submittedAt:page.verification==='submitted' ? page.submittedAt || null : null};
           }
           a.checkedAt=new Date().toISOString();
@@ -388,7 +393,7 @@ async function verifyWebSubmission(loadPage,{courseId,assignmentId,expectedIdent
   }
   const first=await loadPage(url);
   if(!valid(first,url))return unknown;
-  if(first.verification==='unsubmitted')return {status:'unsubmitted',attempt:null,submittedAt:null};
+  if(first.verification==='unsubmitted')return {status:'unsubmitted',attempt:first.attempt===0?0:null,submittedAt:null};
   if(first.verification!=='submitted')return unknown;
   let record=first;
   if(!Number.isInteger(first.attempt) && first.receiptUrl){

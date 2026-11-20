@@ -43,7 +43,7 @@ function createFixture(configured, portalSupported=false) {
   const calls = [];
   const fixture = { calls, failSync:false, partial:false, failDownload:false, failFeed:false, failStatus:false,
     submitMode:'ok', submissions:[],
-    activate(canSubmit=false,mode='oauth') { state.connected = true; state.canSubmit=canSubmit; state.canSubmitFiles=mode==='web'||canSubmit; state.authMode=mode; state.authPending = false; state.user = '课程测试生'; },
+    activate(canSubmit=false,mode='oauth') { state.connected = true; state.canSubmit=canSubmit; state.canSubmitFiles=mode==='web'||canSubmit; state.authMode=mode; state.authPending = false; state.user = '课程测试生'; state.accountKey='fixture-student-'+mode; },
     expire() { state.connected=false; state.canSubmit=false; state.canSubmitFiles=false; state.authError='请重新登录学校网站。'; },
     markAcceptedAtSchool(id) {
       const row = sample.courses[0].assignments.find(a=>a.id === id);
@@ -53,6 +53,7 @@ function createFixture(configured, portalSupported=false) {
       const first = sample.courses[0];
       for (const [id,type,title] of [['310','online_text_entry','矩阵文字作业'],['311','online_url','实验网页作业'],['312','online_upload','上传演算作品']]) {
         first.assignments.push({id,title,attempt:0,submitted:false,excused:false,dueAt:when(4),
+          submissionEvidence:{status:'unsubmitted',attempt:0,submittedAt:null},
           submissionTypes:[type],description:'请提交两个文件，保留 <draft> 符号。',attachments:[{id:'506',name:'题目.pdf',url:site+'/courses/101/files/506'}],url:site+'/courses/101/assignments/'+id});
       }
     },
@@ -112,6 +113,13 @@ function createFixture(configured, portalSupported=false) {
           const saved = state.lastPull ? 0 : 3;
           state.lastPull={saved,unchanged:3-saved,skipped:0,courses:2,failed:[{courseId:'202',name:'实验附录',error:'暂不可用'}],warnings:[],path:'Canvas'};
           return respond(state.lastPull);
+        }
+        case 'verify-submission': {
+          if (!state.connected || body.accountKey!==state.accountKey) return respond({error:'当前账号已改变'},409);
+          const assignment=sample.courses.find(c=>c.id===body.courseId)?.assignments.find(a=>a.id===body.assignmentId);
+          if (!assignment) return respond({error:'作业不存在'},404);
+          return respond({...body,status:assignment.submitted===true?'submitted':assignment.submitted===false?'unsubmitted':'unknown',
+            attempt:assignment.attempt??null,submittedAt:assignment.submittedAt??null});
         }
         case 'submit': {
           fixture.submissions.push(body);
