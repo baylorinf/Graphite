@@ -513,23 +513,77 @@ function send(res, status, body, type = 'application/json; charset=utf-8') {
   res.end(typeof body === 'string' || Buffer.isBuffer(body) ? body : JSON.stringify(body));
 }
 
-// A short lock per file (".name.graphite-lock" next to it, hidden like all dot files), shared by every
-// Graphite window and process using this vault. A lock older than 10 s is left over from a crash and ignored.
+// A hidden lock shared by Graphite windows and processes. Long operations renew their lock.
 async function withFileLock(abs, fn) {
   const lock = path.join(path.dirname(abs), '.' + path.basename(abs) + '.graphite-lock');
   await fsp.mkdir(path.dirname(abs), { recursive: true });
-  const t0 = Date.now();
-  for (;;) {
-    try { const h = await fsp.open(lock, 'wx'); await h.close(); break; }
+  const deadline = Date.now() + 5000, stale = 10000;
+  const host = createHash('sha256').update(require('node:os').hostname()).digest('hex').slice(0,16);
+  const owner = host + ':' + process.pid;
+  const sharing = e => ['EPERM','EBUSY','EACCES'].includes(e.code);
+  const delay = () => new Promise(r => setTimeout(r, 20 + Math.random() * 40));
+  async function recover() {
+    const observed = await fsp.stat(lock).catch(() => null);
+    if (!observed || Date.now()-observed.mtimeMs <= stale) return;
+    // Only one contender can retire this generation. Otherwise a delayed second unlink could
+    // delete the lock its neighbour just acquired. The short recovery guard contains no notes.
+    const guard = lock + '.recover';
+    try { await fsp.mkdir(guard); }
     catch (e) {
-      if (e.code !== 'EEXIST') throw e;
-      const st = await fsp.stat(lock).catch(() => null);
-      if (st && Date.now() - st.mtimeMs > 10000) { await fsp.unlink(lock).catch(() => {}); continue; }
-      if (Date.now() - t0 > 5000) throw new HttpError(503, 'The file is busy; try again');
-      await new Promise(r => setTimeout(r, 20 + Math.random() * 40));
+      if (e.code !== 'EEXIST') { if (!sharing(e)) throw e; return; }
+      const orphan = await fsp.stat(guard).catch(() => null);
+      if (orphan && Date.now()-orphan.mtimeMs > stale) await fsp.rmdir(guard).catch(()=>{});
+      return;
+    }
+    try {
+      const record = await fsp.readFile(lock,'utf8').catch(() => null);
+      if (record === null) return;
+      if (record) {
+        const match = /^([a-f0-9]{16}):(\d+)$/.exec(record);
+        if (!match) return;
+        if (match[1] === host) {
+          try { process.kill(Number(match[2]),0); return; }
+          catch (e) { if (e.code !== 'ESRCH') return; }
+        }
+      }
+      // Older Graphite releases used an empty file. A recently released or renewed lock is kept.
+      const current = await fsp.stat(lock).catch(() => null);
+      if (!current || current.ino !== observed.ino || current.mtimeMs !== observed.mtimeMs) return;
+      await fsp.unlink(lock).catch(e=>{if(e.code!=='ENOENT' && !sharing(e))throw e;});
+    } finally { await fsp.rmdir(guard).catch(()=>{}); }
+  }
+  let handle, denied;
+  for (;;) {
+    try { handle = await fsp.open(lock, 'wx'); break; }
+    catch (e) {
+      if (e.code === 'EEXIST') { denied = null; await recover(); }
+      else if (sharing(e)) { denied ||= e; }
+      else throw e;
+      if (Date.now() >= deadline) throw denied || new HttpError(503, 'The file is busy; try again');
+      await delay();
     }
   }
-  try { return await fn(); } finally { await fsp.unlink(lock).catch(() => {}); }
+  let heartbeat;
+  try {
+    await handle.writeFile(owner);
+    heartbeat = setInterval(() => { const now=new Date(); handle.utimes(now,now).catch(()=>{}); },2000);
+    heartbeat.unref();
+    return await fn();
+  } finally {
+    clearInterval(heartbeat);
+    const held = await handle.stat().catch(()=>null);
+    // If sharing temporarily prevents removal, this released lock can still be recovered.
+    await handle.truncate(0).catch(()=>{});
+    await handle.close();
+    for (let i=0; ; i++) {
+      try {
+        const current=await fsp.stat(lock);
+        if (held && current.dev===held.dev && current.ino===held.ino) await fsp.unlink(lock);
+        break;
+      }
+      catch (e) { if (!sharing(e) || i===4) break; await delay(); }
+    }
+  }
 }
 // Write to a temporary file and rename it over the original, so a failed write never leaves half a file.
 async function atomicWrite(abs, body, { mode, beforeReplace } = {}) {
