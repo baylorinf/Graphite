@@ -75,7 +75,8 @@ async function saveNote(folder, title, markdown) {
 function courseFolders() {
   const out = new Set();
   for (const p of H.S.files.keys()) {
-    if (!isMd(p) || SKIP.test(p)) continue;
+    // A course with only slides or other PDFs (no notes yet) can be planned too.
+    if (!(isMd(p) || /\.pdf$/i.test(p)) || SKIP.test(p)) continue;
     const parts = p.split('/');
     if (parts.length > 1) out.add(parts[0]);
     if (parts.length > 2) out.add(parts[0] + '/' + parts[1]);
@@ -135,7 +136,7 @@ export function planDialog() {
       if (p.indeterminate) return `${f}: ${subs.filter(x => x.checked).map(x => x.dataset.folder.slice(f.length + 1)).join(', ')}`;
       return null;
     }).filter(Boolean);
-    const n = [...H.S.files.values()].filter(f => isMd(f.path) && !SKIP.test(f.path) && inRangeNow(f.path) && !hidden(f)).length;
+    const n = [...H.S.files.values()].filter(f => ((isMd(f.path) && !hidden(f)) || /\.pdf$/i.test(f.path)) && !SKIP.test(f.path) && inRangeNow(f.path)).length;
     body.querySelector('.ai-range-summary').textContent = parts.length ? t('plan.rangeSummary', { list: parts.join(' · '), n }) : t('plan.rangeNone');
   };
   body.querySelectorAll('[data-folder]').forEach(cb => cb.addEventListener('change', () => {
@@ -156,23 +157,47 @@ export function planDialog() {
     H.store.set('planForm', form);
     const inRange = p => !form.folders.length || inRangeNow(p);
     const notes = [...H.S.files.values()].filter(f => isMd(f.path) && !SKIP.test(f.path) && inRange(f.path) && !hidden(f));
-    const slides = [...H.S.files.keys()].filter(p => /\.pdf$/i.test(p) && !SKIP.test(p) && inRange(p)).map(p => p.split('/').pop());
-    if (!notes.length) { H.toast(t('plan.noNotes')); return; }
+    const pdfPaths = [...H.S.files.keys()].filter(p => /\.pdf$/i.test(p) && !SKIP.test(p) && inRange(p)).sort();
+    const slides = pdfPaths.map(p => p.split('/').pop());
+    if (!notes.length && !pdfPaths.length) { H.toast(t('plan.noNotes')); return; }
+    // The PDFs' own text, with page numbers, so every AI can plan from slides alone (API models get these
+    // excerpts; local frameworks and Claude Code also get the file paths). A PDF without text is skipped.
+    const pdfParts = [], readable = [];
+    if (pdfPaths.length) {
+      const msg = body.querySelector('.ai-range-summary');
+      let budget = 60000;
+      for (const [i, p] of pdfPaths.slice(0, 12).entries()) {
+        if (budget <= 0) break;
+        if (msg) msg.textContent = t('plan.readingPdf', { i: i + 1, n: Math.min(pdfPaths.length, 12), name: p.split('/').pop() });
+        try {
+          const r = await pdfText('/vault/' + p.split('/').map(encodeURIComponent).join('/'));
+          const pages = r.pages.filter(x => x.text);
+          if (!pages.length) continue;
+          readable.push(p);
+          const text = pages.map(x => `--- ${p.split('/').pop()} page ${x.n} ---\n${x.text.slice(0, 700)}`).join('\n').slice(0, Math.min(budget, 12000));
+          budget -= text.length; pdfParts.push(text);
+        } catch { /* unreadable: left out */ }
+      }
+      if (msg) summary();
+    }
+    if (!notes.length && !readable.length) { H.toast(t('plan.noReadable')); return; }
     const mem = p => { const m = RV.noteMemory(p); return !m || !m.total ? 'no quiz questions' : m.strength == null ? 'not studied yet' : `memory ${Math.round(m.strength * 100)}%${m.due ? `, ${m.due} due` : ''}`; };
     const heads = f => (f.headings || []).map(h => h.text || h).filter(Boolean).slice(0, 8).join('; ');
     const daysLeft = Math.max(0, Math.round((new Date(form.date) - new Date(day())) / 86400000));
     const content = [`Exam: ${form.exam}`, `Today: ${day()}`, `Exam date: ${form.date} (${daysLeft} days from today)`,
       `What is examined: ${form.range || '(the notes below)'}`, `Folders in range: ${form.folders.join(', ') || '(any)'}`, `Time per day: ${form.minutes} minutes`, '', 'Notes in range (only these; nothing else is examined):',
       ...notes.map(f => `- [[${base(f.path)}]] (${f.path.split('/').slice(0, -1).join('/')}) · ${mem(f.path)}${heads(f) ? ' · sections: ' + heads(f) : ''}`),
-      ...(slides.length ? ['', 'Slide / PDF files in range: ' + slides.join(', ')] : [])].join('\n');
+      ...(slides.length ? ['', 'Slide / PDF files in range: ' + slides.join(', ')] : []),
+      ...(pdfParts.length ? ['', 'Text of the PDFs in range (page numbers kept; link them as [[file.pdf#page=N|…]]):', ...pdfParts] : [])].join('\n');
+    // notes: every note and readable PDF in range (Claude Code and local frameworks open them themselves).
     const job = { exam: form.exam, date: form.date, today: day(), range: form.range, minutes: form.minutes, folders: form.folders,
-      notes: notes.map(f => f.path), memory: Object.fromEntries(notes.map(f => [f.path, mem(f.path)])) };
+      notes: [...notes.map(f => f.path), ...readable], papers: readable, memory: Object.fromEntries(notes.map(f => [f.path, mem(f.path)])) };
     const r = await runJob('plan', 'plan', { title: form.exam, content, job }, { body, actions });
     if (!r || !win) return;
-    const courses = [...new Set(notes.map(f => top(f.path)))];
+    const courses = [...new Set([...notes.map(f => f.path), ...readable].map(top))];
     const folder = (courses.length === 1 && courses[0] ? courses[0] + '/' : '') + '复习计划 Review Plans';
     // The plan says which range it was made for.
-    const rangeLine = `> ${t('plan.rangeUsed')}: ${form.folders.join(' · ') || form.range} (${notes.length})`;
+    const rangeLine = `> ${t('plan.rangeUsed')}: ${form.folders.join(' · ') || form.range} (${notes.length + readable.length})`;
     await saveNote(folder, r.title || `${form.exam} ${t('plan.noteSuffix')}`, insertAfterFm(r.markdown, rangeLine));
   };
   setTimeout(() => body.querySelector('[data-f=exam]')?.focus(), 30);
@@ -291,7 +316,8 @@ export function mockDialog() {
   const { body, actions } = open(t('mock.title'), 'ai-mock');
   body.innerHTML = `<p class="muted">${esc(t('mock.intro'))}</p>
     <label class="ai-field"><span>${esc(t('mock.course'))}</span><select data-f="course">${courses.map(c => `<option${c === startCourse ? ' selected' : ''}>${esc(c)}</option>`).join('')}</select></label>
-    <div class="ai-field"><span>${esc(t('mock.papers'))}</span><div class="ai-folders mock-papers"></div></div>
+    <div class="ai-field"><span>${esc(t('mock.papers'))}</span><div class="ai-folders mock-papers"></div>
+      <div class="mock-add"><input data-f="addPaper" list="mock-paper-files" placeholder="${esc(t('mock.addPaperPh'))}" spellcheck="false"><button type="button" class="mod-button" data-a="add-paper">${esc(t('mock.addPaper'))}</button><datalist id="mock-paper-files"></datalist></div></div>
     <div class="ai-field"><span>${esc(t('mock.chapters'))}</span><div class="ai-folders mock-chapters"></div></div>
     <div class="study-row mock-row">
       <label class="ai-field"><span>${esc(t('mock.count'))}</span><input type="number" data-f="count" min="3" max="30" value="${esc(last.count || 8)}"></label>
@@ -302,14 +328,18 @@ export function mockDialog() {
     <p class="ai-range-summary"></p>
     ${engineSelect('mock')}`;
   const courseSel = body.querySelector('[data-f=course]');
-  const papersOf = c => [...H.S.files.keys()].filter(p => top(p) === c && !OWN_RE.test(p) && /\.(pdf|md)$/i.test(p) && PAPER_RE.test(p)).sort().reverse();
+  // Past papers found by their names, plus any file you add by hand (a paper whose name doesn't say it is one).
+  const added = new Map(); // course → Set of paths added by hand
+  for (const p of last.papers || []) if (last.course && H.S.files.has(p) && !PAPER_RE.test(p)) { if (!added.has(last.course)) added.set(last.course, new Set()); added.get(last.course).add(p); }
+  const papersOf = c => [...new Set([...[...H.S.files.keys()].filter(p => top(p) === c && !OWN_RE.test(p) && /\.(pdf|md)$/i.test(p) && PAPER_RE.test(p)).sort().reverse(), ...(added.get(c) || [])])];
   const chaptersOf = c => [...new Set([...H.S.files.keys()].filter(p => top(p) === c && isMd(p) && p.split('/').length > 2 && !OWN_RE.test(p) && !PAPER_RE.test(p.split('/')[1])).map(p => p.split('/')[1]))].sort();
   const notesOf = (c, chapters) => [...H.S.files.values()].filter(f => isMd(f.path) && top(f.path) === c && !SKIP.test(f.path) && !OWN_RE.test(f.path) && !hidden(f) && !PAPER_RE.test(f.path.split('/').slice(1, -1).join('/'))
     && (f.path.split('/').length === 2 || chapters.includes(f.path.split('/')[1])));
   const fill = () => {
     const c = courseSel.value, papers = papersOf(c), chapters = chaptersOf(c);
+    body.querySelector('#mock-paper-files').innerHTML = [...H.S.files.keys()].filter(p => top(p) === c && /\.(pdf|md)$/i.test(p) && !papers.includes(p)).sort().map(p => `<option value="${esc(p)}">`).join('');
     body.querySelector('.mock-papers').innerHTML = papers.length
-      ? papers.map(p => `<label class="ai-sub"><input type="checkbox" data-paper="${esc(p)}"${!last.papers || last.course !== c || last.papers.includes(p) ? ' checked' : ''}> ${esc(p.slice(c.length + 1))}</label>`).join('')
+      ? papers.map(p => `<label class="ai-sub"><input type="checkbox" data-paper="${esc(p)}"${added.get(c)?.has(p) || !last.papers || last.course !== c || last.papers.includes(p) ? ' checked' : ''}> ${esc(p.slice(c.length + 1))}</label>`).join('')
       : `<p class="muted">${esc(t('mock.papersNone'))}</p>`;
     body.querySelector('.mock-chapters').innerHTML = chapters.length
       ? chapters.map(x => `<label class="ai-sub"><input type="checkbox" data-chapter="${esc(x)}"${!last.chapters || last.course !== c || last.chapters.includes(x) ? ' checked' : ''}> ${esc(x)}</label>`).join('')
@@ -326,6 +356,17 @@ export function mockDialog() {
     body.querySelector('.ai-range-summary').textContent = t('mock.summary', { papers: papers.length, notes: n }) + (papers.length ? '' : ' ' + t('mock.allNew'));
   };
   courseSel.addEventListener('change', fill);
+  // Add a past paper by hand: any PDF or note of the vault, by its path (the list suggests this course's files).
+  body.querySelector('[data-a=add-paper]').onclick = () => {
+    const input = body.querySelector('[data-f=addPaper]'), p = input.value.trim().replace(/\\/g, '/');
+    if (!H.S.files.has(p) || !/\.(pdf|md)$/i.test(p)) { H.toast(t('mock.addPaperBad')); return; }
+    const c = courseSel.value, keep = new Set(chosen().papers);
+    if (!added.has(c)) added.set(c, new Set());
+    added.get(c).add(p); keep.add(p); input.value = '';
+    fill();
+    body.querySelectorAll('[data-paper]').forEach(x => { x.checked = keep.has(x.dataset.paper); });
+    summary();
+  };
   body.addEventListener('change', e => { if (e.target.matches('[data-paper],[data-chapter]')) summary(); });
   fill();
   actions.innerHTML = `<button class="mod-button mod-cta" data-a="go">${esc(t('mock.make'))}</button><button class="mod-button" data-a="cancel">${esc(t('review.close'))}</button>`;

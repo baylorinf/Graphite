@@ -534,6 +534,19 @@ function postProcess(el, from, depth) {
       if (!resolve(p, from)) a.classList.add('unresolved');
       a.setAttribute('href', '#');
     }
+    // A relative link to an attachment (e.g. an assignment's "附件/作业 1.pdf" or "notes%20v2.txt"): the note's own
+    // folder first, so a same-named file of another course is never opened instead; then the vault-wide name.
+    // It opens inside Graphite (PDF, text, images…), with #page=N kept.
+    else if (href && !href.startsWith('#') && !href.startsWith('/') && !a.classList.contains('internal-link') && !a.dataset.open) {
+      let raw = href; try { raw = decodeURIComponent(href); } catch { /* keep as written */ }
+      const [p, h] = splitOnce(raw, '#');
+      if (!p) continue;
+      const near = normalize(joinPath(dirName(from || ''), p.replace(/^\.\//, '')));
+      const target = S.files.has(near) ? near : S.files.has(p) ? p : resolve(p, from);
+      a.setAttribute('href', '#');
+      if (target) { a.dataset.open = target; if (h) a.dataset.heading = h; a.classList.add('attachment-link'); a.title = target; }
+      else { a.classList.add('unresolved'); a.title = near; }
+    }
   }
   // Relative images in standard markdown syntax point into the vault.
   for (const img of el.querySelectorAll('img[src]')) {
@@ -1145,7 +1158,13 @@ async function openLink(name, heading = '', from = '') {
   if (f) openNote(f.path);
 }
 
-function currentFolder() { return S.selectedFolder ?? (S.current ? dirName(S.current) : ''); }
+// Where a new note goes: the folder you picked in the file list, else the folder of what is open in front
+// (a PDF or other file in the file view counts, so a note made while reading LA5.pdf goes next to it).
+function currentFolder() {
+  if (S.selectedFolder != null) return S.selectedFolder;
+  if (S.view === 'file' && S.filePath) return dirName(S.filePath);
+  return S.current ? dirName(S.current) : '';
+}
 
 async function createFile(path, content = '', { silent = false } = {}) {
   try {
@@ -1695,6 +1714,7 @@ const COMMANDS = [
   { id: 'tidy-format', name: 'Tidy this note\'s format to match its folder', kbd: 'Ctrl+Shift+Y', available: () => !!S.current, run: () => SA.tidyFormat(S.current) },
   { id: 'revision-plan', name: 'Make an exam revision plan', run: () => SA.planDialog() },
   { id: 'find-course-files', name: 'Find new course files on this computer', run: () => FJ.runFileJob('import', 'import') },
+  { id: 'find-course-files-manual', name: 'Find new course files (Graphite scan only, no AI)', run: () => FJ.runFileJob('import', 'import', { manual: true }) },
   { id: 'file-inbox', name: 'File my captures into my notes', run: () => FJ.runFileJob('inbox', 'inbox') },
   { id: 'mock-paper', name: 'Make a mock paper', run: () => SA.mockDialog() },
   { id: 'summarize-pdf', name: 'Summarize this PDF', available: () => S.view === 'file' && /\.pdf$/i.test(S.filePath || ''), run: () => SUM.summaryDialog(S.filePath) },
@@ -2119,38 +2139,49 @@ function searchFor(q) {
   inp.value = q; runSearch(q); inp.focus();
 }
 
+// Notes match by name, text, #tag, path: and file:; attachments (PDF, images, code…) by their file name and path,
+// so an exact attachment name finds it. Results come 200 at a time, with "Show more" for the rest.
+let searchShown = 200, searchQuery = '';
 function runSearch(q) {
   const out = $('#search-results');
   q = q.trim();
+  if (q !== searchQuery) { searchQuery = q; searchShown = 200; }
   if (!q) { out.innerHTML = ''; return; }
   const terms = (q.match(/"[^"]+"|\S+/g) || []).map(t => t.replace(/^"|"$/g, '').toLowerCase());
   const plain = terms.filter(t => !t.startsWith('#') && !/^(path|file|tag):/.test(t));
+  const whole = q.replace(/^"|"$/g, '').toLowerCase();
   const results = [];
   for (const f of S.files.values()) {
-    if (!isMd(f.path) || f.content == null) continue;
-    const name = baseName(f.path).toLowerCase(), text = f.content.toLowerCase();
+    const md = isMd(f.path);
+    if (md && f.content == null) continue;
+    const name = (md ? baseName(f.path) : fileName(f.path)).toLowerCase(), text = md ? f.content.toLowerCase() : '';
     const ok = terms.every(t => {
       if (t.startsWith('#') || t.startsWith('tag:')) {
+        if (!md) return false;
         const tg = t.replace(/^(tag:)?#?/, '');
         return (f.tags || []).some(x => x === tg || x.startsWith(tg + '/'));
       }
       if (t.startsWith('path:')) return f.path.toLowerCase().includes(t.slice(5));
       if (t.startsWith('file:')) return name.includes(t.slice(5));
-      return text.includes(t) || name.includes(t);
+      return md ? text.includes(t) || name.includes(t) : name.includes(t) || f.path.toLowerCase().includes(t);
     });
     if (!ok) continue;
     const lines = [];
     // Each excerpt remembers its line and the matched word, so a click can jump straight to it.
-    if (plain.length) f.content.split('\n').some((line, i) => {
+    if (md && plain.length) f.content.split('\n').some((line, i) => {
       const ll = line.toLowerCase(), term = plain.find(t => ll.includes(t));
       if (term) lines.push({ text: trimAround(line.trim(), term), line: i, term });
       return lines.length >= 3;
     });
-    results.push({ f, lines, nameHit: plain.some(t => name.includes(t)) });
+    const exact = name === whole || fileName(f.path).toLowerCase() === whole;
+    results.push({ f, md, lines, exact, nameHit: plain.some(t => name.includes(t)) });
   }
-  results.sort((a, b) => (b.nameHit - a.nameHit) || (b.f.mtime - a.f.mtime));
-  out.innerHTML = `<div class="sr-count">${esc(t('search.results', { n: results.length }))}</div>` + results.slice(0, 200).map(({ f, lines }) =>
-    `<div class="sr-file"><div class="sr-title" data-open="${esc(f.path)}">${markTerms(baseName(f.path), plain)}${dirName(f.path) ? ` <span class="count">${esc(dirName(f.path))}</span>` : ''}</div>${lines.map(l => `<div class="sr-snippet" data-open="${esc(f.path)}" data-line="${l.line}" data-term="${esc(l.term)}">${markTerms(l.text, plain)}</div>`).join('')}</div>`).join('');
+  results.sort((a, b) => (b.exact - a.exact) || (b.nameHit - a.nameHit) || (b.f.mtime - a.f.mtime));
+  const shown = results.slice(0, searchShown), left = results.length - shown.length;
+  out.innerHTML = `<div class="sr-count">${esc(t('search.results', { n: results.length }))}</div>` + shown.map(({ f, md, lines }) =>
+    `<div class="sr-file${md ? '' : ' sr-attachment'}"><div class="sr-title" data-open="${esc(f.path)}">${markTerms(md ? baseName(f.path) : fileName(f.path), plain)}${dirName(f.path) ? ` <span class="count">${esc(dirName(f.path))}</span>` : ''}</div>${lines.map(l => `<div class="sr-snippet" data-open="${esc(f.path)}" data-line="${l.line}" data-term="${esc(l.term)}">${markTerms(l.text, plain)}</div>`).join('')}</div>`).join('') +
+    (left > 0 ? `<button type="button" class="mod-button sr-more">${esc(t('search.more', { n: left }))}</button>` : '');
+  out.querySelector('.sr-more')?.addEventListener('click', () => { searchShown += 200; runSearch(q); });
 }
 $('#search-input').addEventListener('input', debounce(e => runSearch(e.target.value), 150));
 
@@ -2248,6 +2279,7 @@ async function showFile(path, { push = true, at = '' } = {}) {
   codeEditor.close();
   closePdf(); hideSelBar();
   S.filePath = path;
+  S.selectedFolder = null; // like opening a note: a new note now goes next to this file
   store.set('last', path); // reopen this file (not the previous note) next time the app starts
   refreshRightPanel(); updateStatus();
   const box = $('#file-view');
@@ -3333,10 +3365,13 @@ window.__moFlush = async () => {
   try { await saveNow(); } catch { /* reported below */ }
   if (S.current && S.dirty) setDraft(S.current, ed.value);
   persistDrafts();
-  try { await RV.flushReview(); } catch { /* review progress is retried on next start */ }
+  try { await RV.flushReview(); } catch { /* reported below */ }
   await retryDrafts().catch(() => {});
   const unsaved = [...drafts].map(([path, d]) => ({ path, text: d.text }));
   unsaved.push(...await codeEditor.flush());
+  // Review ratings that could not be written: the desktop app asks before closing, updating or switching vaults,
+  // and shows reviewMessage (in this window's language). `unsaved` stays the real note and code drafts only.
+  if (RV.reviewUnsaved()) return { ok: false, reviewUnsaved: true, reviewMessage: t('review.unsavedMsg'), unsaved };
   return { ok: !unsaved.length, unsaved };
 };
 // Ask once more on startup for drafts left from last time.

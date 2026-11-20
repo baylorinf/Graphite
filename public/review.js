@@ -26,25 +26,37 @@ export async function initReview(host) {
   H = host;
   try { state = { ...fresh(), ...JSON.parse((await H.api('GET', 'file', { path: FILE })).content) }; }
   catch { state = fresh(); }
+  // Ratings from last time that never reached the disk: put them back and save them now.
+  const kept = takeKeptPending();
+  if (kept.length) { pending = kept.concat(pending); state = apply(state, kept); save(); }
 }
 // Saving merges instead of overwriting. Two windows (or two computers syncing the vault) may review at the
 // same time; each records its own changes as small operations, and a save re-reads the file, applies only
 // those operations on top, and writes the result. So both windows keep their ratings and day counts.
-let saveTimer = null, pending = [], flushing = null;
-const op = o => { pending.push(o); save(); };
+let saveTimer = null, pending = [], inflight = [], flushing = null;
+// Each operation has its own id. The file remembers the ids it has taken in (`applied`), so an operation that
+// arrives twice (kept for crash recovery and then recovered in two windows, or recovered after a save that did
+// reach the disk) is applied once: ratings and day counts are never added twice.
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 10);
+const op = o => { pending.push({ ...o, u: uid() }); save(); };
 const setCard = (id, v) => { if (v) state.cards[id] = v; else delete state.cards[id]; op({ k: 'cards', id, v: v || null }); };
 const setNoteState = (path, v) => { if (v) state.notes[path] = v; else delete state.notes[path]; op({ k: 'notes', id: path, v: v || null }); };
 const setAi = (path, v) => { state.ai = state.ai || {}; if (v) state.ai[path] = v; else delete state.ai[path]; op({ k: 'ai', id: path, v: v || null }); };
 const setItem = (id, v) => { state.items = state.items || {}; if (v) state.items[id] = v; else delete state.items[id]; op({ k: 'items', id, v: v || null }); };
 const setPlan = (id, v) => { state.plans = state.plans || {}; if (v) state.plans[id] = v; else delete state.plans[id]; op({ k: 'plans', id, v: v || null }); };
 const bump = (k, d) => { state[k][d] = (state[k][d] || 0) + 1; op({ k, id: d, inc: 1 }); };
+const APPLIED_MAX = 4000;
 function apply(base, ops) {
+  const seen = new Set(Array.isArray(base.applied) ? base.applied : []);
+  const added = [];
   for (const o of ops) {
+    if (o.u) { if (seen.has(o.u)) continue; seen.add(o.u); added.push(o.u); }
     base[o.k] = base[o.k] || {};
     if (o.inc) base[o.k][o.id] = (base[o.k][o.id] || 0) + o.inc;
     else if (o.v) base[o.k][o.id] = o.v;
     else delete base[o.k][o.id];
   }
+  if (added.length) base.applied = [...(Array.isArray(base.applied) ? base.applied : []), ...added].slice(-APPLIED_MAX);
   return base;
 }
 // The file on disk: { raw: its exact text (null if there is none), data: parsed progress, corrupt: true if unreadable }.
@@ -69,9 +81,11 @@ async function writeIfUnchanged(raw, text) {
 async function flush() {
   if (flushing) return flushing; // one save at a time; changes made meanwhile go in the next one
   if (!pending.length) return;
-  let failed = false;
   flushing = (async () => {
+    let failed = false;
     const ops = pending; pending = [];
+    inflight = ops;  // still in the crash-recovery copy until the disk has them
+    keepPending();
     try {
       for (let attempt = 0; ; attempt++) {
         const disk = await readDiskRaw();
@@ -95,16 +109,85 @@ async function flush() {
       pending = ops.concat(pending); // keep them for the next try
       failed = true;
       console.warn('review save failed', e);
-    }
+    } finally { inflight = []; }
+    // Recorded here (not by whoever started the save), so every caller waiting on this save sees the result.
+    saveFailed = failed;
+    keepPending();
+    showUnsaved(failed && pending.length > 0);
+    // After a failure, try again a little later (not in a tight loop); the ratings stay in memory meanwhile.
+    if (pending.length) { clearTimeout(saveTimer); saveTimer = setTimeout(flush, failed ? 8000 : 600); }
   })();
   try { await flushing; } finally { flushing = null; }
-  // After a failure, try again a little later (not in a tight loop); the ratings stay in memory meanwhile.
-  if (pending.length) { clearTimeout(saveTimer); saveTimer = setTimeout(flush, failed ? 8000 : 600); }
 }
-export async function flushReview() { clearTimeout(saveTimer); await flush(); }
+// Before closing, updating or switching vaults: wait until every rating made so far is on disk, including any
+// made while a save was already running. Stops at the first failure (reported, retried later) instead of looping.
+export async function flushReview() {
+  clearTimeout(saveTimer);
+  for (let round = 0; round < 50; round++) {
+    if (flushing) { await flushing.catch(() => {}); continue; }
+    if (!pending.length) break;
+    await flush();
+    if (saveFailed) break;
+  }
+  return { ok: !reviewUnsaved() };
+}
+// Ratings that are not on disk yet (the desktop app asks before closing, updating or switching vaults; see
+// window.__moFlush).
+export const reviewUnsaved = () => pending.length > 0 || inflight.length > 0;
 function save() {
   clearTimeout(saveTimer);
+  keepPending();
   saveTimer = setTimeout(flush, 600);
+}
+
+// Ratings not yet on disk (the batch being written and the ones after it) are also kept in this window's
+// storage, so a crash or a restart while the vault can't be written doesn't lose them; they are saved on the
+// next start. Each window has its own copy (two open windows can't overwrite each other's); the ids above make
+// sure a rating recovered twice is counted once.
+let saveFailed = false;
+const WIN = uid();
+const PENDING_KEY = 'reviewPending:' + WIN, PENDING_INDEX = 'reviewPendingIndex';
+function keepPending() {
+  try {
+    const ops = [...inflight, ...pending];
+    const index = new Set(H?.store?.get(PENDING_INDEX, []) || []);
+    if (ops.length) index.add(WIN); else index.delete(WIN);
+    H?.store?.set(PENDING_KEY, ops.length ? { vault: H.S?.vault || '', ops } : null);
+    H?.store?.set(PENDING_INDEX, [...index]);
+  } catch { /* storage full or blocked */ }
+}
+function takeKeptPending() {
+  const out = [], seen = new Set();
+  try {
+    const index = new Set(H?.store?.get(PENDING_INDEX, []) || []);
+    for (const id of [...index, ...(index.size ? [] : [''])]) {
+      const key = id ? 'reviewPending:' + id : 'reviewPending';
+      const kept = H?.store?.get(key, null);
+      if (!kept || !Array.isArray(kept.ops) || (kept.vault && kept.vault !== (H.S?.vault || ''))) continue;
+      for (const o of kept.ops) { const k = o.u || JSON.stringify(o); if (!seen.has(k)) { seen.add(k); out.push(o); } }
+      H?.store?.set(key, null);
+      index.delete(id);
+    }
+    H?.store?.set(PENDING_INDEX, [...index]);
+  } catch { /* unreadable */ }
+  return out;
+}
+
+// "Review progress isn't saved yet": shown until a save succeeds, with Retry.
+let unsavedBar = null;
+function showUnsaved(on) {
+  if (!on) { unsavedBar?.remove(); unsavedBar = null; return; }
+  if (!unsavedBar) {
+    unsavedBar = document.body.appendChild(document.createElement('div'));
+    unsavedBar.className = 'review-unsaved-bar';
+    unsavedBar.setAttribute('role', 'alert');
+  }
+  unsavedBar.innerHTML = `<span>${escapeHtml(t('review.unsavedMsg'))}</span><button type="button" class="mod-button mod-cta">${escapeHtml(t('review.retrySave'))}</button>`;
+  unsavedBar.querySelector('button').onclick = async e => {
+    e.currentTarget.disabled = true;
+    await flushReview();
+    if (unsavedBar) { const b = unsavedBar.querySelector('button'); if (b) b.disabled = false; }
+  };
 }
 // Pick up what other windows saved, keeping this window's unsaved changes.
 export async function reloadReview() {
@@ -209,6 +292,28 @@ export function extractCards(path, content) {
   if (!cards.length) {
     const text = body.trim();
     if (text.replace(/\s+/g, '').length >= 80) add('note', t('review.recallNote', { note }), text.length > 1500 ? text.slice(0, 1500) + '\n\n…' : text, 0, 'whole-note');
+  }
+  // Which section each card is in ("Chapter 2 › Example"), shown while you answer.
+  const sectionAt = line => {
+    const open = [];
+    for (const h of heads) { if (h.i > line) break; while (open.length && open[open.length - 1].level >= h.level) open.pop(); open.push(h); }
+    return open.map(h => h.text.replace(/[*=_`]/g, '').trim()).filter(Boolean).join(' › ');
+  };
+  for (const c of cards) c.section = sectionAt(c.line);
+  // The same question in two places of one note used to get the same id, so one rating counted for both. A card
+  // whose question is unique keeps its old id (and its history). Cards that shared an id now get their own,
+  // made from their section (and their order within it, if a section repeats it); the old shared record is left
+  // as it was and not given to either card, because there is no way to tell which one it belonged to.
+  const byId = new Map();
+  for (const c of cards) byId.set(c.id, [...(byId.get(c.id) || []), c]);
+  for (const [shared, group] of byId) {
+    if (group.length < 2) continue;
+    const seen = new Map();
+    for (const c of group) {
+      const n = (seen.get(c.section) || 0) + 1; seen.set(c.section, n);
+      c.id = hash(`${shared}\u0000section\u0000${c.section}\u0000${n}`);
+      c.sharedId = shared;
+    }
   }
   return cards;
 }
@@ -504,7 +609,7 @@ function showCard() {
   // Mistakes and PDF cards link back to the exact page of their source.
   el.querySelector('.review-source').innerHTML = card.kind === 'mistake' || card.kind === 'card'
     ? `<span class="review-kind">${escapeHtml(t(card.kind === 'mistake' ? 'mist.kind' : 'pcard.kind'))}</span> ${card.path ? `<a href="#" class="review-goto" data-path="${escapeHtml(card.path)}" data-page="${card.page || 0}">${escapeHtml(t('mist.backTo', { where: card.note }))}</a>` : ''}`
-    : `<a href="#" data-open="${escapeHtml(card.path)}">${escapeHtml(t('review.fromNote', { note: card.note }))}</a>`;
+    : `<a href="#" data-open="${escapeHtml(card.path)}">${escapeHtml(t('review.fromNote', { note: card.note }))}</a>${card.section && card.kind !== 'note' ? ` <span class="review-section">› ${escapeHtml(card.section)}</span>` : ''}`;
   el.querySelector('.review-goto')?.addEventListener('click', ev => { ev.preventDefault(); ev.stopPropagation(); const { path, page } = ev.currentTarget.dataset; consultSource(s, path, +page); });
   H.renderInto(el.querySelector('.review-q'), card.q, card.path, 1);
   // A mistake: answer it again first (written down), then compare with your old answer.

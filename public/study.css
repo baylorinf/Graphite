@@ -160,3 +160,20 @@
 .study-diffs ul { margin: 6px 0 0 18px; padding: 0; }
 .study-uses p { margin: 6px 0; }
 .study-state { margin-top: 4px; }
+
+/* Find new course files: Graphite's own scan (manual plan) */
+.fj-issue { padding: 8px 10px; border-radius: 8px; background: var(--bg-3); border-left: 3px solid var(--accent); font-size: 13px; }
+.fj-item.is-unknown { border-style: dashed; }
+.fj-tag { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 999px; font-size: 11px; font-weight: 600; background: var(--bg-3); color: var(--text-muted); }
+.fj-dest { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; font-size: 12px; }
+.fj-folder { flex: 1 1 180px; min-width: 120px; font: inherit; font-size: 12px; padding: 2px 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
+.fj-src { font-size: 11px; word-break: break-all; }
+.fj-dupes { margin: 8px 0; font-size: 12.5px; }
+.fj-dupes summary { cursor: pointer; color: var(--text-muted); }
+.fj-dupes ul { margin: 6px 0 0; padding-left: 18px; }
+.fj-match { font-family: var(--font-code, monospace); font-size: 12px; }
+
+/* Review progress that could not be saved */
+.review-unsaved-bar { position: fixed; left: 50%; bottom: 44px; transform: translateX(-50%); z-index: 90; display: flex; align-items: center; gap: 12px; max-width: min(640px, 92vw); padding: 10px 14px; border-radius: 10px; background: var(--bg-2); border: 1px solid #d9534f; box-shadow: var(--shadow); font-size: 13px; }
+.review-section { color: var(--text-muted); font-size: 12px; }
+.mock-add { display: flex; gap: 6px; margin-top: 6px; } .mock-add input { flex: 1; min-width: 0; }

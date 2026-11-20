@@ -55,6 +55,9 @@ export function fwStatus(id) {
 }
 // An error from a job in words, saying which framework or AI it was and why.
 export function errorText(e, v) {
+  // An error already put into words (by agent() or failFrom) is shown as is: translating its code again would
+  // nest the message in itself and repeat the "work folder kept" line.
+  if (e?.localized) return e.message;
   const name = LOCAL[v]?.label || (v === CC ? 'Claude Code' : PROVIDERS[v]?.label || v || '');
   let msg = e?.code && LOCAL[v] ? t('fw.err.' + e.code, { name, detail: e.detail || e.message || '' }) : e?.message || String(e);
   if (e?.stage) msg += ' ' + t('fw.stageKept', { path: e.stage });
@@ -62,10 +65,15 @@ export function errorText(e, v) {
 }
 async function failFrom(res, v) {
   const d = await res.json().catch(() => ({}));
-  throw Object.assign(new Error(d.error || res.statusText), { code: d.code, detail: d.detail, framework: d.framework, stage: d.stage }, { message: errorText({ ...d, message: d.error }, v) });
+  throw Object.assign(new Error(d.error || res.statusText), { code: d.code, detail: d.detail, framework: d.framework, stage: d.stage }, { message: errorText({ ...d, message: d.error || res.statusText }, v), localized: true });
 }
 async function localRequest(v, task, payload, signal) {
-  const files = [...new Set([...(payload.job?.papers || []), ...(payload.job?.examples || [])])];
+  // Every file the job is about goes to the framework as `files`, so it can read what you chose: the note or PDF
+  // itself, the notes and PDFs in a revision plan's range, past papers, format examples. (Note titles that are not
+  // vault paths are left out.)
+  const j = payload.job || {};
+  const asPaths = v => (Array.isArray(v) ? v : v ? [v] : []).filter(p => typeof p === 'string' && /\.[a-z0-9]{1,5}$/i.test(p));
+  const files = [...new Set([...asPaths(payload.path), ...asPaths(j.pdf), ...asPaths(j.notes), ...asPaths(j.papers), ...asPaths(j.examples), ...asPaths(j.files)])];
   const res = await fetch('/api/local-ai', {
     signal, method: 'POST',
     headers: { 'X-Vault': '1', 'Content-Type': 'application/json', ...(v === 'dsh' && keyOf('deepseek') ? { 'X-AI-Key': keyOf('deepseek') } : {}) },
@@ -296,15 +304,19 @@ export const setAgentConf = patch => save({ agent: { ...agentConf(), ...patch } 
 // agent('import', 'import', { phase: 'plan' }, { onProgress }) → { planId, items, ignore, questions, … }
 // agent('import', 'import', { phase: 'apply', planId, accept: [0, 2] }) → { done, failed, edited, summary }
 // Jobs: 'import' (feature import), 'inbox' and 'brain' (feature inbox).
-export async function agent(feature, job, payload = {}, { onProgress, signal, provider } = {}) {
-  const v = provider || choice(feature);
-  if (!PROVIDERS[v] && !LOCAL[v]) throw new Error(t('agent.needsApi'));
-  if (PROVIDERS[v] && !hasProvider(v)) throw new Error(t('ai.noKeyFor', { provider: PROVIDERS[v].label }));
-  const key = LOCAL[v] ? (v === 'dsh' ? keyOf('deepseek') : '') : keyOf(v);
+// opts.graphite: "Scan with Graphite only", which you chose yourself: provider "graphite", with no key, model or
+// framework sent. (A plan the backend made manually because the chosen CLI could not plan is still confirmed
+// with that CLI as the provider, so it matches who the plan belongs to.)
+export async function agent(feature, job, payload = {}, { onProgress, signal, provider, graphite = false } = {}) {
+  const v = graphite ? 'graphite' : provider || choice(feature);
+  if (!graphite && !PROVIDERS[v] && !LOCAL[v]) throw new Error(t('agent.needsApi'));
+  if (!graphite && PROVIDERS[v] && !hasProvider(v)) throw new Error(t('ai.noKeyFor', { provider: PROVIDERS[v].label }));
+  const key = graphite ? '' : LOCAL[v] ? (v === 'dsh' ? keyOf('deepseek') : '') : keyOf(v);
+  const who = graphite ? { provider: 'graphite' } : LOCAL[v] ? { framework: v, frameworkPaths: raw().fwPaths || {} } : { provider: v, model: modelOf(v), baseUrl: v === 'custom' ? baseUrl() : undefined };
   const res = await fetch('/api/agent', {
     signal, method: 'POST',
     headers: { 'X-Vault': '1', 'Content-Type': 'application/json', ...(key ? { 'X-AI-Key': key } : {}) },
-    body: JSON.stringify({ job, ...(LOCAL[v] ? { framework: v, frameworkPaths: raw().fwPaths || {} } : { provider: v, model: modelOf(v), baseUrl: v === 'custom' ? baseUrl() : undefined }), lang: getLang(), ...agentConf(), ...payload }),
+    body: JSON.stringify({ job, ...who, lang: getLang(), ...agentConf(), ...payload }),
   });
   if (!res.ok) await failFrom(res, v);
   // One JSON object per line: progress steps, then the result or an error.
@@ -319,7 +331,7 @@ export async function agent(feature, job, payload = {}, { onProgress, signal, pr
       if (!line) continue;
       const o = JSON.parse(line);
       if (o.progress) { try { onProgress?.(o.progress); } catch { /* display only */ } }
-      else if (o.error) throw Object.assign(new Error(errorText({ ...o, message: o.error }, v)), { code: o.code, framework: o.framework, stage: o.stage });
+      else if (o.error) throw Object.assign(new Error(errorText({ ...o, message: o.error }, v)), { code: o.code, framework: o.framework, stage: o.stage, localized: true });
       else if (o.result) return o.result;
     }
     if (done) throw new Error(t('agent.cutOff'));

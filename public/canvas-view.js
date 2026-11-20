@@ -112,9 +112,21 @@ export function createCanvasView(root, { api, openFile }) {
       summaryReceipt = [label('receipt'), item?.title, label('attempt') + ' ' + result.attempt, formatTime(result.submittedAt)].filter(Boolean).join(' · ');
       render();
     },
+    // An unclear submission: ask Canvas what it has for this assignment and this account. A network error or an
+    // answer without the same identifiers leaves the result unknown (the dialog decides).
+    verify: async (courseId, assignmentId, accountKey) => {
+      const result = await call('POST', 'verify-submission', { courseId, assignmentId, accountKey: accountKey || state?.accountKey || null });
+      if (result?.status === 'submitted') {
+        const item = state?.snapshot?.courses?.find(c => String(c.id) === String(courseId))?.assignments?.find(a => String(a.id) === String(assignmentId));
+        if (item && result.attempt != null) Object.assign(item, { submitted: true, attempt: result.attempt, submittedAt: result.submittedAt });
+      }
+      return result;
+    },
   });
   function updateState(next) {
-    if (state?.user !== next.user || (state?.connected && !next.connected && !next.snapshot?.courses?.length)) {
+    // A different student (accountKey, never the display name, which two students can share).
+    const otherAccount = !!(state?.accountKey && next.accountKey && state.accountKey !== next.accountKey);
+    if (otherAccount || (state?.connected && !next.connected && !next.snapshot?.courses?.length)) {
       selected = ''; receipt = null; bulkFailures = []; lastPull = null; limit = STEP; dateLimit = STEP; summaryReceipt = ''; pendingVerification = null;
     }
     const previous = state;

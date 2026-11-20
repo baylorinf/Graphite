@@ -15,9 +15,21 @@ export function supportedTypes(assignment, mode) {
 
 // Submission drafts, including File handles, live in this tab's memory. The final request is sent only
 // from the explicit confirmation button. A missing network response can still mean Canvas accepted it.
-export function createSubmissionDialog({esc, formatTime, getState, listFiles, authorize, openOfficial, onAccepted}) {
-  const drafts = new Map();
+//
+// Every draft belongs to one Canvas account: the accountKey from /api/canvas/status (never the display name,
+// which two students can share). When the session or the identity changes, the open window closes and every
+// request still running for it (file list, preview, verification) is ignored when it answers:
+//  - the session expired, or the identity is briefly unknown (signing in again): the drafts are kept, sending is
+//    impossible, and a draft that was being previewed must be previewed again;
+//  - the same accountKey comes back: the drafts are there again, still asking for a new preview;
+//  - another accountKey, or you disconnect: the previous account's drafts are deleted.
+// Nothing is ever sent without the confirmation button, and nothing is sent again by itself after an unclear result.
+export function createSubmissionDialog({esc, formatTime, getState, listFiles, authorize, openOfficial, onAccepted, verify}) {
+  const drafts = new Map();      // `${accountKey}/${courseId}/${assignmentId}` → draft
   let dialog = null, active = null;
+  let epoch = 0;                 // bumped on every session or identity change; older answers are dropped
+  let lastKey = null;            // the account the drafts in memory belong to
+  const keyOf = state => (state && state.accountKey) || null;
   function dismiss() {
     if (!dialog) return;
     dialog.close(); dialog.remove(); dialog = null; active = null;
@@ -28,12 +40,21 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
   function chosen(d) {
     return [...d.files, ...d.vault.values()];
   }
+  // Names chosen twice (from the computer, the vault or both): marked so the student can remove one.
+  function sameNames(files) {
+    const count = new Map();
+    for (const f of files) { const k = f.name.normalize('NFC').toLowerCase(); count.set(k, (count.get(k) || 0) + 1); }
+    return k => count.get(k.normalize('NFC').toLowerCase()) > 1;
+  }
   function attachmentList(files, editable = false) {
-    return files.length ? '<ul class="cv-attachment-list">' + files.map((f, i) => `<li><span>${esc(f.path || f.name)}</span> <small class="cv-meta">${esc(new Intl.NumberFormat(getLang(), {style:'unit',unit:'byte',unitDisplay:'short'}).format(f.size))}</small>${editable ? ` <button type="button" class="cv-remove" aria-label="${esc(t('removeFile') + ' · ' + f.name)}" data-submit-action="remove" data-index="${i}">×</button>` : ''}</li>`).join('') + '</ul>' : '';
+    const dup = sameNames(files);
+    return files.length ? '<ul class="cv-attachment-list">' + files.map((f, i) => `<li${dup(f.name) ? ' class="cv-dup"' : ''}><span>${esc(f.path || f.name)}</span> <small class="cv-meta">${esc(new Intl.NumberFormat(getLang(), {style:'unit',unit:'byte',unitDisplay:'short'}).format(f.size))}</small>${dup(f.name) ? ` <small class="cv-error">${esc(t('sameName'))}</small>` : ''}${editable ? ` <button type="button" class="cv-remove" aria-label="${esc(t('removeFile') + ' · ' + f.name)}" data-submit-action="remove" data-index="${i}">×</button>` : ''}</li>`).join('') + '</ul>' : '';
   }
   function allowedToSend(d) {
     const state = getState();
-    if (!state?.connected) return false;
+    // Only the account the draft was written for may send it. (A session the school can't identify, accountKey
+    // null on both sides, still sends as before; any change of identity pauses the draft — see sessionChanged.)
+    if (!state?.connected || d.paused || keyOf(state) !== d.owner) return false;
     return state.authMode === 'web' ? state.canSubmitFiles === true && supportedTypes(d.item, 'web').includes(d.type) : state.canSubmit;
   }
   function vaultRows(d) {
@@ -64,13 +85,15 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     let timer;
     try {
       const result = await Promise.race([window.__moFlush(), new Promise(resolve => { timer = setTimeout(() => resolve(null), 8000); })]);
-      if (!result?.ok && (!result?.unsaved?.length || result.unsaved.some(f => d.vault.has(f.path)))) throw new Error();
+      // Review progress that couldn't be saved doesn't stop a submission; unsaved selected notes do.
+      if (!result?.ok && (!result?.unsaved?.length ? !result?.reviewUnsaved : result.unsaved.some(f => d.vault.has(f.path)))) throw new Error();
     } catch { throw new Error(t('saveSelected')); }
     finally { clearTimeout(timer); }
   }
   async function preview(d) {
     d.error = validation(d);
     if (d.error) { draw(); return; }
+    const mine = epoch;
     d.preparing = true; draw();
     try {
       const files = [...d.files];
@@ -87,20 +110,22 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
         selected.size = bytes.size; total += bytes.size;
         files.push(new File([bytes], selected.name, {type:response.headers.get('X-Graphite-File-Type') || bytes.type}));
       }
-      d.prepared = files; d.phase = 'preview';
-    } catch (error) { d.error = error.message || t('fileChanged'); }
+      if (mine !== epoch) return; // the session or account changed meanwhile: this preview no longer counts
+      d.prepared = files; d.phase = 'preview'; d.repreview = false;
+    } catch (error) { if (mine === epoch) d.error = error.message || t('fileChanged'); }
     finally { d.preparing = false; if (d === active) draw(); }
   }
   function body(d) {
-    if (d.preparing) return '';
+    if (d.preparing || d.verifying) return '';
     if (d.phase === 'done') {
       const r = d.receipt;
       return `<div data-submit-receipt role="status"><h3>${esc(t('receipt'))}</h3><p>${esc(t('attempt'))} · ${esc(r.attempt ?? '—')}</p><p>${esc(t('submittedAt'))} · ${esc(formatTime(r.submittedAt) || '—')}</p></div>`;
     }
-    if (d.phase === 'unknown') return `<p data-submit-unknown role="alert">${esc(t('unknown'))}</p>`;
+    if (d.phase === 'unknown') return `<p data-submit-unknown role="alert">${esc(t('unknown'))}</p><p class="cv-meta">${esc(t('verifyFirst'))}</p>`;
+    if (d.phase === 'not-received') return `<p data-submit-not-received role="status">${esc(t('notReceived'))}</p>`;
     if (d.phase === 'preview' || d.sending) {
       let content = '';
-      if (d.type === 'online_upload') content = attachmentList(chosen(d));
+      if (d.type === 'online_upload') content = attachmentList(d.sending ? d.prepared : chosen(d));
       else content = `<div class="cv-answer">${esc(d.type === 'online_url' ? d.url : d.text)}</div>`;
       return `<h3>${esc(t(d.type))}</h3>${content}`;
     }
@@ -120,15 +145,19 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     if (!dialog || !active) return;
     const d = active;
     let actions = '';
-    if (d.sending || d.preparing) actions = '<span role="status">' + esc(t(d.sending ? 'sending' : 'loading')) + '</span>';
+    if (d.sending || d.preparing || d.verifying) actions = '<span role="status">' + esc(t(d.sending ? 'sending' : 'loading')) + '</span>';
     else if (d.phase === 'edit') actions = control('preview','preview',true);
     else if (d.phase === 'preview') actions = control('edit','editDraft') +
-      (allowedToSend(d) ? control('confirm','confirmSubmit',true) : getState()?.authMode === 'web' ? '' : control('authorize','authorizeWrite',true));
+      (allowedToSend(d) ? control('confirm','confirmSubmit',true) : getState()?.authMode === 'web' || d.paused ? '' : control('authorize','authorizeWrite',true));
+    else if (d.phase === 'unknown') actions = verify ? control('verify','verify',true) : '';
+    else if (d.phase === 'not-received') actions = control('restore','restoreDraft',true);
+    const paused = d.paused ? `<p role="status" class="cv-feedback cv-error" data-submit-paused>${esc(t('sessionPaused'))}</p>` : '';
+    const again = !d.paused && d.repreview && d.phase === 'edit' ? `<p role="status" class="cv-feedback" data-submit-repreview>${esc(t('repreview'))}</p>` : '';
     dialog.innerHTML = `<div class="cv-submit-inner"><header class="cv-head"><h2 id="cv-submit-title">${esc(t(d.item.submitted ? 'resubmit' : 'submitTask'))}</h2>
       ${!d.sending ? control('close','close') : ''}</header>
       <p class="cv-subject"><strong>${esc(d.item.title)}</strong><br>${esc(d.course.name)}${d.item.groupAssignment ? ' · ' + esc(t('groupAssignment')) : ''}</p>
       <p class="cv-meta">${esc(t('due'))} · ${esc(formatTime(d.item.dueAt) || d.item.dueLabel || t('undated'))}　 ${esc(t('attempts'))} · ${esc(d.attempt)}</p>
-      ${body(d)}${d.awaitingScope && !getState()?.canSubmit ? `<p role="status" class="cv-feedback">${esc(getState()?.authError || t('waiting'))}</p>` : ''}
+      ${paused}${again}${body(d)}${d.awaitingScope && !getState()?.canSubmit ? `<p role="status" class="cv-feedback">${esc(getState()?.authError || t('waiting'))}</p>` : ''}
       ${d.error ? `<p role="alert" class="cv-feedback cv-error">${esc(d.error)}</p>` : ''}
       <footer class="cv-submit-actions">${!d.sending ? control('portal','origTask') : ''}${actions}</footer></div>`;
   }
@@ -141,16 +170,19 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     for (const [key, value] of Object.entries(common)) form.set(key, String(value));
     if (d.type === 'online_text_entry') form.set('text', d.text);
     else if (d.type === 'online_url') form.set('url', d.url.trim());
-    else for (const file of d.prepared) form.append('files', file, file.name);
+    else for (const file of d.prepared) form.append('files', file, file.name); // exactly the files in the preview
+    const mine = epoch;
     d.sending = true; d.error = ''; draw();
     try {
       const response = await fetch('/api/canvas/submit', {method:'POST',headers:{'X-Vault':'1'},body:form});
       const result = await response.json().catch(() => null);
       if (response.ok && result?.attempt != null && String(result.assignmentId) === String(d.item.id)) {
         d.receipt = result; d.phase = 'done'; d.files = []; d.vault.clear(); d.prepared = []; d.text = ''; d.url = '';
-        onAccepted(d.course.id, d.item.id, result);
+        if (mine === epoch && keyOf(getState()) === d.owner) onAccepted(d.course.id, d.item.id, result);
       } else if (!result || response.ok || result.code === 'submission_unknown') {
         d.phase = 'unknown';
+      } else if (mine !== epoch) {
+        d.phase = 'unknown'; // answered after the session changed: check before anything else
       } else {
         d.error = result.error || t('error');
         if (result.code === 'attempt_changed' || result.code === 'submission_conflict') d.phase = 'unknown';
@@ -159,16 +191,44 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     } catch { d.phase = 'unknown'; }
     finally { d.sending = false; if (d === active) draw(); }
   }
+  // An unclear result: ask Canvas first (POST /api/canvas/verify-submission through `verify`). Only an answer for
+  // this assignment and this account counts:
+  //  - received: the attempt count went up, or the assignment was clearly not submitted before and now clearly is;
+  //  - not received (status "unsubmitted"): the student may restore the draft, preview and confirm again;
+  //  - anything else, or no answer: still unknown.
+  // Checking never sends anything.
+  async function check(d) {
+    if (!verify || d.verifying) return;
+    const mine = epoch;
+    d.verifying = true; d.error = ''; draw();
+    try {
+      const v = await verify(d.course.id, d.item.id, d.owner);
+      if (mine !== epoch) return;
+      const same = v && String(v.courseId) === String(d.course.id) && String(v.assignmentId) === String(d.item.id) && (!v.accountKey || v.accountKey === d.owner);
+      const attempt = same && v.attempt != null && v.attempt !== '' && Number.isInteger(Number(v.attempt)) ? Number(v.attempt) : null;
+      const wasUnsubmitted = d.item.submitted === false && !(Number(d.item.attempt) > 0);
+      if (same && v.status === 'submitted' && ((attempt != null && attempt > d.attempt) || wasUnsubmitted)) {
+        d.receipt = {attempt: v.attempt, submittedAt: v.submittedAt, assignmentId: d.item.id};
+        d.phase = 'done'; d.files = []; d.vault.clear(); d.prepared = []; d.text = ''; d.url = '';
+        if (keyOf(getState()) === d.owner) onAccepted(d.course.id, d.item.id, d.receipt);
+      } else if (same && v.status === 'unsubmitted') d.phase = 'not-received';
+      else d.error = t('noNewAttempt'); // no clear answer: still unknown
+    } catch (error) { if (mine === epoch) d.error = error.message || t('error'); }
+    finally { d.verifying = false; if (d === active) draw(); }
+  }
   function open(course, item) {
     dismiss();
-    const key = String(course.id) + '/' + String(item.id);
+    // While the identity is briefly unknown (signing in again), the drafts of the last account are shown, paused.
+    const owner = keyOf(getState()) || lastKey;
+    const key = (owner || 'none') + '/' + String(course.id) + '/' + String(item.id);
     const attempt = Number.isInteger(Number(item.attempt)) ? Number(item.attempt) : 0;
     let d = drafts.get(key);
-    if (d?.phase === 'done' || (!d?.sending && d?.phase === 'unknown' && attempt > d.attempt)) d = null;
+    if (d?.phase === 'done' || (!d?.sending && ['unknown', 'not-received'].includes(d?.phase) && attempt > d.attempt)) d = null;
     if (!d) {
-      d = {course,item,type:supportedTypes(item, getState()?.authMode)[0],text:'',url:'',files:[],vault:new Map(),prepared:[],filter:'',limit:40,index:null,phase:'edit',error:'',requestId:null,attempt,sending:false};
-      drafts.set(key,d);
+      d = {course,item,owner,type:supportedTypes(item, getState()?.authMode)[0],text:'',url:'',files:[],vault:new Map(),prepared:[],filter:'',limit:40,index:null,phase:'edit',error:'',requestId:null,attempt,sending:false};
+      drafts.set(key,d); // also while the school can't identify the session (owner null); see sessionChanged
     }
+    d.paused = !getState()?.connected || keyOf(getState()) !== owner;
     active = d;
     dialog = document.createElement('dialog');
     dialog.id = 'cv-submit-dialog'; dialog.setAttribute('aria-labelledby','cv-submit-title');
@@ -185,7 +245,12 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     dialog.addEventListener('change', e => {
       if (e.target.id === 'cv-submit-type') { d.type = e.target.value; d.error = ''; draw(); }
       if (e.target.id === 'cv-submit-files') {
-        d.files = Array.from(e.target.files);
+        // Choosing again adds to what is already chosen (the same file twice is kept once).
+        for (const f of Array.from(e.target.files)) {
+          if (!d.files.some(x => x.name === f.name && x.size === f.size && x.lastModified === f.lastModified)) d.files.push(f);
+        }
+        e.target.value = '';
+        d.error = '';
         dialog.querySelector('[data-submit-files-list]').innerHTML = attachmentList(chosen(d), true);
       }
       if (e.target.hasAttribute('data-vault-path')) {
@@ -197,25 +262,32 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     });
     dialog.addEventListener('click', async e => {
       const button = e.target.closest('[data-submit-action]'), action = button?.dataset.submitAction;
-      if (!action || d.sending || d.preparing) return;
+      if (!action || d.sending || d.preparing || d.verifying) return;
       if (action === 'close') { dismiss(); return; }
       if (action === 'preview') return preview(d);
       if (action === 'edit') { d.phase = 'edit'; d.prepared = []; d.error = ''; draw(); return; }
+      if (action === 'verify') return check(d);
+      // Only here (Canvas confirmed nothing arrived, and the student chose to restore) does the draft get a new
+      // request id; until then a retry would still match the unclear attempt's record.
+      if (action === 'restore') { if (d.phase !== 'not-received') return; d.phase = 'edit'; d.prepared = []; d.error = ''; d.repreview = true; d.requestId = null; draw(); return; }
       if (action === 'vault') {
         d.showVault = !d.showVault; d.error = '';
         if (!d.showVault) { draw(); return; }
+        const mine = epoch;
         d.loading = true; draw();
         try {
           const result = await listFiles();
+          if (mine !== epoch) return;
           d.index = result.files.map(f => ({path:f.path,name:f.path.split('/').pop(),size:f.size})).sort((a,b) => a.path.localeCompare(b.path,getLang()));
-        } catch (error) { d.error = error.message || t('error'); }
-        finally { d.loading = false; if (active === d) { draw(); dialog.querySelector('#cv-file-filter')?.focus(); } }
+        } catch (error) { if (mine === epoch) d.error = error.message || t('error'); }
+        finally { d.loading = false; if (active === d) { draw(); dialog?.querySelector('#cv-file-filter')?.focus(); } }
         return;
       }
       if (action === 'more-files') { d.limit += 40; dialog.querySelector('[data-vault-options]').innerHTML = vaultRows(d); return; }
       if (action === 'remove') {
         const index = Number(button.dataset.index);
         if (index < d.files.length) d.files.splice(index,1); else d.vault.delete(chosen(d)[index]?.path);
+        d.error = '';
         draw(); return;
       }
       if (action === 'confirm') return send(d);
@@ -227,11 +299,32 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     });
     draw(); dialog.showModal();
   }
+  // The session or identity changed (see the top of this function).
+  function sessionChanged(previous, next) {
+    const nextKey = keyOf(next), was = previous?.connected, now = !!next.connected;
+    const sameSession = (previous ? keyOf(previous) : lastKey) === nextKey && !!was === now;
+    if (sameSession) return false;
+    epoch++;
+    dismiss();
+    if (nextKey && lastKey && nextKey !== lastKey) drafts.clear();            // another student: nothing carries over
+    // Drafts written while the school couldn't say who was signed in can't be given to the account that now shows
+    // up (the display name is no proof), so they go.
+    if (nextKey) for (const [k, d] of drafts) if (!d.owner) drafts.delete(k);
+    for (const d of drafts.values()) {
+      if (!now || nextKey !== d.owner) d.paused = true;
+      else if (d.paused) d.paused = false;
+      // Whatever was previewed before the change must be previewed again (and confirmed by the student).
+      if (d.phase === 'preview' || d.preparing) { d.phase = 'edit'; d.prepared = []; d.preparing = false; d.repreview = true; }
+      d.verifying = false; d.loading = false;
+    }
+    if (nextKey) lastKey = nextKey;
+    return true;
+  }
   return { open, dismiss,
     statusChanged(previous, next) {
-      if (previous?.connected && (!next.connected || previous.user !== next.user)) { dismiss(); drafts.clear(); return; }
+      if (sessionChanged(previous, next)) return;
       if (active && active.phase === 'preview' && (previous?.canSubmit !== next.canSubmit || previous?.canSubmitFiles !== next.canSubmitFiles || previous?.authError !== next.authError)) draw();
     },
-    clear() { dismiss(); drafts.clear(); },
+    clear() { epoch++; dismiss(); drafts.clear(); lastKey = null; },
   };
 }

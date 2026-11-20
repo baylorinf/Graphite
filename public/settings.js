@@ -257,7 +257,7 @@ function renderAI() {
   content.createEl('h3', { cls: 'settings-sub', text: t('agent.jobs') });
   content.createEl('p', { cls: 'setting-note', text: t('agent.jobsDesc') });
   for (const f of AI.AGENT_FEATURES) {
-    new PM.Setting(content).setName(t('ai.job.' + f)).setDesc(t('ai.job.' + f + 'Desc')).addButton(b => { b.setButtonText(t('fj.run')).onClick(() => { closeSettings?.(); H.runCommand(f === 'import' ? 'find-course-files' : 'file-inbox'); }); b.buttonEl.dataset.fjRun = f; }).addDropdown(d => {
+    new PM.Setting(content).setName(t('ai.job.' + f)).setDesc(t('ai.job.' + f + 'Desc')).addButton(b => { b.setButtonText(t('fj.run')).onClick(() => { closeSettings?.(); H.runCommand(f === 'import' ? 'find-course-files' : 'file-inbox'); }); b.buttonEl.dataset.fjRun = f; }).then(st => { if (f === 'import') st.addButton(b2 => { b2.setButtonText(t('fj.manualScan')).onClick(() => { closeSettings?.(); H.runCommand('find-course-files-manual'); }); b2.buttonEl.dataset.fjManual = '1'; }); }).addDropdown(d => {
       for (const o of AI.options(f)) {
         d.addOption(o.value, o.label);
         if (!o.ready) d.selectEl.lastElementChild.disabled = true;
