@@ -105,12 +105,12 @@ async function debugProgram({child,exe,root,inferiorDir,dir,stdin,breakpoints,fi
     const vars=await request('-stack-list-variables --all-values');
     if(!active())return;
     const f=data.frame||{};
-    const debuggerFile=f.fullname || (f.file && path.resolve(inferiorDir,f.file));
-    const belowWorkingDir=debuggerFile && path.relative(inferiorDir,debuggerFile);
-    const fromWorkingDir=belowWorkingDir && !path.isAbsolute(belowWorkingDir) &&
-      belowWorkingDir!=='..' && !belowWorkingDir.startsWith('..'+path.sep);
-    const abs=aliasToFile.get(path.basename(f.file||'')) ||
-      (fromWorkingDir ? path.join(root,belowWorkingDir) : debuggerFile);
+    // A GCC prefix map can leave even GDB's "fullname" project-relative (for
+    // example, a header reached by Step In). Resolve it from the inferior's
+    // working directory, including its temporary junction on Windows.
+    const name=f.fullname || f.file;
+    const reported=aliasToFile.get(path.basename(f.file||'')) || (name && path.resolve(inferiorDir,name));
+    const abs=reported && await fs.realpath(reported).catch(()=>null);
     const rel=abs && path.relative(root,abs), inside=rel && !path.isAbsolute(rel) && rel!=='..' && !rel.startsWith('..'+path.sep);
     paused=true;
     onPause({reason:data.reason||'stopped',path:inside?unixPath(rel):null,line:Number(f.line)||null,

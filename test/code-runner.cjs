@@ -100,6 +100,20 @@ test('real C++ project build, run, cancellation and debugger',{timeout:120000},a
     assert.equal(result.exitCode,17);assert.equal(result.status,'runtime_error');
     assert.equal(path.normalize(await fs.readFile(path.join(chineseRoot,'source-path.txt'),'utf8')),path.join(chineseRoot,rel));
   });
+  await t.test('stepping into a nested Chinese header resolves its source even without a header breakpoint',async()=>{
+    const header='资料/算术.hpp',entry='课后.cpp';
+    await fs.mkdir(path.join(chineseRoot,'资料'),{recursive:true});
+    await fs.writeFile(path.join(chineseRoot,header),'#pragma once\ninline int adjust(int x){\n  return x+1;\n}\n');
+    await fs.writeFile(path.join(chineseRoot,entry),'#include "资料/算术.hpp"\nint main(){\n  int v=adjust(10);\n  return v;\n}\n');
+    const job=await runner.start({projectId:'chinese',path:entry,mode:'debug',breakpoints:[{path:entry,line:3}]});
+    assert.equal((await waitFor(job,'paused')).path,entry);
+    const cursor=events.length;
+    await runner.debug({id:job.id,action:'step'});
+    const paused=await waitFor(job,'paused',cursor);
+    assert.equal(paused.function,'adjust');assert.equal(paused.path,header);assert.equal(paused.line,3);
+    assert.equal(paused.locals.find(item=>item.name==='x')?.value,'10');
+    await runner.debug({id:job.id,action:'continue'});assert.equal((await waitFor(job,'end')).exitCode,11);
+  });
   await t.test('only owned jobs are stopped; stop works during a running program and paused debugging',async()=>{
     await fs.writeFile(path.join(root,'loop.cpp'),'#include <cstdio>\nint main(){puts("started");fflush(stdout);for(;;){} }');
     const job=await start('loop.cpp','run');
