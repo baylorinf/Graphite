@@ -14,7 +14,8 @@ function readSchoolPage() {
   const account = document.querySelector('#global_nav_profile_link, a[href="/profile/settings"],a[href="/logout"],form[action="/logout"]');
   const hasCourseTable = !!document.querySelector('#my_courses_table');
   const logged = !!account || hasCourseTable;
-  const accountName = text(account?.querySelector('.avatar-name,.user_name')) || account?.querySelector('img[alt]')?.alt || '';
+  const shownName = text(account?.querySelector('.avatar-name,.user_name')) || account?.querySelector('img[alt]')?.alt?.trim() || '';
+  const accountName = /^(?:account|profile|avatar|user|user account|profile picture|账户|帐户|帳戶|个人资料|個人資料|头像|頭像)$/i.test(shownName) ? '' : shownName;
   const mainText = text(root);
   const heading = text(root.querySelector('h1,h2'));
   const denied = /access denied|unauthorized|you do not have permission|accès refusé|acceso denegado|无权访问|无访问权限|未获授权|未授权|拒绝访问|拒絕存取|無權限|アクセスが拒否/i.test(heading + ' ' + text(root.querySelector('.ic-flash-error')));
@@ -121,6 +122,54 @@ function readSchoolPage() {
   });
   const due = dueInfo(root);
   const assignment = url.pathname.match(/^\/courses\/(\d+)\/assignments\/(\d+)\/?$/);
+  const rich = assignment ? root.querySelector('[data-resource-type="assignment.body"],#assignment_show .description.user_content,[data-testid="assignment-description"],.a2-toggle-details-container .user_content')
+    : root.querySelector('#course_syllabus,#syllabus_body,[data-testid="course-syllabus"]');
+  const body = rich && visible(rich) ? String(rich.innerText).trim() : '';
+  const bodyLinks = rich && visible(rich) ? Array.from(rich.querySelectorAll('a[href]')).filter(visible)
+    .map(a=>({href:official(a.href)?.href,title:text(a)||a.title})).filter(l=>l.href && l.title) : [];
+  const form = document.querySelector('#submit_assignment form#submit_online_upload_form');
+  const opener = document.querySelector('#assignment_show .assignment-buttons .submit_assignment_link');
+  const enhanced = assignment && root.querySelector('[data-testid="assignments-2-student-view"]');
+  const upload = assignment && form && !form.closest('.user_content') && form.method==='post' &&
+    official(form.action)?.pathname===url.pathname.replace(/\/$/,'')+'/submissions' &&
+    form.querySelector('#submit_file_button') && (visible(form) || (visible(opener) && !opener.disabled));
+  const receipt = receiptInfo();
+  const receiptFiles = assignment ? [...document.querySelectorAll('#sidebar_content .details .content a[href]')].filter(visible).flatMap(a=>{
+    const u=official(a.href);
+    if(!u || !new RegExp('^/courses/'+assignment[1]+'/assignments/'+assignment[2]+'/submissions/(?:self|[0-9]+)/?$').test(u.pathname) ||
+      !/^\d+$/.test(u.searchParams.get('download')||'') || u.searchParams.has('comment_id'))return [];
+    return [{id:u.searchParams.get('download'),name:(a.download || text(a).replace(/^(?:download\s+|下载\s*|下載\s*|télécharger\s+|descargar\s+)/i,'')).trim()}];
+  }) : [];
+  let enhancedUpload=false;
+  if(enhanced && !enhanced.closest('.user_content')){
+    const select=enhanced.querySelector('[data-testid="attemptSelect"]');
+    const attemptInput=select?.matches('input,select')?select:select?.querySelector('input,select');
+    const attemptLabel=attemptInput?.selectedOptions?.[0]?.textContent || attemptInput?.value || text(select);
+    const n=String(attemptLabel).trim().match(/^(?:Attempt\s+(\d+)|第\s*(\d+)\s*次(?:尝试|嘗試|提交)?|(?:尝试|嘗試)\s*(\d+))$/i);
+    const number=n && Number(n[1]||n[2]||n[3]);
+    const status=enhanced.querySelector('[data-testid="submission-workflow-tracker-title"]');
+    const submit=enhanced.querySelector('button[data-testid="submit-button"]');
+    const pane=enhanced.querySelector('[data-testid="upload-pane"]');
+    const choice=enhanced.querySelector('[data-testid="submission-type-selector"] [data-testid="online_upload"] button');
+    const progress=/^(?:in progress|进行中|正在进行|進行中)$/i.test(text(status));
+    // An editable first draft and a published file preview are distinct Canvas states.
+    if(number===1 && progress && visible(submit) && (visible(pane)||visible(choice))){
+      receipt.submitted=false;receipt.attempt=0;enhancedUpload=true;
+    }
+    const preview=enhanced.querySelector('[data-testid="file-preview"] [data-testid="uploaded_files_table"]');
+    if(number && visible(preview) && status && !progress && /submitted|review feedback|已提交|提交于|提交於|查看反馈|查看回饋/i.test(text(status)+' '+text(enhanced.querySelector('[data-testid="submission-workflow-tracker-subtitle"]')))){
+      receipt.submitted=true;receipt.attempt=number;
+      for(const row of preview.querySelectorAll('tbody tr')){
+        const cell=row.querySelector('[data-testid="download-file"]')?.previousElementSibling;
+        const nameCell=row.cells[1];
+        if(!cell || !nameCell)continue;
+        // The full accessible name follows the visually shortened name in Canvas' file preview.
+        const fullName=nameCell.lastElementChild?.textContent?.trim() || text(nameCell);
+        if(fullName)receiptFiles.push({name:fullName});
+      }
+    }
+  }
+  if (receipt.submitted == null && visible(opener) && /^(?:start assignment|开始作业|開始作業)$/i.test(text(opener))) receipt.submitted=false;
   const receiptLink=assignment && [...document.querySelectorAll('#sidebar_content .details a[href],a[data-testid="submission-details-link"]')].find(a=>{
     const u=official(a.href); return visible(a) && u && !u.search && new RegExp('^/courses/'+assignment[1]+'/assignments/'+assignment[2]+'/submissions/(?:self|[0-9]+)/?$').test(u.pathname);
   });
@@ -129,7 +178,7 @@ function readSchoolPage() {
   const busy = !!root.querySelector('[aria-busy="true"],.loadingIndicator,[data-testid="loading-spinner"]');
   return { logged, user: accountName, webIdentity:identity ? (identity[1]||identity[2]) : null, pageUrl:url.href, denied, notFound,
     enrollments, hasCourseTable, recognizableEmpty, links, tabs, next, extraPages:pager.length>next.length,
-    download: download?.href || null, receiptUrl: receiptLink?.href || null, due,...receiptInfo(),busy };
+    download: download?.href || null, receiptUrl: receiptLink?.href || null, receiptFiles,body,bodyLinks,syllabus:!!rich&&!assignment,upload:!!upload||enhancedUpload,due,...receipt,busy };
 }
 const SITE = 'https://oc.sjtu.edu.cn';
 const valid = raw => { try { const u=new URL(raw); return u.origin === SITE && !u.username && !u.password ? u : null; } catch { return null; } };
@@ -206,7 +255,31 @@ async function readCourses(loadPage, options = {}) {
         }
       }
     }
+    function resources(page) {
+      const attachments=[];
+      for(const link of page.bodyLinks || []) {
+        const u=valid(link.href);
+        if(!u)continue;
+        // Accept file links already displayed in the course's instructions, including the preview variant.
+        const direct=u.pathname.match(new RegExp('^(?:'+coursePath.slice(0,-1)+')?/files/(\\d+)(?:/download)?/?$'));
+        const preview=u.pathname===coursePath+'files' || u.pathname.startsWith(coursePath+'files/folder/') ? u.searchParams.get('preview') : null;
+        const fileId=direct?.[1] || (/^\d+$/.test(preview||'') ? preview : null);
+        if(!fileId || attachments.some(a=>a.id===fileId))continue;
+        record('files',link);
+        const file=c.files.find(f=>f.id===fileId);
+        if(file)attachments.push({id:fileId,name:file.name,url:file.url});
+      }
+      return {text:page.body||'',url:page.pageUrl,attachments};
+    }
     collect(home);
+    const syllabus=coursePath+'assignments/syllabus';
+    const syllabusLink=(home.links||[]).some(l=>valid(l.href)?.pathname===syllabus);
+    if(approved.has(syllabus) || syllabusLink || home.syllabus) {
+      try {
+        const page=home.syllabus ? home : await safe(SITE+syllabus);
+        if(page.body || page.bodyLinks?.length)c.requirements=resources(page);
+      } catch(e){if(e.status===401)throw e;c.warnings.push('课程大纲：'+e.message);}
+    }
     for(const [key,slug] of Object.entries(sections)) {
       const pagePath=coursePath+slug;
       if (!approved.has(pagePath)) continue;
@@ -217,7 +290,7 @@ async function readCourses(loadPage, options = {}) {
           const current=queue.shift(), u=valid(current);
           if(!u || visited.has(u.href))continue;
           visited.add(u.href);
-          if(visited.size>100){c.warnings.push('此栏目超过 100 页，可到课程原站查看后续内容。');break;}
+          if(!options.fullMaterials && visited.size>100){c.warnings.push('此栏目超过 100 页，可使用一键拉取继续读取。');break;}
           const page=await safe(u.href); collect(page,key);
           if(page.extraPages && !c.warnings.includes('有些分页只在学校网页内提供翻页按钮。')) c.warnings.push('有些分页只在学校网页内提供翻页按钮。');
           const candidates=[...(page.next||[])];
@@ -232,7 +305,7 @@ async function readCourses(loadPage, options = {}) {
     }
     // Follow only attachments explicitly offered as such by a visible module item. Never open
     // untyped module links, external tools or quiz launches just to determine their type.
-    const fileBudget=options.background ? 12 : 90;
+    const fileBudget=options.fullMaterials ? moduleFiles.size : options.background ? 12 : 90;
     for(const link of [...moduleFiles.values()].slice(0,fileBudget)){
       try {
         const detail=await safe(link.href), final=valid(detail.pageUrl), direct=valid(detail.download);
@@ -248,18 +321,26 @@ async function readCourses(loadPage, options = {}) {
       for(const a of c.assignments){
         const past=old?.assignments?.find(other=>other.id===a.id);
         if(options.background && past){
+          for(const field of ['description','attachments','submissionTypes']) if(past[field]!=null)a[field]=past[field];
+          for(const file of a.attachments||[])record('files',{href:file.url,title:file.name});
           if(!a.dueLabel && !a.dueAt){a.dueAt=past.dueAt || null;a.dueLabel=past.dueLabel || '';}
           if(a.submitted==null && past.checkedAt){a.submitted=past.submitted;a.checkedAt=past.checkedAt;}
+          if(a.submitted===false)a.attempt=0;
           if(a.submitted===true && past.submitted===true){a.attempt=past.attempt ?? null;a.submittedAt=past.submittedAt ?? null;}
         }
         if(options.background && (a.dueAt || a.dueLabel || past?.checkedAt || checked>=2)) continue;
-        if(checked >= 120){c.warnings.push('作业详情超过本次读取上限，其余作业保留学校清单中的资料。');break;}
+        if(!options.fullMaterials && checked >= 120){c.warnings.push('作业详情超过本次读取上限，其余作业可用一键拉取读取。');break;}
         checked++;
         try{
           const page=await safe(a.url);
+          const material=resources(page);
+          a.description=material.text;
+          a.attachments=material.attachments;
+          a.submissionTypes=page.upload ? ['online_upload'] : [];
           if(page.due?.dueAt || page.due?.dueLabel) {a.dueAt=page.due.dueAt||null;a.dueLabel=page.due.dueLabel||'';}
           if(typeof page.submitted==='boolean')a.submitted=page.submitted;
           a.attempt=page.attempt??null;a.submittedAt=page.submittedAt??null;
+          if(a.submitted===false)a.attempt=0;
           if(!options.background && a.submitted===true && (!a.submittedAt || !a.attempt) && page.receiptUrl){
             const receipt=valid(page.receiptUrl);
             if(receipt && !receipt.search && new RegExp('^'+coursePath+'assignments/'+a.id+'/submissions/(?:self|[0-9]+)/?$').test(receipt.pathname)) {

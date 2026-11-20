@@ -16,6 +16,7 @@ function makeSnapshot() {
   const assignment = (id, title, dueAt, submitted) => ({id, title, dueAt, submitted, url: site + '/courses/101/assignments/' + id});
   const course = {
     id: '101', name: '示例代数', code: 'DEMO-A', url: site + '/courses/101', warnings: [],
+    requirements: {text:'期末占 60%。\n作业按周提交。', attachments:[{id:'505',name:'课程说明.pdf',url:site+'/courses/101/files/505'}]},
     assignments: [assignment('301', '未交矩阵作业', when(2), false), assignment('302', '已上传向量习题', when(3), true),
       assignment('303', '往期小作业', when(-2), false), assignment('304', '下学期项目', when(50), false)],
     files: [{id:'501', name:'讲义.md', size:45, updatedAt:when(-1), url:site + '/courses/101/files/501'}],
@@ -42,7 +43,8 @@ function createFixture(configured, portalSupported=false) {
   const calls = [];
   const fixture = { calls, failSync:false, partial:false, failDownload:false, failFeed:false, failStatus:false,
     submitMode:'ok', submissions:[],
-    activate(canSubmit=false,mode='oauth') { state.connected = true; state.canSubmit=canSubmit; state.authMode=mode; state.authPending = false; state.user = '课程测试生'; },
+    activate(canSubmit=false,mode='oauth') { state.connected = true; state.canSubmit=canSubmit; state.canSubmitFiles=mode==='web'||canSubmit; state.authMode=mode; state.authPending = false; state.user = '课程测试生'; },
+    expire() { state.connected=false; state.canSubmit=false; state.canSubmitFiles=false; state.authError='请重新登录学校网站。'; },
     markAcceptedAtSchool(id) {
       const row = sample.courses[0].assignments.find(a=>a.id === id);
       row.submitted=true;row.attempt=(row.attempt || 0)+1;
@@ -51,7 +53,7 @@ function createFixture(configured, portalSupported=false) {
       const first = sample.courses[0];
       for (const [id,type,title] of [['310','online_text_entry','矩阵文字作业'],['311','online_url','实验网页作业'],['312','online_upload','上传演算作品']]) {
         first.assignments.push({id,title,attempt:0,submitted:false,excused:false,dueAt:when(4),
-          submissionTypes:[type],url:site+'/courses/101/assignments/'+id});
+          submissionTypes:[type],description:'请提交两个文件，保留 <draft> 符号。',attachments:[{id:'506',name:'题目.pdf',url:site+'/courses/101/files/506'}],url:site+'/courses/101/assignments/'+id});
       }
     },
     async handle(route) {
@@ -62,7 +64,7 @@ function createFixture(configured, portalSupported=false) {
         body = {files:[]};
         for (const [field,value] of decoded) {
           if (typeof value === 'string') body[field]=value;
-          else body.files.push({field,name:value.name,bytes:Buffer.from(await value.arrayBuffer()).toString('hex')});
+          else body.files.push({field,name:value.name,mime:value.type,bytes:Buffer.from(await value.arrayBuffer()).toString('hex')});
         }
       } else body = request.postDataJSON() || null;
       calls.push({action, body, method:request.method()});
@@ -105,9 +107,15 @@ function createFixture(configured, portalSupported=false) {
           return respond({path:savedPath, unchanged:false});
         }
         case 'download-course': return respond({saved:0,unchanged:0,failed:[{id:'502',name:'实验步骤.pdf',error:'实验课件暂时不可用'}]});
+        case 'pull': {
+          state.snapshot=structuredClone(sample);
+          const saved = state.lastPull ? 0 : 3;
+          state.lastPull={saved,unchanged:3-saved,skipped:0,courses:2,failed:[{courseId:'202',name:'实验附录',error:'暂不可用'}],warnings:[],path:'Canvas'};
+          return respond(state.lastPull);
+        }
         case 'submit': {
           fixture.submissions.push(body);
-          if (!state.canSubmit) return respond({error:'申请提交权限后再试。'},403);
+          if (!state.canSubmit && !(state.canSubmitFiles && body.type==='online_upload')) return respond({error:'申请提交权限后再试。'},403);
           if (fixture.submitMode === 'invalid') return respond({error:'课程未接受本次提交，请检查作业格式。'},422);
           if (fixture.submitMode === 'unknown') return respond({error:'学校可能已收到本次提交，请到原站核对。',code:'submission_unknown'},502);
           const assignment=sample.courses[0].assignments.find(a=>a.id===body.assignmentId);
@@ -133,7 +141,7 @@ async function startPage(browser, origin, fixture) {
   await context.route('**/*', route => {
     const url = new URL(route.request().url());
     if (url.origin !== origin) return route.abort();
-    return url.pathname.startsWith('/api/canvas/') ? fixture.handle(route) : route.continue();
+    return url.pathname.startsWith('/api/canvas/') && url.pathname!=='/api/canvas/vault-file' ? fixture.handle(route) : route.continue();
   });
   const page = await context.newPage();
   page.setDefaultTimeout(8000);
@@ -328,7 +336,7 @@ async function assignmentSubmissions(browser, origin) {
     assert.equal(await action('preview').count(),0);
     const uploaded=fixture.submissions.at(-1);
     assert.equal(uploaded.type,'online_upload');assert.equal(uploaded.assignmentId,'312');
-    assert.deepEqual(uploaded.files,files.map(f=>({field:'files',name:f.name,bytes:f.buffer.toString('hex')})));
+    assert.deepEqual(uploaded.files,files.map(f=>({field:'files',name:f.name,mime:f.mimeType,bytes:f.buffer.toString('hex')})));
     assert.notEqual(uploaded.requestId,posted.requestId);
     await action('portal').click();
     await page.waitForFunction(()=>window.testOpenedUrls.includes('https://oc.sjtu.edu.cn/courses/101/assignments/312'));
@@ -340,7 +348,7 @@ async function assignmentSubmissions(browser, origin) {
   } finally {await context.close();}
 }
 
-async function nativeSchoolSession(browser, origin) {
+async function nativeSchoolSession(browser, origin, vault) {
   const fixture = createFixture(false,true);
   fixture.offerHomework();
   const {context,page,view,button} = await startPage(browser,origin,fixture);
@@ -351,8 +359,20 @@ async function nativeSchoolSession(browser, origin) {
     fixture.activate(false,'web');
     await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
     await textVisible(view,'课程测试生');
-    await button('sync').click();
+    await button('pull').evaluate(el=>{el.click();el.click();});
+    const report=view.locator('[data-pull-result]');
+    await textVisible(report,/已保存 3/);
+    assert.equal(fixture.calls.filter(c=>c.action==='pull').length,1);
+    assert.equal(fixture.calls.filter(c=>c.action==='download').length,0);
+    await report.locator('summary').click();
+    await textVisible(report,'示例物理 · 实验附录 · 暂不可用');
+    await button('pull').click(); await textVisible(report,/文件已在笔记库中 3/);
+    await view.locator('[data-group="requirements"]').click();
+    await textVisible(view,/期末占 60%/); await textVisible(view,'课程说明.pdf');
     await view.locator('[data-group="assignments"]').click();
+    const uploadRow=view.locator('li.cv-row:has([data-cv="submission"][data-assignment="312"])');
+    await uploadRow.locator('summary').click();
+    await textVisible(uploadRow,/保留 <draft> 符号/); await textVisible(uploadRow,'题目.pdf');
     await view.locator('[data-cv="submission"][data-assignment="310"]').click();
     await page.waitForFunction(()=>window.testOpenedUrls.includes('https://oc.sjtu.edu.cn/courses/101/assignments/310'));
     const calls=fixture.calls.filter(c=>c.action==='portal');
@@ -364,7 +384,50 @@ async function nativeSchoolSession(browser, origin) {
     await page.waitForFunction(()=>[...document.querySelectorAll('#canvas-view li.cv-row')].some(row=>
       row.querySelector('.cv-title')?.textContent==='矩阵文字作业' && row.querySelector('.cv-meta')?.textContent.includes('已提交')));
     assert.equal(fixture.submissions.length,0);
-    console.log('PASS jAccount-only desktop course sync and opening the correct official assignment without write authorization');
+    await uploadRow.locator('[data-cv="submission"]').click();
+    const dialog=page.locator('#cv-submit-dialog');
+    const action=name=>dialog.locator('[data-submit-action="'+name+'"]');
+    await action('vault').click();
+    const filter=dialog.locator('#cv-file-filter');
+    const first='我的作业/答案 #1 & 草稿.pdf', second='我的作业/解题步骤.txt';
+    const check=name=>dialog.getByRole('checkbox',{name,exact:true});
+    await filter.fill('我的作业');
+    await check(first).check(); await check(second).check();
+    await dialog.locator('#cv-submit-files').setInputFiles({name:'解题步骤.txt',mimeType:'text/plain',buffer:Buffer.from('重复')});
+    await action('preview').click(); await textVisible(dialog,/附件名称重复/);
+    await dialog.getByRole('button',{name:'移除附件 · 解题步骤.txt'}).first().click();
+    await page.evaluate(path=>{
+      window.testFlush=window.__moFlush;
+      window.__moFlush=async()=>({ok:false,unsaved:[{path}]});
+    },first);
+    await action('preview').click(); await textVisible(dialog,/请先保存选中的文件/);
+    assert.equal(fixture.submissions.length,0);
+    await page.evaluate(()=>{window.__moFlush=window.testFlush;});
+    await action('preview').click();
+    await action('confirm').waitFor();
+    assert.equal(fixture.submissions.length,0);
+    await textVisible(dialog,first); await textVisible(dialog,second);
+    await fs.writeFile(path.join(vault,second),'用户预览之后另存的内容');
+    await action('confirm').evaluate(el=>{el.click();el.click();});
+    await dialog.locator('[data-submit-receipt]').waitFor();
+    assert.equal(fixture.submissions.length,1);
+    const received=fixture.submissions[0];
+    assert.equal(received.courseId,'101');assert.equal(received.assignmentId,'312');
+    assert.deepEqual(received.files.map(f=>[f.name,f.bytes]),[
+      ['答案 #1 & 草稿.pdf',Buffer.from([37,80,68,70,0,255,1]).toString('hex')],
+      ['解题步骤.txt',Buffer.from('预览中的解题步骤').toString('hex')],
+    ]);
+    assert.deepEqual(received.files.map(f=>f.mime),['application/pdf','text/plain']);
+    assert.equal(fixture.calls.filter(c=>c.action==='connect').length,0);
+    assert.equal(fixture.calls.filter(c=>c.action==='portal').length,1);
+    await action('close').click();
+    fixture.expire();await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await button('web-connect').waitFor();
+    assert.equal(await button('pull').count(),0);
+    await uploadRow.getByRole('button',{name:'在 Canvas 查看作业'}).click();
+    await page.waitForFunction(()=>window.testOpenedUrls.includes('https://oc.sjtu.edu.cn/courses/101/assignments/312'));
+    assert.equal(fixture.submissions.length,1);
+    console.log('PASS jAccount course pull, partial and repeat results, inline course/assignment instructions, official fallback, vault multiselect, unsaved files, duplicate names, previewed bytes and one confirmed submission');
   } finally {await context.close();}
 }
 
@@ -373,6 +436,9 @@ async function main() {
   await fs.writeFile(path.join(vault,'示例课程.md'),'# 测试笔记\n');
   await fs.mkdir(path.dirname(path.join(vault,savedPath)),{recursive:true});
   await fs.writeFile(path.join(vault,savedPath),'# 课程下载测试样本\n');
+  await fs.mkdir(path.join(vault,'我的作业'));
+  await fs.writeFile(path.join(vault,'我的作业','答案 #1 & 草稿.pdf'),Buffer.from([37,80,68,70,0,255,1]));
+  await fs.writeFile(path.join(vault,'我的作业','解题步骤.txt'),'预览中的解题步骤');
   const port = await require(path.join(project,'server.js')).start({vault});
   const origin='http://127.0.0.1:'+port;
   const browser=await chromium.launch({headless:true,executablePath:process.env.GRAPHITE_CHROME || 'C:/Program Files/Google/Chrome/Application/chrome.exe',
@@ -380,7 +446,7 @@ async function main() {
   try {
     await calendarWithoutOAuth(browser,origin);
     await authorizedCourses(browser,origin);
-    await nativeSchoolSession(browser,origin);
+    await nativeSchoolSession(browser,origin,vault);
     await assignmentSubmissions(browser,origin);
   }
   finally { await browser.close(); }

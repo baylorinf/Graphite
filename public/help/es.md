@@ -6,9 +6,9 @@ Graphite es una aplicación para tomar notas conectadas entre sí. Cada nota es 
 
 ## Archivos y fechas de Canvas SJTU
 
-Desde una pestaña nueva o los ajustes generales, selecciona **Canvas SJTU → Acceder con jAccount**. La aplicación de escritorio abre el acceso oficial y sincroniza tus cursos, fechas y archivos disponibles. Puedes descargar un archivo o todos los de un curso. Las descargas de la ventana del portal van a `Canvas/Downloads` en la bóveda.
+Abre **Canvas SJTU → Acceder con jAccount** desde una pestaña nueva o los ajustes generales. Pulsa **Descargar los materiales de todos los cursos** para guardar apuntes, instrucciones y adjuntos disponibles en tu bóveda. En cada curso puedes consultar el programa, los requisitos y las fechas de entrega.
 
-Desde **Tareas**, abre la tarea en Canvas para entregarla y regresa a Graphite para comprobar la entrega. Una conexión API de Canvas autorizada por separado permite revisar y confirmar ciertas entregas dentro de Graphite. Si solo necesitas las fechas, pega el enlace personal del canal del calendario de Canvas en **Suscripción al calendario**.
+En **Tareas**, elige la tarea, selecciona uno o varios archivos de la bóveda o del equipo y confirma tras revisar los nombres. Graphite muestra el justificante de Canvas en las tareas compatibles con la entrega de archivos. Para herramientas externas o pasos adicionales, abre la página oficial de la tarea. Puedes añadir tu enlace personal de calendario en **Suscripción al calendario**.
 
 ## Tu bóveda
 - La **bóveda** es la carpeta que contiene tus notas. Su ubicación aparece en **Ajustes → General**.

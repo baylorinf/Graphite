@@ -31,24 +31,48 @@ async function runElectron() {
   await app.whenReady();
   const vault = path.join(temp,'vault');
   const requests = [], wrongHost = [], protocolSessions = new Set();
-  let logged=true, denyFiles=false, submitted=false, windowShown=false;
+  let logged=true, denyFiles=false, submitted=false, windowShown=false, pledge=false, attempt=0, enhanced=false, previousDraft=false;
+  const received=[];
   function html(main, extra='') {
     const account=logged ? '<a id="global_nav_profile_link" href="/profile/settings"><span class="avatar-name">Native Fixture</span></a>' : '';
     return '<!doctype html><meta charset="utf-8">'+account+extra+'<main id="content">'+main+'</main>';
   }
   function link(url,text) { return '<a href="'+url+'">'+text+'</a>'; }
+  function enhancedFixture(){
+    const tracker='<input data-testid="attemptSelect" value="Attempt 1" readonly><p data-testid="submission-workflow-tracker-title">'+(submitted?'Submitted on November 21':'In Progress')+'</p>';
+    const files=received.at(-1)||[];
+    const complete='<div data-testid="file-preview"><table data-testid="uploaded_files_table"><tbody>'+
+      files.map(f=>'<tr><td></td><td><span>'+f.name+'</span></td><td>size</td><td data-testid="download-file">Download</td></tr>').join('')+'</tbody></table></div>';
+    const draft='<div data-testid="submission-type-selector"><span data-testid="online_upload"><button type="button" id="choose-type">File upload</button></span></div>'+
+      '<div data-testid="upload-pane" hidden><div data-testid="upload-box"><input type="file" id="inputFileDrop" multiple></div>'+
+      '<table data-testid="uploaded_files_table"><tbody id="selected-files">'+(previousDraft?'<tr><td></td><td>previous draft.txt</td></tr>':'')+'</tbody></table></div>'+
+      '<button id="submit-button" data-testid="submit-button">Submit Assignment</button>'+
+      '<script>document.getElementById("choose-type").onclick=()=>document.querySelector("[data-testid=upload-pane]").hidden=false;'+
+      'const picker=document.querySelector("#inputFileDrop"),table=document.querySelector("#selected-files");'+
+      'picker.onchange=()=>{for(const f of picker.files){const row=table.insertRow();row.insertCell();row.insertCell().textContent=f.name;}};'+
+      'document.getElementById("submit-button").onclick=async()=>{const body=new FormData();for(const f of picker.files)body.append("attachment[]",f);'+
+      'await fetch(location.pathname+"/submissions",{method:"POST",body});location.reload();};</script>';
+    return html('<div data-testid="assignments-2-student-view">'+tracker+(submitted?complete:draft)+'</div>');
+  }
   function render(u) {
     const p=u.pathname;
     if(!logged) return html('<h1>学校登录</h1><button>jAccount</button>');
+    if(p==='/courses/110/assignments/310' && enhanced)return enhancedFixture();
     if(p==='/courses') return html('<table id="my_courses_table"><tbody><tr><td class="course-list-course-title-column">'+
       link('/courses/110','示例代数')+'</td></tr></tbody></table>');
     if(p==='/courses/110') return html('<h1>示例代数</h1>',
-      '<nav id="section-tabs">'+link('/courses/110/assignments','作业')+link('/courses/110/files','文件')+
+      '<nav id="section-tabs">'+link('/courses/110/assignments','作业')+link('/courses/110/files','文件')+link('/courses/110/assignments/syllabus','课程大纲')+
       '<span class="section-tab-hidden">'+link('/courses/110/pages','未启用')+'</span></nav>');
     if(p==='/courses/110/assignments') return html('<ul><li class="assignment">'+link('/courses/110/assignments/310','矩阵作业')+
       ' <span class="due_date"><time datetime="2026-11-25T18:00:00+08:00">11 月 25 日 18:00</time></span></li></ul>');
-    if(p==='/courses/110/assignments/310') return html('<h1>矩阵作业</h1><p class="assignment-submission-status">'+
-      (submitted?'已提交':'Not yet submitted')+'</p><p class="due_date"><time datetime="2026-11-25T18:00:00+08:00">11 月 25 日 18:00</time></p>');
+    if(p==='/courses/110/assignments/syllabus')return html('<section id="course_syllabus">每周完成习题。'+link('/courses/110/files/510','讲义.txt')+'</section>');
+    if(p==='/courses/110/assignments/310') return html('<div id="assignment_show"><h1>矩阵作业</h1><div class="description user_content">提交解答和图表。'+link('/files/511/download','题目.pdf')+'</div><div class="assignment-buttons"><button class="submit_assignment_link" onclick="document.querySelector(\'#submit_assignment\').hidden=false">Start Assignment</button></div></div><p class="assignment-submission-status">'+
+      (submitted?'已提交':'Not yet submitted')+'</p><p class="due_date"><time datetime="2026-11-25T18:00:00+08:00">11 月 25 日 18:00</time></p>'+
+      '<ul class="student-assignment-overview"><li><span class="title">Attempts</span><span class="value">'+attempt+'</span></li></ul>'+
+      '<div id="sidebar_content"><div class="details"><div class="content">'+(received.at(-1)||[]).map((f,i)=>link('/courses/110/assignments/310/submissions/42?download='+(71+i),'Download '+f.name)).join('')+'</div></div></div>'+
+      '<div id="submit_assignment" hidden><form id="submit_online_upload_form" method="post" enctype="multipart/form-data" action="/courses/110/assignments/310/submissions">'+
+      '<input type="file" name="attachment[]" accept=".pdf,.txt"><button type="button" class="add_another_file_link" onclick="this.before(this.form.querySelector(\'input[type=file]\').cloneNode())">Add Another File</button>'+
+      (pledge?'<label><input type="checkbox" required>I agree</label>':'')+'<button id="submit_file_button" type="submit">Submit Assignment</button></form></div>');
     if(p==='/courses/110/files' && denyFiles) return html('<h1>Access Denied</h1><div class="ic-flash-error">You do not have permission.</div>');
     if(p==='/courses/110/files') return html('<ul><li>'+link('/courses/110/files/folder/week1','第 1 周')+'</li></ul>');
     if(p==='/courses/110/files/folder/week1') return html('<p>'+link('/courses/110/files/folder/week1?preview=510','讲义.txt')+'</p>');
@@ -70,6 +94,12 @@ async function runElectron() {
       const url=new URL(req.url);
       if(url.origin!==origin) throw new Error('Test refused external origin');
       requests.push(url.pathname+url.search);
+      if(url.pathname==='/courses/110/assignments/310/submissions' && req.method==='POST'){
+        const payload=await req.formData();
+        const attachments=await Promise.all(payload.getAll('attachment[]').map(async f=>({name:f.name,contents:await f.text()})));
+        received.push(attachments);submitted=true;attempt++;
+        return new Response('<script>location.replace("/courses/110/assignments/310")</script>',{headers:{'Content-Type':'text/html'}});
+      }
       if(url.pathname==='/courses/110/files/510/download') {
         return new Response(incoming,{headers:{'Content-Type':'application/octet-stream','Content-Disposition':'attachment; filename="lecture.txt"','Content-Length':String(incoming.length)}});
       }
@@ -105,19 +135,45 @@ async function runElectron() {
     assert.equal(s.user,'Native Fixture');
     const [course]=s.snapshot.courses;
     assert.equal(course.name,'示例代数');assert.deepEqual(course.assignments.map(x=>[x.id,x.dueAt,x.submitted]),[['310','2026-11-25T10:00:00.000Z',false]]);
-    assert.deepEqual(course.files.map(x=>[x.id,x.name]),[['510','讲义.txt']]);
+    assert.deepEqual(course.files.map(x=>[x.id,x.name]),[['510','讲义.txt'],['511','题目.pdf']]);
+    assert(course.requirements.text.includes('每周完成习题'));assert.equal(course.requirements.attachments[0].id,'510');
+    assert(course.assignments[0].description.includes('提交解答'));assert.equal(course.assignments[0].attachments[0].id,'511');
+    assert.deepEqual(course.assignments[0].submissionTypes,['online_upload']);
     assert(!requests.includes('/courses/110/pages'));
     assert(s.calendar.events.some(x=>x.title==='作业日程'));
     const restored=await storage.load();
     assert.equal(restored.webVerified,true);
     assert.equal(restored.snapshot.courses[0].assignments[0].id,'310');
     console.log('PASS native hidden window, DOM collection, declared deadline, visible file folder and subscribed calendar');
+    const body={courseId:'110',assignmentId:'310',type:'online_upload',expectedAttempt:0,confirmed:true,
+      requestId:require('node:crypto').randomUUID(),files:[new File(['proof'],'解答.pdf'),new File(['results'],'results.txt')]};
+    assert.equal(s.canSubmitFiles,true);
+    pledge=true;
+    await assert.rejects(act('submit',body),e=>e.code==='school_form');
+    assert.equal(received.length,0);
+    pledge=false;
+    const receipt=await act('submit',body);
+    assert.equal(receipt.attempt,1);assert.equal(receipt.assignmentId,'310');
+    assert.deepEqual(received,[[{name:'解答.pdf',contents:'proof'},{name:'results.txt',contents:'results'}]]);
+    assert.deepEqual(await act('submit',body),receipt);assert.equal(received.length,1);
+    console.log('PASS official multipart form from jAccount, exact selected bytes, two attachments, school receipt, duplicate confirmation and pledge fallback');
     await act('portal',{courseId:'110',assignmentId:'310'});
     await until(()=>testWindows.find(w=>!w.isDestroyed() && w.webContents.getURL().endsWith('/assignments/310')),Boolean,'official assignment');
     submitted=true;
     const after=await act('sync');
     assert.equal(after.snapshot.courses[0].assignments[0].submitted,true);
     console.log('PASS official assignment and updated submission status after a school-side change');
+    enhanced=true;submitted=false;attempt=0;previousDraft=true;
+    const another={...body,requestId:require('node:crypto').randomUUID()};
+    const fresh=await act('sync');
+    assert.deepEqual(fresh.snapshot.courses[0].assignments[0].submissionTypes,['online_upload']);
+    await assert.rejects(act('submit',another),e=>e.code==='school_form');
+    assert.equal(received.length,1);
+    previousDraft=false;
+    const enhancedReceipt=await Promise.race([act('submit',another),sleep(30000).then(()=>{throw Error('Enhanced upload did not produce a receipt');})]);
+    assert.equal(enhancedReceipt.attempt,1);assert.deepEqual(received[1],received[0]);
+    console.log('PASS enhanced first attempt through file picker, exact draft and submitted file table, preserving other school drafts');
+    enhanced=false;
     const downloaded=await Promise.race([act('download',{courseId:'110',fileId:'510'}),
       sleep(20000).then(()=>{throw new Error('Native attachment did not arrive');})]);
     assert.deepEqual(await fs.promises.readFile(path.join(vault,downloaded.path)),incoming);

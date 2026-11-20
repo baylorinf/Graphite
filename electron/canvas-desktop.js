@@ -6,6 +6,8 @@ const fsp = fs.promises;
 const SITE = 'https://oc.sjtu.edu.cn';
 const { readSchoolPage, readCourses } = require('./canvas-web');
 const { feedUrl } = require('../canvas-calendar');
+const { courseFolder } = require('../canvas-api');
+const { submitThroughSchool } = require('./canvas-web-submit');
 
 function schoolUrl(raw) {
   try {
@@ -208,7 +210,7 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
       if(page.login || !page.logged)throw Object.assign(new Error('学校登录已过期，请重新登录。'),{status:401});
       const url=schoolUrl(page.download);
       if(!url || url.origin!==SITE || !url.pathname.endsWith('/files/'+file.id+'/download'))throw new Error('学校页面没有提供下载链接，可在原站查看。');
-      const folder=(course.name.replace(/[<>:"/\\|?*\x00-\x1f]/g,'_').replace(/^[. ]+|[. ]+$/g,'').slice(0,90)||'Course')+' ('+course.id+')';
+      const folder=courseFolder(course);
       let t;
       try{return await new Promise((resolve,reject)=>{
         const x={folder,resolve,reject};webTransfers.set(w.webContents,x);
@@ -216,6 +218,7 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
         w.webContents.downloadURL(url.href);
       });}finally{clearTimeout(t);webTransfers.delete(w.webContents);}
     }),
+    submitWeb:(body,{beforePost})=>withWorker(w=>submitThroughSchool(w,body,{beforePost,loadPage,isolated})),
     openAuth(url, callback) { if (auth && !auth.isDestroyed()) auth.close(); auth = makeWindow(url, callback); },
     async clearSession() {
       if(login && !login.isDestroyed())login.close();

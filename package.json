@@ -1,7 +1,7 @@
 {
   "name": "myobsidian",
   "productName": "Graphite",
-  "version": "1.1.43",
+  "version": "1.1.44",
   "description": "Graphite: a local-first notebook for studying",
   "main": "electron/main.js",
   "scripts": {
@@ -17,6 +17,7 @@
   "type": "commonjs",
   "dependencies": {
     "@anthropic-ai/sdk": "^1.8.0",
+    "htmlparser2": "9.1.0",
     "ical.js": "2.2.1",
     "js-yaml": "^5.5.0",
     "katex": "^0.19.1",

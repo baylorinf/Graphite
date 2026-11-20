@@ -44,7 +44,7 @@ Graphite updates itself: when a newer release is published here, an **Update** b
 
 ### Connect
 
-**SJTU Canvas.** Open **SJTU Canvas** on a new tab and sign in through the university's jAccount page. Graphite can collect the course pages visible to you, check deadlines, download handouts and open the correct assignment for submission. [Canvas setup and sync details](docs/sjtu-canvas.md).
+**SJTU Canvas.** Sign in with jAccount from a new tab. Pull handouts, assignment instructions and attachments across your courses into the vault with one click. Read the syllabus and deadlines, then select files from the vault or your computer and submit them to a supported Canvas assignment. [Canvas setup and sync details](docs/sjtu-canvas.md).
 
 - **Backlinks, unlinked mentions, outgoing links, outline, tags,** and **related notes** (similar wording, not linked yet) with a one-click Link button.
 - **Search** with `#tag`, `path:folder`, `file:name` and `"exact phrase"`.

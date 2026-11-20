@@ -3,7 +3,7 @@ import { canvasText } from '/canvas-strings.js';
 import { createSubmissionDialog, supportedTypes } from '/canvas-submit.js';
 
 const ORIGIN = 'https://oc.sjtu.edu.cn';
-const GROUPS = ['files', 'assignments', 'announcements', 'modules', 'quizzes', 'events', 'discussions', 'pages'];
+const GROUPS = ['files', 'assignments', 'requirements', 'announcements', 'modules', 'quizzes', 'events', 'discussions', 'pages'];
 const STEP = 12;
 const label = key => canvasText(getLang(), key);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -100,10 +100,10 @@ export function createCanvasView(root, { api, openFile }) {
   let state = null, message = '', failed = false, busy = '', readVersion = 0, poll = 0, authUntil = 0;
   let awaitWrite = false, pendingVerification = null, summaryReceipt = '', firstSyncUntil = 0;
   let selected = '', group = 'files', limit = STEP, dateLimit = STEP, confirmDisconnect = false;
-  let receipt = null, bulkFailures = [], visible = false;
+  let receipt = null, bulkFailures = [], visible = false, lastPull = null, progressTimer = 0;
   const call = (method, name, body) => api(method, 'canvas/' + name, {}, body);
   const submission = createSubmissionDialog({
-    esc, formatTime, getState: () => state,
+    esc, formatTime, getState: () => state, listFiles: () => api('GET', 'list'),
     authorize: async () => { const error = await perform('connect', {submit:true}); if (error) throw new Error(error); },
     openOfficial: async (courseId, assignmentId) => { const error = await perform('portal', {courseId, assignmentId}); if (error) throw new Error(error); },
     onAccepted(courseId, assignmentId, result) {
@@ -115,10 +115,11 @@ export function createCanvasView(root, { api, openFile }) {
   });
   function updateState(next) {
     if (state?.user !== next.user || (state?.connected && !next.connected && !next.snapshot?.courses?.length)) {
-      selected = ''; receipt = null; bulkFailures = []; limit = STEP; dateLimit = STEP; summaryReceipt = ''; pendingVerification = null;
+      selected = ''; receipt = null; bulkFailures = []; lastPull = null; limit = STEP; dateLimit = STEP; summaryReceipt = ''; pendingVerification = null;
     }
     const previous = state;
     state = next;
+    if (next.lastPull) lastPull = next.lastPull;
     if (next.connected && next.authMode === 'web' && !next.syncedAt && !previous?.connected) firstSyncUntil = Date.now() + 3 * 60_000;
     if (next.syncedAt || !next.connected) firstSyncUntil = 0;
     if ((next.connected && (!awaitWrite || next.canSubmit) || next.authError) && authUntil) { authUntil = 0; awaitWrite = false; clearTimeout(poll); message = ''; }
@@ -127,6 +128,21 @@ export function createCanvasView(root, { api, openFile }) {
   function notice(text, isError = false) { message = text; failed = isError; }
   function feedback() {
     return `<div class="cv-feedback${failed ? ' cv-error' : ''}" aria-live="polite" aria-atomic="true">${esc(message)}</div>`;
+  }
+  function pullReport() {
+    if (!lastPull) return '';
+    const counts = [label('saved') + ' ' + lastPull.saved, label('unchanged') + ' ' + lastPull.unchanged];
+    if (lastPull.skipped) counts.push(label('skipped') + ' ' + lastPull.skipped);
+    if (lastPull.failed?.length) counts.push(label('failed') + ' ' + lastPull.failed.length);
+    const issues = [...(lastPull.warnings || []), ...(lastPull.failed || []).map(f => {
+      const course = state.snapshot?.courses?.find(c => String(c.id) === String(f.courseId));
+      return [course?.name, f.name, f.error].filter(Boolean).join(' · ');
+    })];
+    const detail = lastPull.notes && lastPull.files ? [label('files') + ' ' + lastPull.files.saved, label('pullNotes') + ' ' + lastPull.notes.saved].join(' / ') : '';
+    return `<div class="cv-pull-result" role="status" data-pull-result><span class="cv-meta">${esc([lastPull.path || 'Canvas', ...counts].join(' · '))}${detail ? ` (${esc(detail)})` : ''}</span>${warnings(issues)}</div>`;
+  }
+  function pullProgress(progress) {
+    return [label('pulling'), progress?.total ? progress.done + '/' + progress.total : '', progress?.name].filter(Boolean).join(' · ');
   }
   function warnings(list = []) {
     if (!list.length) return '';
@@ -141,6 +157,14 @@ export function createCanvasView(root, { api, openFile }) {
   }
   function row(title, url, meta, action = '') {
     return `<li class="cv-row"><div class="cv-row-text"><div class="cv-title">${link(title, url)}</div>${meta ? `<div class="cv-meta">${esc(meta)}</div>` : ''}</div>${action}</li>`;
+  }
+  function instructions(text, attachments = []) {
+    const files = attachments.filter(f => f.name && schoolLink(f.url));
+    return (text ? `<p class="cv-instructions">${esc(text)}</p>` : !files.length ? `<p class="cv-meta">${esc(label('noRequirements'))}</p>` : '') +
+      (files.length ? `<ul class="cv-attachment-list">${files.map(f => `<li>${link(f.name, f.url)}</li>`).join('')}</ul>` : '');
+  }
+  function canOpenSubmission(item) {
+    return state.connected && !item.excused && (state.authMode !== 'web' || state.canSubmitFiles) && supportedTypes(item, state.authMode).length > 0;
   }
   function agenda() {
     const entries = upcoming(state);
@@ -163,9 +187,12 @@ export function createCanvasView(root, { api, openFile }) {
     if (group === 'assignments' || group === 'quizzes') meta = [formatTime(item.dueAt) || item.dueLabel || label('undated'), item.excused ? label('excused') : item.submitted ? label('submitted') : ''].filter(Boolean).join(' · ');
     if (group === 'assignments' && item.groupAssignment) meta += ' · ' + label('groupAssignment');
     let action = '';
-    if (group === 'assignments' && state.connected && !item.excused) {
-      const direct = state.authMode === 'web' || !supportedTypes(item).length;
+    if (group === 'assignments') {
+      const direct = !canOpenSubmission(item);
       action = button('submission', label(direct ? 'origTask' : item.submitted ? 'resubmit' : 'submitTask'), '', `data-assignment="${esc(item.id)}"`);
+    }
+    if (group === 'assignments') {
+      return `<li class="cv-row"><details class="cv-row-text" data-keep="a-${esc(selected)}-${esc(item.id)}"><summary><span class="cv-title">${esc(item.title)}</span><span class="cv-meta">${esc(meta)}</span></summary><div class="cv-details"><h3>${esc(label('assignmentDetails'))}</h3>${instructions(item.description, item.attachments)}</div></details>${action}</li>`;
     }
     return row(item.title, item.url, meta, action);
   }
@@ -180,8 +207,8 @@ export function createCanvasView(root, { api, openFile }) {
       ${warnings(course.warnings)}
       ${state.connected && course.files?.length ? `<div class="cv-bulk">${button('download-course', label('courseDownload') + ' (' + course.files.length + ')')}</div>` : ''}
       ${bulkFailures.length ? warnings(bulkFailures) : ''}
-      <div class="cv-groups">${GROUPS.filter(key => (course[key]?.length || key === group)).map(key => `<button type="button" data-group="${key}" aria-pressed="${key === group}">${esc(label(key))} <small>${course[key]?.length || 0}</small></button>`).join('')}</div>
-      ${items.length ? `<ul class="cv-list">${items.slice(0, limit).map(resource).join('')}</ul>${items.length > limit ? button('more', label('more')) : ''}` : `<p class="cv-meta">${esc(label('empty'))}</p>`}</section>`;
+      <div class="cv-groups">${GROUPS.filter(key => key === 'requirements' || course[key]?.length || key === group).map(key => `<button type="button" data-group="${key}" aria-pressed="${key === group}">${esc(label(key))}${key === 'requirements' ? '' : ` <small>${course[key]?.length || 0}</small>`}</button>`).join('')}</div>
+      ${group === 'requirements' ? instructions(course.requirements?.text, course.requirements?.attachments) : items.length ? `<ul class="cv-list">${items.slice(0, limit).map(resource).join('')}</ul>${items.length > limit ? button('more', label('more')) : ''}` : `<p class="cv-meta">${esc(label('empty'))}</p>`}</section>`;
   }
   function render() {
     if (!visible) return;
@@ -214,7 +241,7 @@ export function createCanvasView(root, { api, openFile }) {
       ${state.lastDownload ? `<div class="cv-bar"><span class="cv-meta">${esc(label('latestFile'))} · ${esc(state.lastDownload)}</span>${button('open-latest', label('openFile'))}</div>` : ''}
       ${state.sessionOnly && (connected || state.calendar) ? `<p class="cv-meta">${esc(label('sessionOnly'))}</p>` : ''}
       ${calendarForm()}</div>
-      ${hasData ? `<div class="cv-bar cv-sync"><span class="cv-meta">${esc([state.syncing ? label('syncRunning') : '', latest ? label('synced') + ' · ' + formatTime(latest) : ''].filter(Boolean).join('　'))}</span>${(connected || state.calendar) && !state.syncing ? button('sync', label('sync'), 'mod-cta') : ''}</div>${state.snapshot?.courses?.length && (!connected || state.syncing || state.authError) ? `<p class="cv-meta">${esc(label('cache'))}</p>` : ''}${warnings(state.snapshot?.warnings)}${agenda()}` : ''}
+      ${hasData ? `<div class="cv-bar cv-sync"><span class="cv-meta">${esc([state.syncing ? label('syncRunning') : '', latest ? label('synced') + ' · ' + formatTime(latest) : ''].filter(Boolean).join('　'))}</span><div class="cv-actions">${(connected || state.calendar) && !state.syncing ? button('sync', label('sync')) : ''}${connected ? button('pull', label('pullAll'), 'mod-cta') : ''}</div></div>${pullReport()}${state.snapshot?.courses?.length && (!connected || state.syncing || state.authError) ? `<p class="cv-meta">${esc(label('cache'))}</p>` : ''}${warnings(state.snapshot?.warnings)}${agenda()}` : ''}
       ${connected || state.snapshot?.courses?.length ? coursePanel() : ''}</div>`;
     for (const el of root.querySelectorAll('details[data-keep]')) el.open = open.has(el.dataset.keep);
     const input = root.querySelector('#cv-feed-input'); if (input && draft) input.value = draft;
@@ -229,13 +256,17 @@ export function createCanvasView(root, { api, openFile }) {
     root.setAttribute('aria-busy', String(!!busy));
     for (const el of root.querySelectorAll('button,select,input')) el.disabled = !!busy;
     const status = root.querySelector('.cv-feedback');
-    if (busy && status) { status.classList.remove('cv-error'); status.textContent = label(busy === 'sync' ? 'syncRunning' : 'working'); }
+    if (busy && status) { status.classList.remove('cv-error'); status.textContent = busy === 'pull' ? pullProgress(state.pullProgress) : label(busy === 'sync' ? 'syncRunning' : 'working'); }
+    if (state?.pullProgress && !busy) {
+      const pull = root.querySelector('[data-cv="pull"]'); if (pull) pull.disabled = true;
+      if (status) status.textContent = pullProgress(state.pullProgress);
+    }
   }
   function schedulePoll() {
     clearTimeout(poll);
     if (!visible || document.hidden) return;
     const watchAuth = (authUntil > Date.now() || state?.authPending) && (!state?.connected || awaitWrite);
-    const watchSync = state?.syncing || firstSyncUntil > Date.now();
+    const watchSync = state?.syncing || state?.pullProgress || firstSyncUntil > Date.now();
     if (watchAuth || watchSync) poll = setTimeout(() => refresh(true), 2200);
     else if (state?.connected) poll = setTimeout(() => refresh(true), 60_000);
   }
@@ -257,6 +288,21 @@ export function createCanvasView(root, { api, openFile }) {
     if (busy) return;
     let actionError = '';
     busy = action; ++readVersion; notice(''); busyControls();
+    if (action === 'pull') {
+      const report = async () => {
+        if (busy !== 'pull') return;
+        if (visible) {
+          try {
+            const result = await call('GET', 'status');
+            if (busy !== 'pull' || !state) return;
+            state.pullProgress = result.pullProgress;
+            busyControls();
+          } catch { /* The active request still owns the final result. */ }
+        }
+        if (busy === 'pull') progressTimer = setTimeout(report, 1800);
+      };
+      progressTimer = setTimeout(report, 900);
+    }
     try {
       const result = await call('POST', action, requestBody);
       if (action === 'portal' || action === 'connect' || action === 'web-connect') {
@@ -270,6 +316,9 @@ export function createCanvasView(root, { api, openFile }) {
       } else if (action === 'download') {
         receipt = {file: String(requestBody.fileId), course: String(requestBody.courseId), path: result.path};
         notice(label(result.unchanged ? 'unchanged' : 'saved') + ' · ' + result.path);
+      } else if (action === 'pull') {
+        lastPull = result;
+        updateState(await call('GET', 'status'));
       } else if (action === 'download-course') {
         bulkFailures = (result.failed || []).map(f => [f.name, f.error].filter(Boolean).join(' · '));
         notice([label('saved') + ' ' + result.saved, label('unchanged') + ' ' + result.unchanged, label('failed') + ' ' + bulkFailures.length].join(' · '), bulkFailures.length > 0);
@@ -294,7 +343,7 @@ export function createCanvasView(root, { api, openFile }) {
       }
       notice(msg, true);
       actionError = msg;
-    } finally { busy = ''; confirmDisconnect = false; render(); schedulePoll(); }
+    } finally { clearTimeout(progressTimer); if (action === 'pull' && state) state.pullProgress = null; busy = ''; confirmDisconnect = false; render(); schedulePoll(); }
     return actionError;
   }
   root.addEventListener('click', e => {
@@ -315,7 +364,7 @@ export function createCanvasView(root, { api, openFile }) {
       const course = state.snapshot?.courses?.find(c => String(c.id) === selected);
       const item = course?.assignments?.find(a => String(a.id) === el.dataset.assignment);
       if (!item) return;
-      if (state.authMode === 'web' || !supportedTypes(item).length) {
+      if (!canOpenSubmission(item)) {
         pendingVerification = {courseId:course.id, assignmentId:item.id, attempt:item.attempt || 0, submitted:item.submitted, title:item.title, checkOnReturn:true};
         return void perform('portal',{courseId:course.id,assignmentId:item.id});
       }
@@ -328,7 +377,7 @@ export function createCanvasView(root, { api, openFile }) {
     }
     if (action === 'disconnect' || action === 'cancel-disconnect') { confirmDisconnect = action === 'disconnect'; render(); return; }
     if (action === 'confirm-disconnect') return void perform('disconnect');
-    if (['portal','connect','web-connect','sync','calendar-remove'].includes(action)) void perform(action);
+    if (['portal','connect','web-connect','sync','calendar-remove','pull'].includes(action)) void perform(action);
   });
   root.addEventListener('change', e => {
     if (e.target.id === 'cv-course') { selected = e.target.value; group = 'files'; limit = STEP; bulkFailures = []; notice(''); render(); }
@@ -349,7 +398,7 @@ export function createCanvasView(root, { api, openFile }) {
     id: 'sjtu-canvas', title: () => label('title'),
     show() { visible = true; root.hidden = false; render(); void refresh(); },
     hide() { visible = false; root.hidden = true; submission.dismiss(); clearTimeout(poll); ++readVersion; },
-    close() { root.replaceChildren(); submission.clear(); state = null; receipt = null; bulkFailures = []; message = ''; failed = false; authUntil = 0; awaitWrite = false; confirmDisconnect = false; pendingVerification = null; summaryReceipt = ''; },
+    close() { root.replaceChildren(); submission.clear(); state = null; receipt = null; lastPull = null; bulkFailures = []; message = ''; failed = false; authUntil = 0; awaitWrite = false; confirmDisconnect = false; pendingVerification = null; summaryReceipt = ''; },
     relabel() { if (visible) render(); },
   };
 }

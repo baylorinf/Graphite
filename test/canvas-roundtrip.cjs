@@ -26,6 +26,21 @@ async function main() {
     storage:{load:async()=>stored,save:async s=>{stored=structuredClone(s);}},fetch:school}});
   try{
     const endpoint='http://127.0.0.1:'+port+'/api/canvas/', headers={'X-App-Token':'test-graphite','X-Vault':'1'};
+    const folder = '计算材料', name = folder + '/实验 #1 + 答案.pdf';
+    const original = Buffer.from([0x25,0x50,0x44,0x46,0,0xff,0x0a]);
+    await fs.mkdir(path.join(vault,folder));
+    await fs.writeFile(path.join(vault,name),original);
+    const attachment = rel => fetch(endpoint+'vault-file?'+new URLSearchParams({path:rel}),{headers});
+    const selected = await attachment(name);
+    assert.equal(selected.status,200);
+    assert.equal(selected.headers.get('content-type'),'application/octet-stream');
+    assert.equal(selected.headers.get('x-graphite-file-type'),'application/pdf');
+    assert.deepEqual(Buffer.from(await selected.arrayBuffer()),original);
+    assert.equal((await attachment(folder)).status,400);
+    await fs.writeFile(path.join(vault,folder,'empty.txt'),'');
+    assert.equal((await (await attachment(folder+'/empty.txt')).arrayBuffer()).byteLength,0);
+    await fs.unlink(path.join(vault,name));
+    assert.equal((await attachment(name)).status,404);
     const send=(uuid,n,yes=true,answer='my original answer')=>{
       const form=new FormData();
       for(const [key,value] of Object.entries({type:'online_text_entry',text:answer,courseId:'3',assignmentId:'19',

@@ -460,6 +460,43 @@ function inVault(rel) {
   if (abs !== VAULT && !abs.startsWith(VAULT + path.sep)) throw new HttpError(400, 'Path escapes the vault');
   return abs;
 }
+const CANVAS_ATTACHMENT_LIMIT = 64 * 1024 * 1024;
+const ADDITIONAL_UPLOAD_TYPES = {
+  '.doc': 'application/msword', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.ppt': 'application/vnd.ms-powerpoint', '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.xls': 'application/vnd.ms-excel', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.odt': 'application/vnd.oasis.opendocument.text', '.zip': 'application/zip', '.ipynb': 'application/x-ipynb+json',
+};
+
+// The assignment picker lists ordinary vault files. Serve the original bytes, including binary handouts.
+async function canvasVaultFile(res, rel) {
+  const abs = inVault(rel);
+  const parts = rel.split(/[\\/]/);
+  if (parts.some(p => !p || p.startsWith('.') || p.toLowerCase() === 'node_modules' || JUNK.test(p) || /[:\x00-\x1f]/.test(p))) {
+    throw new HttpError(400, '请选择笔记库中可见的文件。');
+  }
+  let handle;
+  try {
+    const [root, actual] = await Promise.all([fsp.realpath(VAULT), fsp.realpath(abs)]);
+    if (path.relative(path.join(root, ...parts), actual) !== '') throw new HttpError(400, '请选择笔记库中的原文件。');
+    if (!(await fsp.lstat(actual)).isFile()) throw new HttpError(400, '请选择一个文件。');
+    handle = await fsp.open(actual, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    const info = await handle.stat();
+    if (!info.isFile()) throw new HttpError(400, '请选择一个文件。');
+    if (info.size > CANVAS_ATTACHMENT_LIMIT) throw new HttpError(413, '附件超过 64 MiB。');
+    const ext = path.extname(actual).toLowerCase();
+    const fileType = MIME[ext]?.split(';')[0] || ADDITIONAL_UPLOAD_TYPES[ext] || (Object.hasOwn(SOURCE_FORMATS, ext.slice(1)) ? 'text/plain' : 'application/octet-stream');
+    res.writeHead(200, {'Content-Type':'application/octet-stream', 'Content-Disposition':'attachment', 'X-Graphite-File-Type':fileType,
+      'Content-Length':info.size, 'X-Content-Type-Options':'nosniff', 'Cache-Control':'no-store'});
+    if (!info.size) return res.end();
+    const { pipeline } = require('node:stream/promises');
+    await pipeline(handle.createReadStream({end:info.size - 1}), res);
+  } catch (e) {
+    if (res.headersSent) { res.destroy(); return; }
+    if (e.code === 'ENOENT' || e.code === 'ENOTDIR') throw new HttpError(404, '文件已移动或删除，请重新选择。');
+    throw e;
+  } finally { if (handle) await handle.close(); }
+}
 const toRel = abs => path.relative(VAULT, abs).split(path.sep).join('/');
 // Files that cloud sync apps and Windows leave around; never show them as notes.
 const JUNK = /^(desktop\.ini|thumbs\.db|\.ds_store|~\$.*|.*\.tmp|.*\.crdownload|\.~lock\..*#?)$/i;
@@ -655,9 +692,10 @@ async function moveToTrash(abs) {
 async function api(req, res, u) {
   const route = u.pathname.slice('/api/'.length), m = req.method, q = u.searchParams;
   if (route.startsWith('canvas/')) {
+    if (route === 'canvas/vault-file' && m === 'GET') return canvasVaultFile(res, q.get('path'));
     let body = {};
     if (route === 'canvas/submit' && m === 'POST') {
-      const limit=64*1024*1024;
+      const limit=CANVAS_ATTACHMENT_LIMIT;
       const mime=req.headers['content-type']||'';
       if(!mime.toLowerCase().startsWith('multipart/form-data;'))throw new HttpError(415,'请从作业预览页提交。');
       if(Number(req.headers['content-length'])>limit+512*1024)throw new HttpError(413,'一次最多提交 64 MiB。');
@@ -1173,7 +1211,7 @@ async function installClaudeKit(input) {
 
 async function start({ vault, port = 0, token = null, retry = 0, canvasOptions = {} } = {}) {
   VAULT = path.resolve(vault);
-  canvas = require('./canvas-service').createCanvasService({ ...canvasOptions, vault: VAULT });
+  canvas = require('./canvas-service').createCanvasService({ ...canvasOptions, vault: VAULT, noteWriter: {withFileLock, atomicWrite} });
   CONFIG_DIR = path.join(VAULT, '.obsidian');
   PLUGIN_DIR = path.join(CONFIG_DIR, 'plugins');
   TOKEN = token;

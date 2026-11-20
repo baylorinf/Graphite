@@ -6,9 +6,9 @@ Graphite is a note-taking app for linked thinking. Every note is a plain Markdow
 
 ## SJTU Canvas course files and deadlines
 
-Select **SJTU Canvas → Sign in with jAccount** on the new-tab page or in **Settings → General**. The desktop app opens the university sign-in page and syncs the courses, deadlines and files you can access. Select a course to download individual files or all course files. Downloads made inside the official school window go to the vault’s `Canvas/Downloads` folder.
+Select **SJTU Canvas → Sign in with jAccount** on a new tab or in **Settings → General**. Choose **Pull all course materials** to save handouts, assignment instructions and available attachments to your vault. Open a course to read its syllabus and requirements or check a deadline.
 
-Under **Assignments**, open an assignment in Canvas to hand it in on the university website. Return to Graphite to check the updated submission status. With a separately authorized Canvas API connection, supported assignments also offer a draft, a preview and an explicit submission confirmation inside Graphite. To subscribe to dates independently, paste your personal link from Canvas **Calendar → Calendar Feed** into **Calendar subscription**.
+Under **Assignments**, choose the assignment, select one or more files from your vault or computer, review them and confirm. Supported Canvas file-upload assignments return a receipt in Graphite. For external tools and assignments with extra steps, open the linked university page. You can also add your personal Canvas calendar feed under **Calendar subscription**.
 
 ## Your vault
 - The **vault** is the folder that holds your notes. Its location is shown under **Settings → General**.

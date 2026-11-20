@@ -87,6 +87,21 @@ const labels = {
   sessionOnly: ['This preview keeps the connection for this server session only.', 'Cet aperçu conserve la connexion pour cette session du serveur uniquement.', 'La vista previa guarda la conexión durante esta sesión del servidor.', 'このプレビューではサーバーの終了時に連携情報が消去されます。', '이 미리보기는 현재 서버 세션 동안만 연결을 유지합니다.', '预览版的连接仅在当前服务运行期间保留。', '預覽版的連線僅在目前服務執行期間保留。'],
   connected: ['Connected', 'Connecté', 'Conectado', '連携済み', '연결됨', '已连接', '已連線'],
   allDay: ['All day', 'Toute la journée', 'Todo el día', '終日', '종일', '全天', '全天'],
+  pullAll: ['Pull all course materials', 'Récupérer les supports de tous les cours', 'Descargar los materiales de todos los cursos', '全授業の資料を保存', '모든 강좌 자료 받기', '一键拉取所有课程资料', '一鍵拉取所有課程資料'],
+  pulling: ['Pulling course materials…', 'Récupération des supports…', 'Descargando materiales…', '授業資料を保存中…', '강좌 자료를 받는 중…', '正在拉取课件和作业…', '正在拉取課件和作業…'],
+  pullNotes: ['Course and assignment notes', 'Fiches de cours et de devoirs', 'Fichas de cursos y tareas', '授業・課題ノート', '강좌·과제 노트', '课程与作业说明', '課程與作業說明'],
+  skipped: ['Skipped', 'Ignorés', 'Omitidos', 'スキップ', '건너뜀', '已跳过', '已略過'],
+  requirements: ['Course requirements', 'Consignes du cours', 'Requisitos del curso', 'シラバス・履修要件', '강의계획 및 수강 요건', '课程大纲与要求', '課程大綱與要求'],
+  assignmentDetails: ['Assignment instructions', 'Consignes du devoir', 'Instrucciones de la tarea', '課題の説明', '과제 안내', '作业要求', '作業要求'],
+  noRequirements: ['Canvas has provided no instructions here.', 'Canvas ne fournit aucune consigne ici.', 'Canvas no ha facilitado instrucciones aquí.', 'Canvas に説明がありません。', 'Canvas에 안내가 없습니다.', 'Canvas 暂未提供可显示的说明。', 'Canvas 暫未提供可顯示的說明。'],
+  vaultFiles: ['Choose from vault', 'Choisir dans le coffre', 'Elegir de la bóveda', '保管庫から選択', '보관함에서 선택', '从笔记库选择', '從筆記庫選取'],
+  deviceFiles: ['Choose from computer', 'Choisir sur l’ordinateur', 'Elegir del equipo', 'パソコンから選択', '컴퓨터에서 선택', '从电脑选择', '從電腦選取'],
+  filterFiles: ['Search by filename or folder', 'Rechercher par fichier ou dossier', 'Buscar por archivo o carpeta', 'ファイル名・フォルダーで検索', '파일명 또는 폴더로 검색', '按文件名或文件夹搜索', '依檔名或資料夾搜尋'],
+  noFiles: ['No matching files', 'Aucun fichier correspondant', 'No hay archivos coincidentes', '一致するファイルがありません', '일치하는 파일 없음', '没有匹配的文件', '沒有相符的檔案'],
+  removeFile: ['Remove file', 'Retirer le fichier', 'Quitar archivo', '選択を解除', '파일 제외', '移除附件', '移除附件'],
+  duplicateName: ['Choose files with distinct names.', 'Choisissez des fichiers de noms différents.', 'Elige archivos con nombres distintos.', '名前の異なるファイルを選んでください。', '이름이 다른 파일을 선택하세요.', '附件名称重复，请移除或重命名其中一份。', '附件名稱重複，請移除或重新命名其中一份。'],
+  fileChanged: ['A selected file changed. Refresh the selection and review it again.', 'Un fichier a changé. Actualisez la sélection et vérifiez-la.', 'Un archivo ha cambiado. Actualiza y revisa la selección.', '選択したファイルが変更されました。選び直して確認してください。', '선택한 파일이 변경되었습니다. 다시 선택하고 확인하세요.', '选中的文件已改变，请重新选择并核对。', '選取的檔案已變更，請重新選取並核對。'],
+  saveSelected: ['Save the selected files and review them again.', 'Enregistrez les fichiers sélectionnés, puis vérifiez-les.', 'Guarda los archivos seleccionados y vuelve a revisarlos.', '選択したファイルを保存してから、もう一度確認してください。', '선택한 파일을 저장한 후 다시 확인하세요.', '请先保存选中的文件，再预览提交内容。', '請先儲存選取的檔案，再預覽提交內容。'],
 };
 export function canvasText(lang, key) {
   const index = languages.indexOf(lang);

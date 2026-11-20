@@ -27,7 +27,9 @@ async function main() {
       assert.match(await launch.innerText(),zh?/手册|指南/:/manual|guide/i);await launch.click();
       const help=p.locator('#help-view'), search=help.locator('input[type=search]');await search.waitFor();
       const guide=help.locator('#help-body');
+      await guide.locator('h2').first().waitFor(); // The guide is loaded after the search field appears.
       const all = await guide.innerText();
+      assert.match(all,zh ? /一键拉取所有课程资料/ : /Pull all course materials/);
       for (const feature of (zh?[/笔记/,/代码/,/错题/,/制卡|卡片/,/复习计划|学习计划/,/PDF/,/框架/,/DeepSeek Harness/,/同步/,/插件/,/图谱|关系图/,/Markdown/]:[/note/i,/code/i,/mistake/i,/card/i,/plan/i,/PDF/,/framework/i,/DeepSeek Harness/,/sync/i,/plugin/i,/graph/i,/Markdown/])) assert.match(all,feature);
       for(const [query,wanted] of (zh?[['代码',/源文件|代码编辑|代码文件/],['错题',/错题/],['本地框架',/DeepSeek Harness/],['Ctrl+S',/Ctrl\s*\+\s*S/i]]:[['code',/source|code editor/i],['mistake',/mistake/i],['DeepSeek Harness',/DeepSeek Harness/],['Ctrl+S',/Ctrl\s*\+\s*S/i]])){
         await search.fill(query);

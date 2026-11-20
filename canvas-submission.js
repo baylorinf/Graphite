@@ -219,4 +219,4 @@ function createSubmissionClient({ fetch: fetchImpl = globalThis.fetch, accessTok
   return { submit };
 }
 
-module.exports = { createSubmissionClient, WRITE_SCOPES };
+module.exports = { createSubmissionClient, WRITE_SCOPES, validateMaterial };

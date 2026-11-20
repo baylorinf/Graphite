@@ -6,6 +6,7 @@ const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
 const { Readable, Transform } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { courseContent } = require('./canvas-course-content');
 
 const ORIGIN = 'https://oc.sjtu.edu.cn';
 const MAX_BYTES = 512 * 1024 * 1024;
@@ -44,6 +45,11 @@ function safeName(name, fallback) {
     .replace(/[<>:"/\\|?*\x00-\x1f\x7f]/g, '_').replace(/^[. ]+|[. ]+$/g, '')).slice(0, 105).join('').replace(/[. ]+$/g, '');
   if (/^(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³])(?:\.|$)/i.test(clean)) clean = '_' + clean;
   return clean || fallback;
+}
+
+function courseFolder(course) {
+  if (!validId(course.id)) throw problem(400, 'invalid_id', '课程编号无效。');
+  return safeName(course.name, 'Course') + ' (' + course.id + ')';
 }
 
 function downloadUrl(raw, base, openUrl) {
@@ -171,7 +177,7 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
 
   async function sync(previous = {}) {
     // Never replace the entire previous snapshot if the course index itself failed.
-    const allCourses = await list('courses', { enrollment_state: 'active' });
+    const allCourses = await list('courses', { enrollment_state: 'active', 'include[]': 'syllabus_body' });
     const courses = [], previousCourses = arr(previous?.courses), visited = new Set();
     for (const c of allCourses) {
       if (!validId(c.id) || !c.name || c.access_restricted_by_date || visited.has(String(c.id))) continue;
@@ -179,6 +185,7 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
       visited.add(id);
       const old = previousCourses.find(x => sameId(x.id, id)) || {};
       const out = { id, name: String(c.name), code: String(c.course_code || ''), url: ORIGIN + web.slice(0,-1), warnings: [] };
+      out.requirements = { ...courseContent(c.syllabus_body, id), url: ORIGIN + web + 'assignments/syllabus' };
       const title = x => String(x.title || x.name || '');
       const resource = (x, section) => ({ id: String(x.id), title: title(x), url: localWebUrl(x.html_url, web + section + '/' + x.id) });
       const warning = (label, error) => {
@@ -193,7 +200,9 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
         .filter(shown).map(x => {
           const sub = x.submission;
           const submitted = sub ? Boolean(sub.submitted_at || (!sub.missing && ['submitted', 'graded', 'pending_review'].includes(sub.workflow_state))) : null;
-          return { ...resource(x, 'assignments'), dueAt: date(x.due_at), submitted, excused: Boolean(sub?.excused),
+          const details = courseContent(x.locked_for_user ? '' : x.description, id);
+          return { ...resource(x, 'assignments'), description: details.text, attachments: details.attachments,
+            dueAt: date(x.due_at), submitted, excused: Boolean(sub?.excused),
             submittedAt: date(sub?.submitted_at), attempt: Number(sub?.attempt) || 0,
             allowedAttempts: x.allowed_attempts == null ? null : Number(x.allowed_attempts),
             extraAttempts: Number(sub?.extra_attempts) || 0,
@@ -228,6 +237,13 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
       // Some instructors share course materials through Modules with Files navigation disabled.
       // These entries are links the student was shown; download still checks fresh file metadata.
       const knownFiles = new Set(out.files.map(f => String(f.id)));
+      for (const owner of [out.requirements, ...out.assignments]) {
+        for (const file of arr(owner.attachments)) {
+          if (!validId(file.id) || knownFiles.has(file.id)) continue;
+          knownFiles.add(file.id);
+          out.files.push({ ...file, size:null, updatedAt:null });
+        }
+      }
       for (const module of out.modules) for (const item of arr(module.items)) {
         const fileId = String(item.contentId);
         if (item.type !== 'File' || item.locked || !validId(fileId) || knownFiles.has(fileId)) continue;
@@ -287,7 +303,7 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
     let base, folder;
     try {
       base = await fsp.realpath(typeof vault === 'function' ? vault() : vault);
-      folder = await verifiedSubdirectory(await verifiedSubdirectory(base, 'Canvas'), safeName(course.name, 'Course') + ' (' + courseId + ')');
+      folder = await verifiedSubdirectory(await verifiedSubdirectory(base, 'Canvas'), courseFolder(course));
     } catch (e) { await discard(response); throw e; }
     const temp = path.join(folder, '.canvas-part-' + randomUUID());
     let size = 0;
@@ -309,4 +325,4 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
   return { sync, download };
 }
 
-module.exports = { createCanvasApi, SCOPES };
+module.exports = { createCanvasApi, SCOPES, safeName, courseFolder, verifiedSubdirectory, publish };

@@ -3,6 +3,7 @@ const { randomBytes, createHash } = require('node:crypto');
 const { createSubmissionClient, WRITE_SCOPES } = require('./canvas-submission');
 const { createCanvasApi, SCOPES } = require('./canvas-api');
 const { feedUrl, getCalendar } = require('./canvas-calendar');
+const { pullMaterials } = require('./canvas-pull');
 
 const SITE = 'https://oc.sjtu.edu.cn';
 const OOB = 'urn:ietf:wg:oauth:2.0:oob';
@@ -10,9 +11,9 @@ const error = (status, message) => Object.assign(new Error(message), { status })
 
 // The desktop owns encrypted storage and the isolated school window. The browser
 // preview can use a calendar for this server session without persisting a private URL.
-function createCanvasService({ vault, storage, desktop, fetch: fetchImpl = fetch,
+function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetchImpl = fetch,
     clientId = process.env.GRAPHITE_CANVAS_CLIENT_ID, clientSecret = process.env.GRAPHITE_CANVAS_CLIENT_SECRET }) {
-  let data, pending, tail = Promise.resolve(), authError = '', refreshing, webSyncing = false, readingSchool = false;
+  let data, pending, tail = Promise.resolve(), authError = '', refreshing, webSyncing = false, readingSchool = false, pullProgress = null, activePull = null;
   const configured = !!(clientId && clientSecret && desktop?.openAuth);
   function exclusive(fn) {
     const result = tail.then(fn, fn);
@@ -30,6 +31,8 @@ function createCanvasService({ vault, storage, desktop, fetch: fetchImpl = fetch
     const web = !!data.portalSyncEnabled;
     return { connected: web ? !!data.webVerified : !!data.auth, configured, sessionOnly: !storage, user: data.user || '',
       portalSupported: !!desktop?.openWebLogin, portalSyncEnabled: web,syncing:readingSchool, canSubmit: !web && !!data.auth && !!data.writeEnabled,
+      canSubmitFiles: web ? !!data.webVerified && !!desktop?.submitWeb : !!data.auth && !!data.writeEnabled,
+      lastPull: data.lastPull || null, pullProgress,
       authMode: web ? 'web' : (data.auth || configured ? 'oauth' : null), authPending: !!pending && pending.until > Date.now(),
       authError, syncedAt: data.syncedAt || null, snapshot: data.snapshot || { courses: [], warnings: [] },
       calendar: data.calendar || null, portalOpened: !!data.portalOpened, lastDownload: desktop?.lastDownload?.() || null };
@@ -68,13 +71,18 @@ function createCanvasService({ vault, storage, desktop, fetch: fetchImpl = fetch
   }
   const api = createCanvasApi({ vault, fetch: fetchImpl, accessToken });
   const submissions = createSubmissionClient({fetch:fetchImpl, accessToken});
-  async function syncWeb(background=false) {
+  async function syncWeb(background=false,fullMaterials=false) {
     readingSchool=true;
     try {
-      const result = await desktop.syncWeb({background, previousSnapshot:data.snapshot, previousUser:data.user});
+      const result = await desktop.syncWeb({background,fullMaterials,previousSnapshot:data.snapshot,previousUser:data.user});
       if (!data.portalSyncEnabled) return;
-      let calendar = data.calendar, url=data.feed;
-      if (!data.feedMuted && result.feed) {
+      const oldUser=String(data.user||'').trim(), user=String(result.user||'').trim();
+      const previousIdentity=data.snapshot?.webIdentity, nextIdentity=result.snapshot.webIdentity;
+      const changedName=oldUser && user && oldUser!==user;
+      const switched=previousIdentity && nextIdentity ? previousIdentity!==nextIdentity : Boolean(changedName);
+      let calendar=switched?null:data.calendar, url=switched?null:data.feed;
+      const muted=switched?false:data.feedMuted;
+      if (!muted && result.feed) {
         if (url !== result.feed) calendar=null;
         url=result.feed;
         try { calendar=await getCalendar(url,fetchImpl); }
@@ -95,8 +103,9 @@ function createCanvasService({ vault, storage, desktop, fetch: fetchImpl = fetch
         }
       }
       authError='';
-      await save({...data, webVerified:true, user:result.user, snapshot:result.snapshot, syncedAt:result.syncedAt,
-        feed:url, calendar, feedAutomatic:!!result.feed && !data.feedMuted});
+      await save({...data, ...(switched ? {requests:undefined,lastPull:null,pullCache:undefined,pullSessionId:null} : {}),
+        webVerified:true, user:result.user, snapshot:result.snapshot, syncedAt:result.syncedAt,
+        feed:url, calendar, feedMuted:muted, feedAutomatic:!!result.feed && !muted});
     } catch(e) {
       authError=e.message;
       if(e.status===401) await save({...data,webVerified:false});
@@ -115,10 +124,13 @@ function createCanvasService({ vault, storage, desktop, fetch: fetchImpl = fetch
     return api.download(courseId,fileId,data.snapshot||{});
   }
   async function submit(body) {
-    if(!data.auth || data.portalSyncEnabled || !data.writeEnabled) throw error(403,'请先授权提交作业，或在学校原站提交。');
+    const web = !!data.portalSyncEnabled;
+    if(web ? !view().canSubmitFiles || body.type !== 'online_upload' : !data.auth || !data.writeEnabled)
+      throw error(403,'当前连接不支持此提交方式，可在学校原站提交。');
     const {requestId,courseId,assignmentId}=body;
     if(body.confirmed!==true || !/^[0-9a-f]{8}-[0-9a-f-]{27}$/i.test(requestId||''))throw error(400,'请核对作业后确认提交。');
-    if(!data.snapshot?.courses.some(c=>String(c.id)===courseId && c.assignments.some(a=>String(a.id)===assignmentId)))throw error(404,'请先同步此作业。');
+    const assignment=data.snapshot?.courses.find(c=>String(c.id)===courseId)?.assignments?.find(a=>String(a.id)===assignmentId);
+    if(!assignment)throw error(404,'请先同步此作业。');
     const h=createHash('sha256').update(JSON.stringify([courseId,assignmentId,body.expectedAttempt,body.type,body.text||'',body.url||'']));
     for(const file of body.files||[]) h.update(JSON.stringify([file.name,file.size])).update(Buffer.from(await file.arrayBuffer()));
     const signature=h.digest('hex');
@@ -134,7 +146,9 @@ function createCanvasService({ vault, storage, desktop, fetch: fetchImpl = fetch
     };
     let result;
     try {
-      result=await submissions.submit(body,{beforePost:async()=>{await update({pending:true});started=true;}});
+      const guard={beforePost:async()=>{await update({pending:true});started=true;}};
+      result=web ? await desktop.submitWeb({...body,assignment,expectedWebIdentity:data.snapshot.webIdentity||null,expectedWebUser:data.user||''},guard)
+        : await submissions.submit(body,guard);
     } catch(e) {
       if(started && e.code==='submission_unknown') throw unknown();
       if(started) await update(null);
@@ -162,6 +176,7 @@ function createCanvasService({ vault, storage, desktop, fetch: fetchImpl = fetch
       const same = !!t.userId && data.accountId === t.userId;
       await save({ ...data, auth: t, user: t.user, accountId: t.userId, portalSyncEnabled:false,
         writeEnabled:expected.submit,requests:same?data.requests:undefined,
+        pullCache:same?data.pullCache:undefined,lastPull:same?data.lastPull:null,
         snapshot: same ? data.snapshot : null, syncedAt: same ? data.syncedAt : null,
         // A separately added private feed belongs to its own subscription; never carry it across a known account switch.
         ...(data.accountId && !same ? { feed: null, calendar: null } : {}) });
@@ -171,6 +186,46 @@ function createCanvasService({ vault, storage, desktop, fetch: fetchImpl = fetch
 
   async function handle(method, action, body = {}) {
     if(method==='GET' && action==='status' && data)return view();
+    if (method==='POST' && action==='pull') {
+      const courseId = body.courseId == null ? null : String(body.courseId);
+      if (activePull) {
+        if (activePull.courseId===courseId) return activePull.task;
+        throw error(409,'正在拉取课程资料，请等本次完成。');
+      }
+      const task = exclusive(async () => {
+        await ready();
+        if (!view().connected) throw error(401,'请先连接交大 Canvas。');
+        pullProgress = {done:0,total:0,name:''};
+        const warnings = [];
+        try {
+          if (data.portalSyncEnabled) await syncWeb(false,true);
+          else {
+            const snapshot = await api.sync(data.snapshot || undefined);
+            await save({...data,snapshot,syncedAt:new Date().toISOString()});
+          }
+        } catch (e) {
+          if (e.status===401 || e.status===403 || !data.snapshot?.courses?.length) throw e;
+          warnings.push('课程列表未能刷新，已采用上次同步的资料。'+e.message);
+        }
+        const courses=(data.snapshot?.courses || []).filter(c=>courseId===null || String(c.id)===courseId);
+        if (courseId!==null && !courses.length) throw error(404,'找不到所选课程，请重新同步。');
+        warnings.push(...data.snapshot?.warnings || []);
+        for (const c of courses) for (const message of c.warnings || []) warnings.push(c.name+' · '+message);
+        // Older school sessions might only expose a name. Scope that cache to
+        // this local login; explicit reconnection always starts a new one.
+        const sessionId=data.portalSyncEnabled ? (data.pullSessionId || randomBytes(16).toString('hex')) : null;
+        const owner=data.portalSyncEnabled?'web:'+(data.snapshot?.webIdentity||sessionId):'api:'+data.accountId;
+        const cached=data.pullCache?.owner===owner ? data.pullCache : {};
+        const { result,cache,noteCache } = await pullMaterials({vault,courses,warnings,download:downloadOne,noteWriter,
+          previous:cached.files,previousNotes:cached.notes,
+          onProgress:progress=>{pullProgress=progress;}});
+        result.finishedAt=new Date().toISOString();
+        await save({...data,lastPull:result,pullSessionId:sessionId,pullCache:{owner,files:cache,notes:noteCache}});
+        return result;
+      });
+      activePull={courseId,task};
+      try {return await task;} finally {activePull=null;pullProgress=null;}
+    }
     return exclusive(async () => {
       await ready();
       if (method === 'GET' && action === 'status') return view();
@@ -195,7 +250,8 @@ function createCanvasService({ vault, storage, desktop, fetch: fetchImpl = fetch
           if(!ok){pending=null;return;}
           try{
             await save({...data,portalSyncEnabled:true,portalOpened:true,webVerified:true,user:'',snapshot:null,syncedAt:null,
-              calendar:null,feed:null,feedAutomatic:false,feedMuted:false,auth:null,accountId:null,requests:undefined,writeEnabled:false});
+              calendar:null,feed:null,feedAutomatic:false,feedMuted:false,auth:null,accountId:null,requests:undefined,
+              lastPull:null,pullCache:undefined,pullSessionId:null,writeEnabled:false});
             await syncWeb();
           } catch(e){authError=e.message;}finally{if(pending===request)pending=null;}
         }));
