@@ -410,6 +410,34 @@ async function resumeFailed(me) {
   }
 }
 
+/* ---------- source folders the local AI may read (desktop app) ---------- */
+// The list from the desktop app with three separate states (Graphite allows it; Graphite can list it; whether
+// the AI program itself can read it is not verified), "Choose a folder…" (the system picker; cancelling changes
+// nothing) and "Revoke" for folders that can be revoked. Used on the import's access page and in Settings.
+export function folderPanel(host) {
+  const desk = window.myobsidianDesktop?.agentFolders;
+  if (!host || !desk) return null;
+  if (!host.querySelector('.fj-folder-list')) host.innerHTML = `<h4>${esc(t('fj.acc.foldersH'))}</h4><ul class="fj-folder-list"><li class="muted">${esc(t('fj.loading'))}</li></ul>
+    <button class="mod-button" data-a="choose">${esc(t('fj.acc.choose'))}</button><p class="muted fj-acc-scope">${esc(t('fj.acc.scope'))}</p>`;
+  const list = host.querySelector('.fj-folder-list');
+  let busy = false;
+  const draw = res => {
+    if (!res?.ok) { list.innerHTML = `<li class="mod-error">${esc(res?.message || t('error'))}</li>`; return; }
+    const fs = res.folders || [];
+    list.innerHTML = fs.length ? fs.map(f => `<li class="fj-folder" data-id="${esc(f.id)}"><code>${esc(f.path)}</code>
+      <span class="fj-chip${f.graphiteAllowed ? ' is-ok' : ''}">${esc(t(f.graphiteAllowed ? 'fj.acc.gYes' : 'fj.acc.gNo'))}</span>
+      <span class="fj-chip${f.processReadable ? ' is-ok' : ''}">${esc(t(f.processReadable ? 'fj.acc.pYes' : 'fj.acc.pNo'))}</span>
+      <span class="fj-chip">${esc(t(f.agentAccess === 'unverified' || !f.agentAccess ? 'fj.acc.aUnverified' : f.agentAccess === 'readable' ? 'fj.acc.aYes' : 'fj.acc.aNo'))}</span>
+      ${f.reason ? `<span class="muted">${esc(f.reason)}</span>` : ''}
+      ${f.revocable ? `<button class="mod-button fj-revoke" data-revoke="${esc(f.id)}">${esc(t('fj.acc.revoke'))}</button>` : ''}</li>`).join('') : `<li class="muted">${esc(t('fj.acc.noFolders'))}</li>`;
+  };
+  const run = async fn => { if (busy) return; busy = true; try { const res = await fn(); if (res && !res.canceled) draw(res); } catch (err) { draw({ ok: false, message: err.message }); } finally { busy = false; } };
+  run(() => desk('list'));
+  host.querySelector('[data-a=choose]').onclick = () => run(() => desk('choose'));   // cancelled: nothing changes
+  list.addEventListener('click', ev => { const id = ev.target.closest('[data-revoke]')?.dataset.revoke; if (id) run(() => desk('revoke', { id })); });
+  return { refresh: () => run(() => desk('list')) };
+}
+
 /* ---------- a folder the import could not use ---------- */
 // Who refused, from what the backend actually saw: Graphite's limits for this job, the operating system, or the
 // AI program itself. When the path was only guessed from a command's text, say the check could not confirm it
@@ -433,8 +461,7 @@ async function accessProblem(e, me = win) {
     ${a.path ? `<p class="fj-acc-path"><span class="muted">${esc(t('fj.acc.pathLabel'))}</span> <code>${esc(a.path)}</code></p>` : ''}
     ${a.driveRoot ? `<p class="fj-acc-root">${esc(t('fj.acc.driveRoot'))}</p>` : ''}
     <p class="muted">${esc(t('fj.acc.purpose'))}</p>
-    ${desk ? `<div class="fj-folders"><h4>${esc(t('fj.acc.foldersH'))}</h4><ul class="fj-folder-list"><li class="muted">${esc(t('fj.loading'))}</li></ul>
-      <button class="mod-button" data-a="choose">${esc(t('fj.acc.choose'))}</button><p class="muted fj-acc-scope">${esc(t('fj.acc.scope'))}</p></div>` : ''}
+    ${desk ? '<div class="fj-folders"></div>' : ''}
     ${e.recovery ? `<p>${esc(t('fj.acc.canResume', { n: e.recovery.count || 0 }))}</p>` : `<p class="fj-acc-next">${esc(t('fj.acc.noResume'))}</p>`}
     <p class="mod-error fj-res-error" role="alert" hidden></p></div>`);
   const rec = e.recovery;
@@ -465,35 +492,5 @@ async function accessProblem(e, me = win) {
   };
   actions.querySelector('[data-a=resume-fw]')?.addEventListener('click', () => resume(false));
   actions.querySelector('[data-a=resume-graphite]')?.addEventListener('click', () => resume(true));
-  if (desk) {
-    const list = body.querySelector('.fj-folder-list');
-    const draw = res => {
-      if (!res?.ok) { list.innerHTML = `<li class="mod-error">${esc(res?.message || t('error'))}</li>`; return; }
-      const fs = res.folders || [];
-      list.innerHTML = fs.length ? fs.map(f => `<li class="fj-folder" data-id="${esc(f.id)}"><code>${esc(f.path)}</code>
-        <span class="fj-chip${f.graphiteAllowed ? ' is-ok' : ''}">${esc(t(f.graphiteAllowed ? 'fj.acc.gYes' : 'fj.acc.gNo'))}</span>
-        <span class="fj-chip${f.processReadable ? ' is-ok' : ''}">${esc(t(f.processReadable ? 'fj.acc.pYes' : 'fj.acc.pNo'))}</span>
-        <span class="fj-chip">${esc(t(f.agentAccess === 'unverified' || !f.agentAccess ? 'fj.acc.aUnverified' : f.agentAccess === 'readable' ? 'fj.acc.aYes' : 'fj.acc.aNo'))}</span>
-        ${f.reason ? `<span class="muted">${esc(f.reason)}</span>` : ''}
-        ${f.revocable ? `<button class="mod-button fj-revoke" data-revoke="${esc(f.id)}">${esc(t('fj.acc.revoke'))}</button>` : ''}</li>`).join('') : `<li class="muted">${esc(t('fj.acc.noFolders'))}</li>`;
-    };
-    desk('list').then(draw, err => draw({ ok: false, message: err.message }));
-    body.querySelector('[data-a=choose]').onclick = async () => {
-      if (me.folderBusy) return;
-      me.folderBusy = true;
-      try {
-        const res = await desk('choose');
-        if (res?.canceled) return;            // nothing written, nothing changed
-        draw(res);
-      } catch (err) { draw({ ok: false, message: err.message }); }
-      finally { me.folderBusy = false; }
-    };
-    list.addEventListener('click', async ev => {
-      const id = ev.target.closest('[data-revoke]')?.dataset.revoke;
-      if (!id || me.folderBusy) return;
-      me.folderBusy = true;
-      try { draw(await desk('revoke', { id })); } catch (err) { draw({ ok: false, message: err.message }); }
-      finally { me.folderBusy = false; }
-    });
-  }
+  if (desk) folderPanel(body.querySelector('.fj-folders'));
 }

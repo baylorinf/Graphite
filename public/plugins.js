@@ -725,13 +725,22 @@ export class MomentFormatComponent extends TextComponent {
 export class ToggleComponent extends ValueComponent {
   constructor(el) {
     super();
-    this.toggleEl = el.createDiv('checkbox-container');
-    this.toggleEl.addEventListener('click', () => { if (!this.disabled) { this.setValue(!this.value); this._cb?.(this.value); } });
+    // A switch people can use without a mouse: in the Tab order, Space or Enter flips it, and screen readers hear
+    // its name (the setting's label, see Setting), whether it is on, and whether it is unavailable. Same element
+    // and classes as before, so plugins that style or click it keep working.
+    const sw = this.toggleEl = el.createDiv('checkbox-container');
+    sw.setAttribute('role', 'switch');
+    sw.tabIndex = 0;
+    sw.setAttribute('aria-checked', 'false');
+    const flip = () => { if (!this.disabled) { this.setValue(!this.value); this._cb?.(this.value); } };
+    sw.addEventListener('click', flip);
+    sw.addEventListener('keydown', e => { if ((e.key === ' ' || e.key === 'Enter') && !e.repeat) { e.preventDefault(); flip(); } });
     this.value = false;
   }
   getValue() { return this.value; }
-  setValue(v) { this.value = !!v; this.toggleEl.toggleClass('is-enabled', this.value); return this; }
-  setTooltip(s) { this.toggleEl.title = s; return this; }
+  setValue(v) { this.value = !!v; this.toggleEl.toggleClass('is-enabled', this.value); this.toggleEl.setAttribute('aria-checked', String(this.value)); return this; }
+  setDisabled(b) { super.setDisabled(!!b); this.toggleEl.toggleClass('is-disabled', !!b); this.toggleEl.setAttribute('aria-disabled', String(!!b)); return this; }
+  setTooltip(s) { this.toggleEl.title = s; if (!this.toggleEl.hasAttribute('aria-labelledby') && !this.toggleEl.hasAttribute('aria-label')) this.toggleEl.setAttribute('aria-label', s); return this; }
   onChange(cb) { this._cb = cb; return this; }
   onClick() { this.toggleEl.click(); }
 }
@@ -786,6 +795,7 @@ export class ProgressBarComponent extends ValueComponent {
   setValue(v) { this.progressBar.value = v; return this; }
 }
 
+let settingIds = 0;
 export class Setting {
   constructor(containerEl) {
     this.settingEl = containerEl.createDiv('setting-item');
@@ -801,7 +811,15 @@ export class Setting {
   setTooltip(s) { this.settingEl.title = s; return this; }
   setHeading() { this.settingEl.addClass('setting-item-heading'); return this; }
   setDisabled(b) { this.settingEl.toggleClass('is-disabled', b); for (const c of this.components) c.setDisabled?.(b); return this; }
-  _add(C, cb) { const c = new C(this.controlEl); this.components.push(c); cb?.(c); return this; }
+  _add(C, cb) {
+    const c = new C(this.controlEl); this.components.push(c);
+    // A switch is named by this row's label and described by its description (whatever order they are set in).
+    if (c.toggleEl) {
+      this.nameEl.id ||= 'setting-name-' + (++settingIds); this.descEl.id ||= 'setting-desc-' + settingIds;
+      c.toggleEl.setAttribute('aria-labelledby', this.nameEl.id); c.toggleEl.setAttribute('aria-describedby', this.descEl.id);
+    }
+    cb?.(c); return this;
+  }
   addText(cb) { return this._add(TextComponent, cb); }
   addSearch(cb) { return this._add(SearchComponent, cb); }
   addTextArea(cb) { return this._add(TextAreaComponent, cb); }

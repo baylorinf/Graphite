@@ -90,3 +90,80 @@ export function enhanceAISelect(select, feature) {
   });
   draw();
 }
+
+// A provider's model: a button that opens the whole list right away (it scrolls), with its own search box,
+// ↑/↓ and Enter to choose, Esc to close (the focus goes back to the button), and "Custom model…" to type a name
+// that isn't listed. The list is placed inside the provider's own box, under its button, so it stays with that
+// provider when the settings scroll, the window is narrow or zoomed. Models come from the last check with the
+// current key and address (AI.listState); before any check, the provider's suggestions.
+let pickerIds = 0;
+export function modelPicker(host, p, P, { onPick } = {}) {
+  const id = 'mp-' + (++pickerIds);
+  const wrap = host.createDiv({ cls: 'model-picker' });
+  const btn = wrap.createEl('button', { cls: 'model-picker-btn', attr: { type: 'button', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'data-model-picker': p } });
+  const pop = wrap.createDiv({ cls: 'model-pop', attr: { hidden: '' } });
+  const search = pop.createEl('input', { cls: 'model-search', attr: { type: 'search', role: 'combobox', 'aria-expanded': 'true', 'aria-autocomplete': 'list', 'aria-controls': id + '-list', spellcheck: 'false' } });
+  const list = pop.createEl('ul', { cls: 'model-list', attr: { role: 'listbox', id: id + '-list' } });
+  const custom = wrap.createEl('input', { cls: 'model-custom', attr: { type: 'text', hidden: '', spellcheck: 'false' } });
+  let items = [], active = 0;
+  const label = () => {
+    btn.innerHTML = `<span class="model-picker-value">${esc(AI.modelOf(p) || t('ai.modelPick'))}</span>${CHEV}`;
+    search.placeholder = t('ai.modelSearch'); search.setAttribute('aria-label', t('ai.modelSearch'));
+    list.setAttribute('aria-label', t('ai.model')); custom.placeholder = t('ai.modelPh'); custom.setAttribute('aria-label', t('ai.customModel'));
+  };
+  const models = () => { const st = AI.listState(p); return st.fetched ? st.models : P.suggest || []; };
+  const render = () => {
+    const q = search.value.trim().toLowerCase(), cur = AI.modelOf(p);
+    items = [...models().filter(m => !q || m.toLowerCase().includes(q)), { custom: true }];
+    active = Math.max(0, Math.min(active, items.length - 1));
+    list.innerHTML = items.map((m, i) => m.custom
+      ? `<li role="option" id="${id}-o${i}" class="model-opt model-opt-custom${i === active ? ' is-active' : ''}" data-i="${i}" aria-selected="false">${esc(t('ai.customModel'))}</li>`
+      : `<li role="option" id="${id}-o${i}" class="model-opt${i === active ? ' is-active' : ''}${m === cur ? ' is-current' : ''}" data-i="${i}" aria-selected="${m === cur}">${esc(m)}${m === cur ? CHECK : ''}</li>`).join('');
+    const empty = items.length === 1;
+    list.toggleClass('is-empty', empty);
+    if (empty) list.insertAdjacentHTML('afterbegin', `<li class="model-none" role="presentation">${esc(t(q ? 'ai.modelsNoMatch' : 'ai.modelsNone'))}</li>`);
+    search.setAttribute('aria-activedescendant', id + '-o' + active);
+    list.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' });
+  };
+  const isOpen = () => !pop.hasAttribute('hidden');
+  const open = () => {
+    if (isOpen()) return;
+    search.value = ''; custom.hidden = true;
+    const cur = AI.modelOf(p); active = Math.max(0, models().indexOf(cur));
+    pop.removeAttribute('hidden'); btn.setAttribute('aria-expanded', 'true'); wrap.addClass('is-open');
+    render(); search.focus();
+  };
+  const close = (back = true) => {
+    if (!isOpen()) return;
+    pop.setAttribute('hidden', ''); btn.setAttribute('aria-expanded', 'false'); wrap.removeClass('is-open');
+    if (back) btn.focus();
+  };
+  const choose = i => {
+    const m = items[i];
+    if (!m) return;
+    if (m.custom) {
+      close(false);
+      custom.hidden = false; custom.value = AI.modelOf(p); custom.focus(); custom.select();
+      return;
+    }
+    AI.setModel(p, m); label(); close(); onPick?.(m);
+  };
+  btn.addEventListener('click', () => (isOpen() ? close() : open()));
+  btn.addEventListener('keydown', e => { if (['ArrowDown', 'ArrowUp'].includes(e.key)) { e.preventDefault(); open(); } });
+  search.addEventListener('input', () => { active = 0; render(); });
+  search.addEventListener('keydown', e => {
+    if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); active = (active + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; render(); }
+    else if (e.key === 'Home' || e.key === 'End') { e.preventDefault(); active = e.key === 'Home' ? 0 : items.length - 1; render(); }
+    else if (e.key === 'Enter') { e.preventDefault(); choose(active); }
+    else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
+    else if (e.key === 'Tab') close(false);
+  });
+  list.addEventListener('mousedown', e => e.preventDefault()); // keep the focus in the search box
+  list.addEventListener('click', e => { const li = e.target.closest('[data-i]'); if (li) choose(+li.dataset.i); });
+  const saveCustom = () => { const v = custom.value.trim(); if (v) { AI.setModel(p, v); label(); onPick?.(v); } };
+  custom.addEventListener('change', saveCustom);
+  custom.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveCustom(); custom.hidden = true; btn.focus(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); custom.hidden = true; btn.focus(); } });
+  document.addEventListener('pointerdown', e => { if (isOpen() && !wrap.contains(e.target)) close(false); }, true);
+  label();
+  return { refresh() { label(); if (isOpen()) render(); }, close, el: wrap };
+}

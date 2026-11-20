@@ -51,14 +51,17 @@ async function main() {
       localStorage.setItem('mo:ai', JSON.stringify({ use: { import: 'codex', inbox: 'off', check: 'off', chat: 'off' } }));
       if (folders) {
         // The desktop's source-folder access, simulated: list / choose (system picker) / revoke.
-        let list = folders.list, nextChoose = folders.choose || [];
+        // With persist, the folder list survives a reload (as the desktop app keeps it).
+        const saved = folders.persist ? JSON.parse(localStorage.getItem('fake:folders') || 'null') : null;
+        let list = saved || folders.list, nextChoose = folders.choose || [];
+        const keep = () => { if (folders.persist) localStorage.setItem('fake:folders', JSON.stringify(list)); };
         window.__folderCalls = [];
         window.myobsidianDesktop = { setLanguage() {}, onAppCommand() {}, onUpdate() {},
           async agentFolders(action, args) {
             window.__folderCalls.push([action, args || null]);
             if (action === 'list') return { ok: true, folders: list };
-            if (action === 'choose') { const c = nextChoose.shift() || { canceled: true }; if (c.canceled) return { ok: true, canceled: true, folders: list }; list = [...list, c.folder]; return { ok: true, added: true, selectedId: c.folder.id, folders: list }; }
-            if (action === 'revoke') { list = list.filter(f => f.id !== args.id); return { ok: true, folders: list }; }
+            if (action === 'choose') { const c = nextChoose.shift() || { canceled: true }; if (c.canceled) return { ok: true, canceled: true, folders: list }; list = [...list, c.folder]; keep(); return { ok: true, added: true, selectedId: c.folder.id, folders: list }; }
+            if (action === 'revoke') { list = list.filter(f => f.id !== args.id); keep(); return { ok: true, folders: list }; }
             return { ok: false, code: 'bad', message: 'bad action' };
           } };
       }
@@ -301,6 +304,25 @@ async function main() {
     assert.equal(o[1].disabled, true, "a read-only course folder can't be chosen");
     await setProfile([]);
   });
+
+  await test('Settings → Study settings → Manage folders: add a course folder with the system picker, see it after reopening, revoke it (no import error needed)', async p => {
+    const open = async () => {
+      await p.evaluate(() => import('/settings.js').then(m => m.openSettings('study')));
+      await p.locator('[data-study=manageFolders]').click();
+      await p.locator('.study-folders .fj-folder-list li').first().waitFor();
+    };
+    await open();
+    assert.equal(await p.locator('[data-study=manageFolders]').getAttribute('aria-expanded'), 'true');
+    assert.equal(await p.locator('.study-folders .fj-folder').count(), 1);
+    await p.locator('.study-folders [data-a=choose]').click();
+    await p.locator('.study-folders .fj-folder[data-id="f-new"]').waitFor();
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    await open();
+    assert.equal(await p.locator('.study-folders .fj-folder[data-id="f-new"]').count(), 1, 'still there after reopening');
+    await p.locator('.study-folders [data-revoke="f-new"]').click();
+    await p.waitForFunction(() => !document.querySelector('.study-folders .fj-folder[data-id="f-new"]'));
+    assert.deepEqual(await p.evaluate(() => window.__folderCalls.map(c => c[0])), ['list', 'revoke']);
+  }, { folders: { ...FOLDERS, choose: [{ folder: FOLDERS.choose[1].folder }], persist: true } });
 
   await browser.close();
   await fs.rm(vault, { recursive: true, force: true }).catch(() => {});

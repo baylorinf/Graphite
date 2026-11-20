@@ -132,7 +132,17 @@ function save(patch) {
 export const settings = raw;
 export const keyOf = p => raw().keys[p] || '';
 export const modelOf = p => raw().models[p] || (PROVIDERS[p]?.suggest[0] ?? '');
-export const listOf = p => raw().lists[p] || [];
+// A provider's model list belongs to the address and key it was read with. Only a one-way fingerprint of them is
+// kept (never the key itself), so another key or address shows no old list until it is checked again.
+const fnv = s => { let h = 0x811c9dc5; for (const ch of String(s)) { h ^= ch.codePointAt(0); h = Math.imul(h, 0x01000193) >>> 0; } return h.toString(36); };
+const listContext = p => p + ':' + fnv([p, p === 'custom' ? raw().baseUrl : '', raw().keys[p] || ''].join('\n'));
+// { fetched: true, models } once this provider was checked with the current address and key (models may be
+// empty: then only "Custom model…" is offered); { fetched: false, models: [] } before that.
+export function listState(p) {
+  const e = raw().lists[p];
+  return e && !Array.isArray(e) && e.ctx === listContext(p) && Array.isArray(e.models) ? { fetched: true, models: e.models } : { fetched: false, models: [] };
+}
+export const listOf = p => listState(p).models;
 export const baseUrl = () => raw().baseUrl;
 export const setKey = (p, v) => { const r = raw(); save({ keys: { ...r.keys, [p]: v.trim() } }); };
 export const setModel = (p, v) => { const r = raw(); save({ models: { ...r.models, [p]: v.trim() } }); };
@@ -254,15 +264,21 @@ export async function request(feature, task, payload, { signal, provider } = {})
 }
 
 // Test a provider's key; remembers its model list and picks a model if none is set yet.
+// Each provider's newest check; an older one that answers late is ignored, as is any answer for a key or address
+// that has changed meanwhile. A successful empty list is kept as empty (no models from before shown).
+const testSeq = {};
 export async function testProvider(p) {
+  const seq = (testSeq[p] = (testSeq[p] || 0) + 1), ctx = listContext(p);
   const r = await request(null, 'test', {}, { provider: p });
+  if (seq !== testSeq[p] || ctx !== listContext(p)) return { ...r, stale: true };
+  const found = Array.isArray(r.models) ? [...new Set(r.models.filter(m => typeof m === 'string' && m.trim()).map(m => m.trim()))] : null;
   const lists = { ...raw().lists };
-  if (r.models?.length) lists[p] = r.models;
+  if (found) lists[p] = { ctx, models: found };
   const cur = raw().models[p];
   const models = { ...raw().models };
-  if (!cur || (r.models?.length && !r.models.includes(cur))) models[p] = pickModel(p, r.models || []) || cur || PROVIDERS[p].suggest[0] || '';
+  if (!cur || (found?.length && !found.includes(cur))) models[p] = pickModel(p, found || []) || cur || PROVIDERS[p].suggest[0] || '';
   save({ lists, models });
-  return r;
+  return { ...r, models: found || r.models };
 }
 
 /* ---------- the agent: jobs on your files, with an API model ----------

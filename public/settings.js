@@ -4,7 +4,8 @@ import * as PM from '/plugins.js';
 import { DEFAULTS, loadAppearance, saveAppearance, listFonts, isInstalled } from '/appearance.js';
 import { reviewSettings, setReviewSettings } from '/review.js';
 import * as AI from '/ai.js';
-import { enhanceAISelect } from '/aipicker.js';
+import { enhanceAISelect, modelPicker } from '/aipicker.js';
+import { folderPanel } from '/filejobs.js';
 
 let H = null;
 let root = null, nav = null, content = null;
@@ -15,12 +16,33 @@ let community = null;      // cached community plugin list
 
 export function initSettings(host) { H = host; }
 
-const onKey = e => { if (e.key === 'Escape' && !document.querySelector('.plugin-modal')) { e.preventDefault(); e.stopPropagation(); closeSettings(); } };
+// Esc closes; Tab and Shift+Tab stay inside the Settings window (a dialog), so keyboard users never end up in
+// the page behind it.
+const FOCUSABLE = 'button:not([disabled]), input:not([disabled]):not([type=hidden]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
+const onKey = e => {
+  if (document.querySelector('.plugin-modal')) return;
+  // Esc in an open model list (or the custom model box) closes that, not Settings.
+  if (e.key === 'Escape' && document.querySelector('.model-picker.is-open') || (e.key === 'Escape' && document.activeElement?.matches?.('.model-custom'))) return;
+  if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeSettings(); return; }
+  if (e.key !== 'Tab' || e.ctrlKey || e.metaKey || e.altKey) return;
+  const box = root?.querySelector('.settings-box');
+  const list = box ? [...box.querySelectorAll(FOCUSABLE)].filter(el => el.offsetParent !== null || el === document.activeElement) : [];
+  if (!list.length) return;
+  const i = list.indexOf(document.activeElement);
+  if (i < 0 || (e.shiftKey && i === 0) || (!e.shiftKey && i === list.length - 1)) {
+    e.preventDefault();
+    list[i < 0 ? (e.shiftKey ? list.length - 1 : 0) : e.shiftKey ? list.length - 1 : 0].focus();
+  }
+};
+let returnFocus = null;
 
 export function openSettings(tab) {
   if (!root) build();
+  const wasOpen = settingsOpen();
+  if (!wasOpen) returnFocus = document.activeElement;
   root.classList.remove('hidden');
   document.addEventListener('keydown', onKey, true);
+  if (!wasOpen) setTimeout(() => { if (settingsOpen() && !root.contains(document.activeElement)) nav.querySelector('.settings-nav-item.active')?.focus(); }, 0);
   show(tab ? (tab.startsWith('plugin:') || ['general', 'appearance', 'review', 'study', 'ai', 'claude', 'sync', 'plugins'].includes(tab) ? tab : 'plugin:' + tab) : current);
 }
 export function closeSettings() {
@@ -28,6 +50,8 @@ export function closeSettings() {
   hideActiveTab();
   root.classList.add('hidden');
   document.removeEventListener('keydown', onKey, true);
+  if (returnFocus?.isConnected) returnFocus.focus?.();
+  returnFocus = null;
 }
 export const settingsOpen = () => root && !root.classList.contains('hidden');
 // Re-render (e.g. after a language change).
@@ -37,9 +61,10 @@ function build() {
   root = document.body.appendChild(createDiv('settings-modal hidden'));
   root.createDiv('settings-bg').addEventListener('mousedown', closeSettings);
   const box = root.createDiv('settings-box');
+  box.setAttribute('role', 'dialog'); box.setAttribute('aria-modal', 'true'); box.setAttribute('aria-label', t('settings.title'));
   nav = box.createDiv('settings-nav scroll');
   content = box.createDiv('settings-content scroll');
-  const close = box.createEl('button', { cls: 'settings-close', text: '×' });
+  const close = box.createEl('button', { cls: 'settings-close', text: '×', attr: { 'aria-label': t('review.close') } });
   close.addEventListener('click', closeSettings);
 }
 
@@ -47,7 +72,12 @@ function hideActiveTab() { if (activeTab) { try { activeTab.hide(); } catch (e) 
 
 function drawNav() {
   nav.empty();
-  const item = (id, label) => { const el = nav.createDiv({ cls: 'settings-nav-item' + (id === current ? ' active' : ''), text: label }); el.onclick = () => show(id); };
+  // Each section can be reached with Tab and opened with Enter or Space; the open one is marked as current.
+  const item = (id, label) => {
+    const el = nav.createDiv({ cls: 'settings-nav-item' + (id === current ? ' active' : ''), text: label, attr: { role: 'button', tabindex: '0', ...(id === current ? { 'aria-current': 'page' } : {}) } });
+    el.onclick = () => show(id);
+    el.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); show(id); nav.querySelector('.settings-nav-item.active')?.focus(); } };
+  };
   nav.createDiv({ cls: 'settings-nav-heading', text: t('settings.options') });
   item('general', t('settings.general'));
   item('appearance', t('settings.appearance'));
@@ -204,6 +234,15 @@ async function renderStudy(token) {
     .addText(x => { x.setValue((p.recentFolders || []).join(', ')).onChange(v => set({ recentFolders: list(v) })); x.inputEl.dataset.study = 'recentFolders'; });
   new PM.Setting(content).setName(t('study.f.readOnlyFolders')).setDesc(t('study.d.readOnlyFolders'))
     .addText(x => { x.setPlaceholder('My Brain').setValue((p.readOnlyFolders || []).join(', ')).onChange(v => set({ readOnlyFolders: list(v) })); x.inputEl.dataset.study = 'readOnlyFolders'; });
+  // Source folders a local AI may read for imports (desktop app): the same list, picker and Revoke as on the
+  // import's access page, reachable here at any time.
+  if (window.myobsidianDesktop?.agentFolders) {
+    const panel = createDiv({ cls: 'fj-folders study-folders', attr: { hidden: '' } });
+    new PM.Setting(content).setName(t('study.f.sourceFolders')).setDesc(t('study.d.sourceFolders'))
+      .addButton(b => { b.setButtonText(t('study.manageFolders')); b.buttonEl.dataset.study = 'manageFolders'; b.buttonEl.setAttribute('aria-expanded', 'false');
+        b.onClick(() => { const open = panel.hasAttribute('hidden'); panel.toggleAttribute('hidden', !open); b.buttonEl.setAttribute('aria-expanded', String(open)); if (open && !panel.dataset.ready) { panel.dataset.ready = '1'; folderPanel(panel); } }); });
+    content.appendChild(panel);
+  }
   new PM.Setting(content).setName(t('study.f.brainFolder')).setDesc(t('study.d.brainFolder'))
     .addText(x => { x.setValue(p.brainFolder || 'Claude Brain').onChange(v => set({ brainFolder: v.trim() })); x.inputEl.dataset.study = 'brainFolder'; });
   new PM.Setting(content).setName(t('study.f.studyPagesFolder')).setDesc(t('study.d.studyPagesFolder'))
@@ -316,13 +355,10 @@ function renderProvider(p, P) {
 
   if (p === 'custom') {
     new PM.Setting(box).setName(t('ai.baseUrl')).setDesc(t('ai.customDesc'))
-      .addText(tx => { tx.inputEl.spellcheck = false; tx.setPlaceholder('https://example.com/v1').setValue(AI.baseUrl()).onChange(v => { AI.setBaseUrl(v); mark(); }); });
+      .addText(tx => { tx.inputEl.spellcheck = false; tx.setPlaceholder('https://example.com/v1').setValue(AI.baseUrl()).onChange(v => { AI.setBaseUrl(v); mark(); picker?.refresh(); }); });
   }
   const status = createEl('p', { cls: 'setting-note' });
-  let modelInput = null;
-  const dl = createEl('datalist', { attr: { id: 'ai-models-' + p } });
-  const fillList = () => { dl.empty(); for (const m of [...new Set([...AI.listOf(p), ...P.suggest])]) dl.createEl('option', { attr: { value: m } }); };
-  fillList();
+  let picker = null;
   const test = async () => {
     if (!has()) return;
     status.textContent = '…'; status.classList.remove('mod-error');
@@ -330,26 +366,24 @@ function renderProvider(p, P) {
       const r = await AI.testProvider(p);
       status.textContent = t('ai.testOk') + (r.models?.length ? ' ' + t('ai.modelsFound', { n: r.models.length }) : '') + (r.balance ? ' ' + t('ai.balance', { balance: r.balance }) : '');
       if (r.available === false) { status.textContent += ' ' + t('ai.noBalance'); status.classList.add('mod-error'); }
-      if (modelInput) modelInput.value = AI.modelOf(p);
-      fillList(); mark();
+      if (r.stale) return; // the key or address changed meanwhile, or a newer check is running
+      picker?.refresh(); mark();
     } catch (e) { status.textContent = t('ai.failed', { msg: e.message }); status.classList.add('mod-error'); }
   };
   const keyRow = new PM.Setting(box).setName(t('ai.key')).setDesc(P.site ? t('ai.keyDesc', { site: P.site }) : '')
     .addText(tx => {
       Object.assign(tx.inputEl, { type: 'password', autocomplete: 'off', spellcheck: false });
-      tx.setPlaceholder(P.keyPh || t('ai.keyOptional')).setValue(AI.keyOf(p)).onChange(v => { AI.setKey(p, v); mark(); });
+      tx.setPlaceholder(P.keyPh || t('ai.keyOptional')).setValue(AI.keyOf(p)).onChange(v => { AI.setKey(p, v); mark(); picker?.refresh(); }); // another key: the old list no longer shows
       tx.inputEl.addEventListener('change', () => { if (tx.inputEl.value.trim()) test(); }); // check a newly pasted key right away
     })
     .addButton(b => b.setButtonText(t('ai.test')).onClick(test));
   keyRow.addButton(b => b.setButtonText(t('ai.remove')).onClick(() => { AI.setKey(p, ''); if (p === 'custom') AI.setBaseUrl(''); show('ai'); }));
-  new PM.Setting(box).setName(t('ai.model')).setDesc(t('ai.modelDesc2'))
-    .addText(tx => {
-      modelInput = tx.inputEl;
-      tx.inputEl.spellcheck = false;
-      tx.inputEl.setAttribute('list', dl.id);
-      tx.setPlaceholder(t('ai.modelPh')).setValue(AI.modelOf(p)).onChange(v => { AI.setModel(p, v); mark(); });
-    });
-  box.appendChild(dl);
+  const modelRow = new PM.Setting(box).setName(t('ai.model')).setDesc(t('ai.modelDesc2'));
+  picker = modelPicker(modelRow.controlEl, p, P, { onPick: mark });
+  // Its name: "Model" and the model chosen now.
+  const mbtn = picker.el.querySelector('.model-picker-btn');
+  modelRow.nameEl.id ||= 'model-name-' + p; mbtn.id = 'model-btn-' + p; modelRow.descEl.id ||= 'model-desc-' + p;
+  mbtn.setAttribute('aria-labelledby', modelRow.nameEl.id + ' ' + mbtn.id); mbtn.setAttribute('aria-describedby', modelRow.descEl.id);
   box.appendChild(status);
 }
 
