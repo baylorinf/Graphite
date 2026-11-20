@@ -2887,15 +2887,20 @@ function renderTabs() {
 }
 
 let persistTimer = 0;
+// The open tabs (and so the mode: code mode is the code tab in front) are written shortly after each change, and
+// at once when the app closes, updates or switches vaults (flushTabs, from __moFlush and beforeunload).
+function writeTabs() {
+  clearTimeout(persistTimer); persistTimer = 0;
+  store.set('tabs', {
+    active: TABS.active,
+    list: TABS.list.map(x => ({ id: x.id, kind: x.kind, path: x.path, page: x.page, provider: x.provider, key: x.key, title: x.kind === 'custom' ? tabTitle(x) : undefined, preview: x.preview, history: (x.history || []).slice(-30), hIdx: Math.min(x.hIdx ?? -1, 29) })),
+  });
+}
 function persistTabs() {
   clearTimeout(persistTimer);
-  persistTimer = setTimeout(() => {
-    store.set('tabs', {
-      active: TABS.active,
-      list: TABS.list.map(x => ({ id: x.id, kind: x.kind, path: x.path, page: x.page, provider: x.provider, key: x.key, title: x.kind === 'custom' ? tabTitle(x) : undefined, preview: x.preview, history: (x.history || []).slice(-30), hIdx: Math.min(x.hIdx ?? -1, 29) })),
-    });
-  }, 200);
+  persistTimer = setTimeout(writeTabs, 200);
 }
+const flushTabs = () => { if (persistTimer) writeTabs(); };
 
 // What the app is showing right now → the tab in front. Called after every navigation.
 function syncActiveTab() {
@@ -3447,6 +3452,7 @@ async function installUpdate() {
 
 // The desktop app calls this before closing the window so the last edits are written to disk.
 window.__moFlush = async () => {
+  flushTabs(); // which tab is in front (study or code mode), before anything that can take time
   try { await saveNow(); } catch { /* reported below */ }
   if (S.current && S.dirty) setDraft(S.current, ed.value);
   persistDrafts();
@@ -3470,6 +3476,8 @@ setTimeout(() => { if (drafts.size) retryDrafts(); }, 3000);
 // Reloading or closing the page: the newest text is stored as a draft first, then one last save is sent with
 // the same version check as every other save, so it can never overwrite a change that reached the disk.
 addEventListener('beforeunload', () => {
+  flushTabs();
+  codeWorkbench.flush(); // project files: unsaved text into its drafts now (not after the usual short delay)
   codeEditor.writeDrafts();
   if (S.dirty && S.current) {
     setDraft(S.current, ed.value);

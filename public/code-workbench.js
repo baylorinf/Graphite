@@ -703,6 +703,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     for (const el of root.querySelectorAll('.wb-node.is-file')) el.classList.toggle('is-dirty', dirty(buffers.get(el.dataset.node)));
   }
   function renderToolbar() {
+    assistant?.refresh(); // what the assistant would send follows the open file (opened, switched, closed, restored)
     const b = buffers.get(active), busy = run && !run.status;
     const q = s => root.querySelector(s);
     if (!q('.wb-file')) return;

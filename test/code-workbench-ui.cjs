@@ -707,6 +707,57 @@ async function main() {
     assert.equal(sent[2].useNativeCodexInstructions, undefined, 'not remembered for the next question');
   });
 
+  for (const how of ['the close check (__moFlush)', 'the page closing (beforeunload)']) {
+    await test('study → code, edit, close at once with ' + how + ': the restart opens code mode with the file and its draft', async p => {
+      await useProject(p, A);
+      await modeBtn(p, 'Code').click();
+      await p.locator(`${wb} [data-node="main.cpp"]`).click();
+      await cmOf(p).waitFor();
+      await modeBtn(p, 'Study').click();
+      await p.locator('#editor').waitFor();
+      await modeBtn(p, 'Code').click();
+      await cmOf(p).waitFor();
+      // No waiting: the edit and the close come right after the switch.
+      await p.evaluate(async flush => {
+        document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror.replaceRange('// edited just before closing\n', { line: 0, ch: 0 });
+        if (flush) await window.__moFlush();
+      }, how.includes('__moFlush'));
+      await p.reload(); await p.waitForFunction(() => window.app?.commands);
+      await cmOf(p).waitFor();
+      assert.equal(await modeBtn(p, 'Code').getAttribute('aria-pressed'), 'true', 'code mode again');
+      assert.ok((await cmText2(p)).startsWith('// edited just before closing'));
+      assert.equal(await p.locator(`${wb} .wb-tab.is-active`).getAttribute('data-tab'), 'main.cpp');
+    });
+  }
+
+  await test('assistant: "will send" follows the open file at once (opened, switched, closed) and matches what is sent; question only sends nothing', async p => {
+    await p.evaluate(() => { const ai = JSON.parse(localStorage.getItem('mo:ai') || '{}'); localStorage.setItem('mo:ai', JSON.stringify({ ...ai, keys: { custom: 'k' }, baseUrl: 'https://fixture.invalid/v1', models: { custom: 'm' }, use: { ...(ai.use || {}), code: 'custom' } })); const f = window.__fake.get('files'); f['ext-1']['tool.py'] = 'def double(x):\n    return x * 2\n'; window.__fake.set('files', f); });
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    const sent = await assistantRoute(p);
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    const will = () => assist(p).locator('.wa-will').innerText();
+    await assist(p).getByRole('radio', { name: 'Attach current file' }).check();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    await p.waitForFunction(() => /main\.cpp/.test(document.querySelector('.wa-will')?.textContent || ''));
+    assert.match(await will(), /all of main\.cpp .*\(7 lines/);
+    await p.locator(`${wb} [data-node="tool.py"]`).click();
+    await p.waitForFunction(() => /tool\.py/.test(document.querySelector('.wa-will')?.textContent || ''));
+    assert.match(await will(), /all of tool\.py .*\(3 lines/);
+    await ask(p, 'What does it do?');
+    await assist(p).getByText('ANSWER to What does it do?').waitFor();
+    assert.deepEqual([sent[0].filename, sent[0].selection], ['tool.py', 'def double(x):\n    return x * 2\n'], 'sent what the line said');
+    await p.locator(`${wb} .wb-tab`, { hasText: 'tool.py' }).locator('.wb-tab-x').click();
+    await p.waitForFunction(() => /main\.cpp/.test(document.querySelector('.wa-will')?.textContent || ''));
+    await p.locator(`${wb} .wb-tab`, { hasText: 'main.cpp' }).locator('.wb-tab-x').click();
+    await p.waitForFunction(() => /No file is open/.test(document.querySelector('.wa-will')?.textContent || ''));
+    await assist(p).getByRole('radio', { name: 'Question only' }).check();
+    await ask(p, 'General question');
+    await assist(p).getByText('ANSWER to General question').waitFor();
+    assert.deepEqual([sent[1].filename, sent[1].selection, sent[1].diagnostics], ['', '', '']);
+  });
+
   await test('code font and size: Settings → Appearance changes the project editor (and source files opened from notes), not the note text; kept after reopening', async p => {
     await useProject(p, A);
     await modeBtn(p, 'Code').click();
