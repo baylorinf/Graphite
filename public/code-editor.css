@@ -8,7 +8,7 @@
 #code-find-result { color:var(--text-muted); }
 .code-toolbar button:disabled { opacity:.5; }
 #code-editor { flex:1; min-height:0; min-width:0; overflow:auto; }
-#code-editor .CodeMirror { height:100%; background:var(--bg); color:var(--text); font:14px/1.55 Consolas,'SFMono-Regular',monospace; }
+#code-editor .CodeMirror { height:100%; background:var(--bg); color:var(--text); font:var(--font-code-size, 14px)/1.55 var(--font-code, Consolas, 'SFMono-Regular', monospace); }
 #code-editor .CodeMirror-gutters { background:var(--bg-2); border-color:var(--border); }
 #code-editor .CodeMirror-linenumber { color:var(--text-muted); }
 #code-editor .CodeMirror-cursor { border-color:var(--text); }

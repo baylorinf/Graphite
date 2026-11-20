@@ -88,7 +88,7 @@ async function localRequest(v, task, payload, signal) {
   return res.json();
 }
 
-export const FEATURES = ['check', 'quiz', 'chat', 'plan', 'exam', 'mock', 'summary', 'format', 'connect'];
+export const FEATURES = ['check', 'quiz', 'chat', 'plan', 'exam', 'mock', 'summary', 'format', 'connect', 'code'];
 export const openSettings = () => H?.openSettings('ai');
 export const CC = 'claude-code';
 export const CHAT_DIR = '.obsidian/plugins/claude-chat/chat';
@@ -148,7 +148,8 @@ export const setKey = (p, v) => { const r = raw(); save({ keys: { ...r.keys, [p]
 export const setModel = (p, v) => { const r = raw(); save({ models: { ...r.models, [p]: v.trim() } }); };
 export const setBaseUrl = v => save({ baseUrl: v.trim() });
 // Jobs added later default to what Check uses.
-export const choice = f => raw().use[f] || (['plan', 'exam', 'mock', 'format', 'connect', 'summary'].includes(f) && raw().use.check && raw().use.check !== 'off' ? raw().use.check : CC);
+// The code assistant uses the chat's AI until one is chosen for it.
+export const choice = f => raw().use[f] || (f === 'code' && raw().use.chat ? raw().use.chat : null) || (['plan', 'exam', 'mock', 'format', 'connect', 'summary'].includes(f) && raw().use.check && raw().use.check !== 'off' ? raw().use.check : CC);
 export const setChoice = (f, v) => { const r = raw(); save({ use: { ...r.use, [f]: v } }); };
 const hasProvider = p => (p === 'custom' ? !!raw().baseUrl : !!keyOf(p));
 

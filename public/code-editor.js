@@ -92,6 +92,8 @@ const key = (vault, path) => prefix(vault) + path;
 
 export function createCodeEditor({vault, askName, openCreated, savedFile, copyLine, toast}) {
   let active = null, draftTimer;
+  // The code font or size changed (Settings → Appearance): the open source file measures its lines again.
+  window.addEventListener('graphite-appearance', () => active?.cm?.refresh());
   const pending = new Map(), drafts = new Map(), unsynced = new Set();
   const positions = new Map();
 

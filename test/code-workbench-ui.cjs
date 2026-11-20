@@ -41,6 +41,11 @@ function fakeDesktop(opts) {
       if (!p || args.projectId !== p.id) return fail('project_changed', 'The selected project changed. Reopen the file.');
       if (action === 'read') { const wait = (window.__readDelay || {})[args.path]; if (wait) await new Promise(r => setTimeout(r, wait)); }
       const all = files(), mine = all[p.id] || {};
+      if (action === 'findFiles') {
+        const q = String(args.query || '').toLowerCase();
+        const e = Object.keys(mine).filter(f => f.split('/').pop().toLowerCase().includes(q) || f.toLowerCase().includes(q)).sort().slice(0, Math.min(args.limit || 50, 100)).map(f => ({ name: f.split('/').pop(), path: f, type: 'file' }));
+        return { ok: true, entries: e, total: e.length, truncated: false };
+      }
       if (action === 'list') {
         const base = args.path ? args.path + '/' : '', seen = new Map();
         for (const f of Object.keys(mine)) if (f.startsWith(base)) { const rest = f.slice(base.length), [head, ...more] = rest.split('/'); seen.set(head, more.length ? 'directory' : (seen.get(head) || 'file')); }
@@ -207,7 +212,7 @@ async function main() {
     assert.match(await p.locator(`${wb} .wb-unavailable`).innerText(), /C:\/fake\/proj.*can’t be reached/);
   });
 
-  await test('run: unsaved files are saved first, other .cpp files in the folder are compiled too, input goes to the program', async p => {
+  await test('run current file: unsaved files are saved first, only the open file is compiled (not util.cpp next to it), input goes to the program', async p => {
     await openExternal(p);
     await p.locator(`${wb} [data-node="main.cpp"]`).click();
     await p.locator(`${wb} .CodeMirror`).click(); await p.keyboard.type(' ');
@@ -218,7 +223,7 @@ async function main() {
     const order = await p.evaluate(() => window.__calls.filter(c => c[1] === 'write' || c[1] === 'start').map(c => c[1]));
     assert.deepEqual(order, ['write', 'start'], 'saved before compiling');
     const start = (await calls(p, 'run', 'start'))[0];
-    assert.equal(start.mode, 'run'); assert.equal(start.stdin, '5 7'); assert.deepEqual(start.sources, ['util.cpp']); assert.deepEqual(start.breakpoints, []);
+    assert.equal(start.mode, 'run'); assert.equal(start.stdin, '5 7'); assert.deepEqual(start.sources, []); assert.deepEqual(start.breakpoints, []);
     assert.match(await p.locator(`${wb} .wb-output`).innerText(), /read 5 7\n42/);
   });
 
@@ -284,7 +289,7 @@ async function main() {
     await run(p, 'code-workbench');
     await p.locator(`${wb} [data-node="main.cpp"]`).waitFor({ state: 'attached' });
     assert.equal(await p.locator(`${wb} .wb-tree`).isVisible(), false, 'the tree is folded away on a narrow pane');
-    assert.equal(await p.locator(`${wb} [data-wb=run]`).innerText(), '▶ 运行');
+    assert.equal(await p.locator(`${wb} [data-wb=run]`).innerText(), '▶ 运行当前文件');
     assert.equal(await p.locator(`${wb} [data-panel=input]`).innerText(), '输入');
     await p.locator(`${wb} [data-wb=toggle-tree]`).click();
     assert.equal(await p.locator(`${wb} .wb-tree`).isVisible(), true);
@@ -431,6 +436,278 @@ async function main() {
     await sleep(700);
     assert.equal(await p.locator(`${wb} .wb-tab`).count(), 0);
     assert.ok(await p.locator(`${wb} .CodeMirror`).count() <= 1);
+  });
+
+  /* ---------- code mode: Study / Code, assistant, run choices, shortcuts, workspaces, fonts ---------- */
+  const modeBtn = (p, name) => p.getByRole('button', { name, exact: true });
+  const cmOf = p => p.locator(`${wb} .wb-cm .CodeMirror`);
+  const cmText2 = p => p.evaluate(() => document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror.getValue());
+  const useProject = (p, proj) => p.evaluate(x => window.__fake.set('proj', x), proj);
+  const A = { id: 'ext-1', workspaceId: 'ws-A', name: 'proj', root: 'C:/fake/proj' };
+
+  await test('Study / Code: both buttons always there; a note, unsaved code, cursor line and input survive round trips; the note sidebars step aside in code mode', async p => {
+    assert.equal(await modeBtn(p, 'Study').getAttribute('aria-pressed'), 'true');
+    await p.locator('#tree [data-path="Welcome.md"]').click();
+    await p.locator('#editor').fill('# Welcome\nKeep this thought');
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    assert.equal(await modeBtn(p, 'Code').getAttribute('aria-pressed'), 'true');
+    assert.equal(await p.locator('#left').isVisible(), false, 'the note sidebar steps aside');
+    await p.evaluate(() => { const c = document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror; c.replaceRange('// working draft\n', { line: 0, ch: 0 }); c.setCursor({ line: 4, ch: 2 }); });
+    await p.locator(`${wb} [data-panel=input]`).click();
+    await p.locator('#wb-stdin').fill('CASE_7\n');
+    await modeBtn(p, 'Study').click();
+    await p.locator('#editor').waitFor();
+    assert.equal(await p.locator('#editor').inputValue(), '# Welcome\nKeep this thought');
+    assert.equal(await p.locator('#left').isVisible(), true);
+    await modeBtn(p, 'Code').click();
+    assert.deepEqual(await p.evaluate(() => { const c = document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror; return [c.getValue().startsWith('// working draft'), c.getCursor().line]; }), [true, 4]);
+    await p.locator(`${wb} [data-panel=input]`).click();
+    assert.equal(await p.locator('#wb-stdin').inputValue(), 'CASE_7\n');
+    assert.equal((await calls(p, 'project', 'write')).length, 0, 'switching never writes project files');
+  });
+
+  await test('a run keeps going while you study: its output is there when you come back; a restart opens code mode with the draft', async p => {
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    // The simulated program prints later than the switch to study.
+    await p.evaluate(() => { const orig = window.myobsidianDesktop.codeRun; window.myobsidianDesktop.codeRun = async (a, b) => { if (a !== 'start' || b.mode !== 'run') return orig(a, b); const id = 'slow-1'; const emit = window.__fake.emit; emit({ id, type: 'phase', phase: 'compiling' }); setTimeout(() => { emit({ id, type: 'phase', phase: 'running' }); emit({ id, type: 'output', stream: 'stdout', text: 'LATE_OUTPUT' }); emit({ id, type: 'end', status: 'success', exitCode: 0 }); }, 700); return { ok: true, id }; }; });
+    await p.locator(`${wb} [data-wb=run]`).click();
+    await modeBtn(p, 'Study').click();
+    await sleep(1000);
+    await modeBtn(p, 'Code').click();
+    assert.match(await p.locator(`${wb} .wb-output`).innerText(), /LATE_OUTPUT/);
+    assert.match(await p.locator(`${wb} .wb-run-state`).innerText(), /Finished/);
+    await p.evaluate(() => document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror.replaceRange('// after restart\n', { line: 0, ch: 0 }));
+    await sleep(400);
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    await cmOf(p).waitFor();
+    assert.equal(await modeBtn(p, 'Code').getAttribute('aria-pressed'), 'true', 'back in code mode');
+    assert.match(await cmText2(p), /^\/\/ after restart/);
+  });
+
+  await test('Run current file sends no other sources; Run project lets you tick the files of one program', async p => {
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    assert.match(await p.locator(`${wb} [data-wb=run]`).innerText(), /Run current file/);
+    await p.locator(`${wb} [data-wb=run]`).click();
+    await p.waitForFunction(() => /Finished/.test(document.querySelector('#code-workbench .wb-run-state').textContent));
+    assert.deepEqual((await calls(p, 'run', 'start')).at(-1).sources, []);
+    await p.locator(`${wb} [data-wb=run-project]`).click();
+    await p.locator(`${wb} .wb-run-project [data-src="util.cpp"]`).waitFor();
+    assert.equal(await p.locator(`${wb} .wb-run-project [data-src="main.cpp"]`).isDisabled(), true, 'the open file is always in');
+    await p.locator(`${wb} .wb-run-project [data-src="util.cpp"]`).check();
+    await p.locator(`${wb} [data-wb=run-chosen]`).click();
+    await p.waitForFunction(n => window.__calls.filter(c => c[1] === 'start').length === n, 2);
+    assert.deepEqual((await calls(p, 'run', 'start')).at(-1).sources, ['util.cpp']);
+  });
+
+  await test('Ctrl+P finds a project file and Ctrl+G goes to a line in code mode only; in study mode Ctrl+P is still the command palette', async p => {
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    await p.keyboard.press('Control+p');
+    await p.locator(`${wb} .wb-quick-input`).fill('util');
+    await p.locator(`${wb} .wb-quick-list [data-q]`).first().waitFor();
+    assert.deepEqual((await p.locator(`${wb} .wb-quick-list [data-q]`).allInnerTexts()).map(x => x.trim()).sort(), ['util.cpp', 'util.h inc']);
+    while (!/util.cpp/.test(await p.locator(`${wb} .wb-quick-list .is-active`).innerText())) await p.keyboard.press('ArrowDown');
+    await p.keyboard.press('Enter');
+    await p.waitForFunction(() => /util\(\)/.test(document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror.getValue()));
+    await p.locator(`${wb} .wb-tab`, { hasText: 'main.cpp' }).click();
+    await p.keyboard.press('Control+g');
+    await p.locator('#modal-input').fill('5');
+    await p.keyboard.press('Enter');
+    assert.equal(await p.evaluate(() => document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror.getCursor().line), 4);
+    await modeBtn(p, 'Study').click();
+    await p.keyboard.press('Control+p');
+    await p.locator('#modal-input').waitFor();
+    assert.equal(await p.locator(`${wb} .wb-quick`).isVisible(), false);
+  });
+
+  await test('each language is highlighted from the first open (Python, JS, TS, TSX, Go, Rust, SQL, CSS)', async p => {
+    const samples = { 'code.py': ['python', 'def double(x): return x * 2'], 'code.js': ['javascript', 'const double = x => x * 2;'], 'code.ts': ['javascript', 'const count: number = 2;'],
+      'code.tsx': ['jsx', 'const row = <p>Demo</p>;'], 'code.go': ['go', 'package main\nfunc main() {}'], 'code.rs': ['rust', 'fn main() { let count = 3; }'],
+      'code.sql': ['sql', 'SELECT count(*) FROM notes;'], 'code.css': ['css', 'body { color: red; }'] };
+    await p.evaluate(s => { const f = window.__fake.get('files'); f['ext-1'] = { ...f['ext-1'], ...Object.fromEntries(Object.entries(s).map(([n, [, b]]) => [n, b])) }; window.__fake.set('files', f); }, samples);
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    const out = [];
+    for (const [name, [mode, body]] of Object.entries(samples)) {
+      await p.locator(`${wb} [data-node="${name}"]`).click();
+      await p.waitForFunction(b => document.querySelector('#code-workbench .wb-cm .CodeMirror')?.CodeMirror.getValue() === b, body);
+      out.push(await p.locator(`${wb} .wb-cm .CodeMirror`).evaluate(async (el, n) => { await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r))); return { n, mode: el.CodeMirror.getMode().name, styled: el.querySelectorAll('.CodeMirror-code [class*="cm-"]').length }; }, name));
+    }
+    for (const r of out) { assert.equal(r.mode, samples[r.n][0], r.n); assert.ok(r.styled > 0, r.n + ' has highlighting'); }
+  });
+
+  await test('32 open files, the last one unsaved and selected: after a restart all 32 come back with that one selected and its draft', async p => {
+    const names = Array.from({ length: 32 }, (_, i) => 'lesson-' + String(i + 1).padStart(2, '0') + '.cpp');
+    await p.evaluate(n => { const f = window.__fake.get('files'); for (const x of n) f['ext-1'][x] = '// Original ' + x + '\n'; window.__fake.set('files', f); }, names);
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    for (const n of names) { await p.locator(`${wb} [data-node="${n}"]`).click(); await p.waitForFunction(x => document.querySelector('#code-workbench .wb-cm .CodeMirror')?.CodeMirror.getValue().includes(x), n); }
+    await p.evaluate(() => document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror.replaceRange('// unfinished solution\n', { line: 0, ch: 0 }));
+    await sleep(400);
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    await p.waitForFunction(() => document.querySelectorAll('#code-workbench .wb-tab').length >= 32, null, { timeout: 15000 });
+    assert.equal(await p.locator(`${wb} .wb-tab`).count(), 32);
+    assert.equal(await p.locator(`${wb} .wb-tab.is-active`).getAttribute('data-tab'), 'lesson-32.cpp');
+    assert.match(await cmText2(p), /^\/\/ unfinished solution/);
+  });
+
+  await test('workspaces: A\'s drafts and tabs come back after visiting B; a new folder at A\'s path gets none of them; an older draft kept under the project id is still found', async p => {
+    await p.evaluate(() => { const f = window.__fake.get('files'); f['ext-B'] = { 'b.cpp': 'int main(){}\n' }; f['ext-NEW'] = { 'main.cpp': 'int main(){ return 9; }\n' }; f['ext-OLD'] = { 'main.cpp': '#include <iostream>\nint main(){}\n' }; window.__fake.set('files', f); });
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    await p.evaluate(() => document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror.replaceRange('// A draft\n', { line: 0, ch: 0 }));
+    // Visit B (another project), then come back to A with a new session id but the same workspace.
+    await useProject(p, { id: 'ext-B', workspaceId: 'ws-B', name: 'B', root: 'C:/fake/B' });
+    await p.locator(`${wb} [data-wb=refresh]`).click();
+    await p.locator(`${wb} [data-node="b.cpp"]`).waitFor();
+    assert.equal(await p.locator(`${wb} .wb-tab`).count(), 0);
+    await p.evaluate(() => { const f = window.__fake.get('files'); f['ext-1b'] = f['ext-1']; window.__fake.set('files', f); });
+    await useProject(p, { id: 'ext-1b', workspaceId: 'ws-A', name: 'proj', root: 'C:/fake/proj' });
+    await p.locator(`${wb} [data-wb=refresh]`).click();
+    await p.waitForFunction(() => /^\/\/ A draft/.test(document.querySelector('#code-workbench .wb-cm .CodeMirror')?.CodeMirror.getValue() || ''));
+    // A new folder put at the same path: a different workspace, nothing of A shows.
+    await useProject(p, { id: 'ext-NEW', workspaceId: 'ws-NEW', name: 'proj', root: 'C:/fake/proj' });
+    await p.locator(`${wb} [data-wb=refresh]`).click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).waitFor();
+    assert.equal(await p.locator(`${wb} .wb-tab`).count(), 0, 'no tabs from A');
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await p.waitForFunction(() => /return 9/.test(document.querySelector('#code-workbench .wb-cm .CodeMirror')?.CodeMirror.getValue() || ''));
+    assert.equal(await p.locator(`${wb} .wb-tab.is-dirty`).count(), 0, 'no draft from A');
+    // A draft written before workspaces (kept under the project id) moves to its workspace the first time.
+    await p.evaluate(() => { localStorage.setItem('mo:wb:draft:ext-OLD:main.cpp', JSON.stringify({ text: '// old draft\nint main(){}\n', revision: 'x' })); localStorage.setItem('mo:wb:open:ext-OLD', JSON.stringify({ files: ['main.cpp'], active: 'main.cpp' })); });
+    await useProject(p, { id: 'ext-OLD', workspaceId: 'ws-OLD', name: 'old', root: 'C:/fake/old' });
+    await p.locator(`${wb} [data-wb=refresh]`).click();
+    await p.waitForFunction(() => /^\/\/ old draft/.test(document.querySelector('#code-workbench .wb-cm .CodeMirror')?.CodeMirror.getValue() || ''));
+    assert.equal(await p.evaluate(() => localStorage.getItem('mo:wb:draft:ext-OLD:main.cpp')), null, 'moved, not copied');
+  });
+
+  // The code assistant: what goes out with each choice, project separation, Codex's one-time question.
+  async function assistantRoute(p, reply = b => ({ text: 'ANSWER to ' + b.question })) {
+    const sent = [];
+    await p.route('**/api/code-assistant', async r => {
+      const b = JSON.parse(r.request().postData()); sent.push(b);
+      const out = await reply(b, sent);
+      if (out?.status) return r.fulfill({ status: out.status, contentType: 'application/json', body: JSON.stringify(out.json) });
+      return r.fulfill({ json: out });
+    });
+    return sent;
+  }
+  const assist = p => p.getByRole('complementary', { name: 'Code assistant' });
+  const ask = async (p, q) => { await assist(p).getByRole('textbox', { name: /ask the code assistant/i }).fill(q); await assist(p).getByRole('button', { name: 'Send', exact: true }).click(); };
+
+  await test('assistant: says what will be sent; selection / whole file with unsaved changes / question only send exactly that; too long is refused', async p => {
+    await p.evaluate(() => { const ai = JSON.parse(localStorage.getItem('mo:ai') || '{}'); localStorage.setItem('mo:ai', JSON.stringify({ ...ai, keys: { custom: 'k' }, baseUrl: 'https://fixture.invalid/v1', models: { custom: 'm' }, use: { ...(ai.use || {}), code: 'custom' } })); });
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    const sent = await assistantRoute(p);
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    await p.evaluate(() => { const c = document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror; c.replaceRange('// unsaved line\n', { line: 0, ch: 0 }); c.setSelection({ line: 3, ch: 0 }, { line: 4, ch: 0 }); });
+    await sleep(250);
+    assert.match(await assist(p).locator('.wa-will').innerText(), /the 2 selected lines of main\.cpp/);
+    await ask(p, 'What is x?');
+    await assist(p).getByText('ANSWER to What is x?').waitFor();
+    assert.deepEqual({ sel: sent[0].selection, file: sent[0].filename, action: sent[0].action, provider: sent[0].provider }, { sel: '  int x = 42;\n', file: 'main.cpp', action: 'ask', provider: 'custom' });
+    await assist(p).getByRole('radio', { name: 'Attach current file' }).check();
+    assert.match(await assist(p).locator('.wa-will').innerText(), /all of main\.cpp .*unsaved changes included/);
+    await ask(p, 'Whole file?');
+    await assist(p).getByText('ANSWER to Whole file?').waitFor();
+    assert.ok(sent[1].selection.startsWith('// unsaved line\n#include <iostream>'), 'the editor text, not the disk');
+    await assist(p).getByRole('radio', { name: 'Question only' }).check();
+    await ask(p, 'Just asking');
+    await assist(p).getByText('ANSWER to Just asking').waitFor();
+    assert.deepEqual([sent[2].selection, sent[2].filename, sent[2].diagnostics], ['', '', '']);
+    assert.deepEqual(sent[2].history.map(h => h.role), ['user', 'assistant', 'user', 'assistant'], 'this project\'s conversation so far');
+    // A file too long to attach whole: nothing is sent, the message says to select a part.
+    await assist(p).getByRole('radio', { name: 'Attach current file' }).check();
+    await p.evaluate(() => document.querySelector('#code-workbench .wb-cm .CodeMirror').CodeMirror.replaceRange('x'.repeat(70000) + '\n', { line: 0, ch: 0 }));
+    await sleep(250);
+    assert.match(await assist(p).locator('.wa-will').innerText(), /too long to attach whole/);
+    await ask(p, 'Too long');
+    await sleep(300);
+    assert.equal(sent.length, 3, 'nothing sent');
+  });
+
+  await test('assistant: a reply that arrives after switching projects stays with the project that asked; the other project never sees or sends it', async p => {
+    await p.evaluate(() => { const ai = JSON.parse(localStorage.getItem('mo:ai') || '{}'); localStorage.setItem('mo:ai', JSON.stringify({ ...ai, keys: { custom: 'k' }, baseUrl: 'https://fixture.invalid/v1', models: { custom: 'm' }, use: { ...(ai.use || {}), code: 'custom' } })); const f = window.__fake.get('files'); f['ext-B'] = { 'b.cpp': 'int main(){}\n' }; window.__fake.set('files', f); });
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    let release; const held = new Promise(r => { release = r; });
+    const sent = await assistantRoute(p, async b => { if (b.question === 'A late') await held; return { text: 'REPLY ' + b.question }; });
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    await assist(p).getByRole('radio', { name: 'Question only' }).check();
+    await ask(p, 'A late');
+    await useProject(p, { id: 'ext-B', workspaceId: 'ws-B', name: 'B', root: 'C:/fake/B' });
+    await p.locator(`${wb} [data-wb=refresh]`).click();
+    await p.locator(`${wb} [data-node="b.cpp"]`).waitFor();
+    await assist(p).getByRole('radio', { name: 'Question only' }).check();
+    await ask(p, 'B question');
+    await assist(p).getByText('REPLY B question').waitFor();
+    release(); await sleep(400);
+    assert.equal(await assist(p).getByText(/A late/).count(), 0, 'nothing of A in B');
+    assert.deepEqual(sent.find(b => b.question === 'B question').history, []);
+    await useProject(p, A);
+    await p.locator(`${wb} [data-wb=refresh]`).click();
+    await assist(p).getByText('REPLY A late').waitFor();
+  });
+
+  await test('assistant with Codex: the one-time question about this computer\'s Codex instructions appears once, and only a click retries (once, with the flag)', async p => {
+    await p.evaluate(() => { const ai = JSON.parse(localStorage.getItem('mo:ai') || '{}'); localStorage.setItem('mo:ai', JSON.stringify({ ...ai, use: { ...(ai.use || {}), code: 'codex' } })); });
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    const sent = await assistantRoute(p, b => (b.useNativeCodexInstructions ? { text: 'WITH NATIVE' } : { status: 409, json: { error: 'consent', code: 'codexGlobalInstructionsConsent' } }));
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    await assist(p).getByRole('radio', { name: 'Question only' }).check();
+    await ask(p, 'Codex q');
+    const consent = assist(p).getByRole('button', { name: /Continue with this computer’s Codex global instructions/ });
+    await consent.waitFor();
+    await sleep(500);
+    assert.equal(sent.length, 1, 'no automatic retry');
+    await consent.click();
+    await assist(p).getByText('WITH NATIVE').waitFor();
+    assert.equal(sent.length, 2); assert.equal(sent[1].useNativeCodexInstructions, true); assert.equal(sent[0].useNativeCodexInstructions, undefined);
+    assert.equal(await consent.count(), 0);
+    await ask(p, 'Next q');
+    await sleep(300);
+    assert.equal(sent[2].useNativeCodexInstructions, undefined, 'not remembered for the next question');
+  });
+
+  await test('code font and size: Settings → Appearance changes the project editor (and source files opened from notes), not the note text; kept after reopening', async p => {
+    await useProject(p, A);
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await cmOf(p).waitFor();
+    const noteSize = await p.evaluate(() => getComputedStyle(document.getElementById('editor')).fontSize);
+    await p.evaluate(() => import('/settings.js').then(m => m.openSettings('appearance')));
+    const size = p.getByRole('spinbutton', { name: 'Code font size' });
+    await size.fill('19'); await size.press('Tab');
+    await p.locator('.settings-close').click();
+    assert.equal(await cmOf(p).evaluate(el => getComputedStyle(el).fontSize), '19px');
+    await sleep(300);
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    await cmOf(p).waitFor();
+    assert.equal(await cmOf(p).evaluate(el => getComputedStyle(el).fontSize), '19px');
+    await modeBtn(p, 'Study').click();
+    assert.equal(await p.evaluate(() => getComputedStyle(document.getElementById('editor')).fontSize), noteSize, 'note text unchanged');
+    assert.equal(await p.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--font-code-size').trim()), '19px');
   });
 
   await browser.close();

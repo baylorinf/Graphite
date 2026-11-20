@@ -172,6 +172,15 @@ The result is an editable Markdown note: an overview, the main points by section
 
 **Code editor:** open a `.cpp`, `.h`, `.py` or other supported source file in the file tree, or choose **New code file** to begin an exercise. Edit it directly, search with `Ctrl+F`, indent a selection with `Tab` / `Shift+Tab` and save with `Ctrl+S` (the file's encoding and line endings stay as they were). **Copy line link** gives a link like `[[main.cpp#L42]]` for your solution note; clicking it later opens that line. If another program edits the same file, **Save a copy** keeps your version separately. Compiling and running code take place in your usual development environment.
 
+## Code mode (Study / Code)
+The **Study** and **Code** buttons at the top of the left bar switch between your notes and programming. You can switch at any time, also while a program runs, while the code assistant is answering, or with unsaved notes or code: nothing is stopped or lost, and each side comes back as you left it. Graphite also remembers the mode and the project when you close it.
+
+- **Project:** **Open folder…** chooses any folder on this computer (or **Use this vault**). Its real folder tree is on the left; open several files as tabs. Unsaved changes are kept even after closing Graphite.
+- **Run:** **▶ Run current file** builds and runs only the open file (two exercises with their own `main()` in one folder stay separate). **Run project…** lets you tick the source files that make one program. Type the program's input under **Input**; output, problems and the debugger (breakpoints, step, variables) are in the panel below.
+- **Code assistant** (right): explains a selection, explains compile errors or suggests a change, with the AI chosen for *Code assistant* in **Settings → AI**. Choose what is sent: **Current selection**, **Attach current file** (as it is in the editor, unsaved changes included) or **Question only**; the line above the box says exactly what will go. Replies are only shown: nothing is run or changed. Each project has its own conversation.
+- **Keys in code mode:** `Ctrl+P` finds a file in the project, `Ctrl+G` goes to a line, `F5` debug, `Ctrl+F5` run, `F9` breakpoint, `F10`/`F11` step. In study mode these keys keep their usual meaning.
+- **Code font:** **Settings → Appearance → Code font** and **Code font size** change the project editor and source files opened from notes; note text is not affected.
+
 ## Syncing across devices
 Graphite syncs through a cloud folder. Put your vault inside OneDrive (built into Windows), Dropbox, Google Drive or iCloud Drive, and open the same folder on each computer. **Settings → Sync** shows whether your vault is synced and where your cloud folders are.
 

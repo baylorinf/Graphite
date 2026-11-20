@@ -1684,6 +1684,8 @@ async function newCodeFile() {
 const COMMANDS = [
   { id: 'sjtu-canvas', name: 'SJTU Canvas courses, files and deadlines', run: () => openCustomTab('sjtu-canvas', 'courses', {here:true}) },
   { id:'new-code-file', name:'Create a code file', run:newCodeFile },
+  { id:'mode-study', name:'Study mode', run: () => setAppMode('study') },
+  { id:'mode-code', name:'Code mode', available: () => workbenchAvailable(), run: () => setAppMode('code') },
   { id:'code-workbench', name:'Open the code workbench (project folder, run and debug C++)', available: () => workbenchAvailable(), run: () => openCustomTab('code-workbench', 'workbench') },
   { id: 'study-reference', name: 'Study PDF beside a note', available: () => (S.view === 'note' && !!S.current) || (S.view === 'file' && /\.pdf$/i.test(S.filePath || '')), run: openStudyReference },
   { id: 'new-note', name: 'Create new note', kbd: 'Alt+N', run: () => newNote() },
@@ -1800,7 +1802,7 @@ function changeLanguage(code) {
   window.myobsidianDesktop?.setLanguage(code);
   refreshSettings();
   canvasWorkspace.relabel();
-  codeWorkbench.relabel();
+  codeWorkbench.relabel(); relabelMode();
   renderTabs();
   if (activeTab()?.kind === 'empty') renderStartPage();
   if (S.view === 'graph') { readGraphColors(); drawGraph(); }
@@ -2800,6 +2802,52 @@ const codeWorkbench = createCodeWorkbench($('#code-workbench'), {
   vaultFolders: () => [...S.folders].sort(), onShowTab: () => openCustomTab('code-workbench', 'workbench'),
 });
 TABS.providers.set(codeWorkbench.id, codeWorkbench);
+
+/* ---------- Study / Code ----------
+   Code mode is the code workbench in front: the project's own files on the left, the editor with run and debug,
+   and the code assistant; Graphite's note sidebars step aside. Study mode is everything else. The two buttons
+   are always there; switching never stops a running program or an assistant's answer, and each side comes back
+   as it was (study: the last tab you had; code: the project, open files, cursor and drafts). The mode follows the
+   tab in front, so a restart opens where you left. */
+let lastStudyTab = null;
+const isCodeTab = tab => tab?.kind === 'custom' && tab.provider === codeWorkbench.id;
+function updateMode() {
+  const tab = activeTab(), code = isCodeTab(tab);
+  if (tab && !code) lastStudyTab = tab.id;
+  document.body.classList.toggle('mode-code', code);
+  for (const b of document.querySelectorAll('#app-mode [data-mode]')) {
+    const on = (b.dataset.mode === 'code') === code;
+    b.setAttribute('aria-pressed', String(on)); b.classList.toggle('is-active', on);
+  }
+}
+function relabelMode() {
+  const box = $('#app-mode');
+  if (!box) return;
+  box.hidden = !workbenchAvailable();
+  box.setAttribute('aria-label', t('mode.label'));
+  for (const b of box.querySelectorAll('[data-mode]')) { b.textContent = t('mode.' + b.dataset.mode); b.title = t('mode.' + b.dataset.mode + 'Title'); }
+}
+async function setAppMode(mode) {
+  if (mode === 'code') {
+    if (!workbenchAvailable()) { toast(t('mode.desktopOnly')); return; }
+    if (!isCodeTab(activeTab())) await openCustomTab(codeWorkbench.id, 'workbench');
+    return;
+  }
+  if (!isCodeTab(activeTab())) return;
+  const back = TABS.list.find(x => x.id === lastStudyTab) || TABS.list.find(x => !isCodeTab(x));
+  if (back) await activateTab(back.id); else newTab();
+}
+$('#app-mode')?.addEventListener('click', e => { const m = e.target.closest('[data-mode]')?.dataset.mode; if (m) setAppMode(m); });
+relabelMode();
+// In code mode only: Ctrl+P finds a project file, Ctrl+G goes to a line (in study mode they keep their meaning).
+window.addEventListener('keydown', e => {
+  if (!document.body.classList.contains('mode-code') || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+  if (settingsOpen() || !$('#modal').classList.contains('hidden') || document.querySelector('.plugin-modal, .review-modal')) return;
+  const k = e.key.toLowerCase();
+  if (k !== 'p' && k !== 'g') return;
+  e.preventDefault(); e.stopImmediatePropagation();
+  if (k === 'p') codeWorkbench.quickOpen(); else codeWorkbench.askLine();
+}, true);
 const tabById = id => TABS.list.find(x => x.id === id) || null;
 const activeTab = () => tabById(TABS.active);
 const newTabObj = (o = {}) => ({ id: 't' + (++TABS.seq), kind: 'empty', path: null, preview: false, history: [], hIdx: -1, ...o });
@@ -2924,6 +2972,7 @@ async function activateTab(id) {
       else { tab.kind = 'empty'; tab.path = null; showStartPage(); }
     }
   } finally { TABS.restoring = wasRestoring; }
+  updateMode();
   updateTopbar(); renderTabs(); persistTabs();
 }
 

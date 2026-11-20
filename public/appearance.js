@@ -2,7 +2,7 @@
 // Saved in this app's local storage, so it survives updates and doesn't travel with a synced vault.
 
 const KEY = 'mo:appearance';
-export const DEFAULTS = { textFont: '', codeFont: '', fontSize: 16, editorMono: false };
+export const DEFAULTS = { textFont: '', codeFont: '', fontSize: 16, codeSize: 14, editorMono: false };
 const TEXT_FALLBACK = '-apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, "Microsoft YaHei", "Microsoft JhengHei", "Yu Gothic UI", Meiryo, "Malgun Gothic", sans-serif';
 const CODE_FALLBACK = '"Cascadia Code", Consolas, Menlo, "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC", "Yu Gothic UI", "Malgun Gothic", monospace';
 
@@ -21,8 +21,13 @@ export function applyAppearance(p = loadAppearance()) {
   else { root.style.removeProperty('--font-text'); delete root.dataset.textFont; }
   root.style.setProperty('--font-code', p.codeFont ? `${quote(p.codeFont)}, ${CODE_FALLBACK}` : CODE_FALLBACK);
   root.style.setProperty('--font-size', `${Math.min(28, Math.max(10, Number(p.fontSize) || 16))}px`);
+  // Code only (the project editor and source files opened from notes); note text keeps its own size.
+  root.style.setProperty('--font-code-size', `${codeSize(p)}px`);
   if (p.editorMono) root.dataset.editorMono = ''; else delete root.dataset.editorMono;
+  // Code editors measure their lines again (CodeMirror needs to, after a font change).
+  try { window.dispatchEvent(new CustomEvent('graphite-appearance')); } catch { /* old browser */ }
 }
+export const codeSize = p => Math.min(28, Math.max(10, Number(p?.codeSize) || 14));
 
 /* ---------- finding installed fonts ---------- */
 const ctx = document.createElement('canvas').getContext('2d');

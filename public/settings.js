@@ -432,6 +432,14 @@ async function renderAppearance(token) {
   };
   fontRow('textFont', t('settings.textFont'), t('settings.textFontDesc'), fonts.all);
   fontRow('codeFont', t('settings.codeFont'), t('settings.codeFontDesc'), fonts.mono.length ? fonts.mono : fonts.all);
+  // Code font size: the project editor and source files only (note text keeps "Font size" below).
+  const codeSizeRow = new PM.Setting(content).setName(t('settings.codeSize')).setDesc(t('settings.codeSizeDesc'));
+  codeSizeRow.addText(tx => {
+    Object.assign(tx.inputEl, { type: 'number', min: 10, max: 28, step: 1 });
+    tx.inputEl.setAttribute('aria-label', t('settings.codeSize')); tx.inputEl.dataset.appearance = 'codeSize';
+    tx.setValue(String(p.codeSize || DEFAULTS.codeSize));
+    tx.inputEl.addEventListener('change', () => { const v = Math.min(28, Math.max(10, Math.round(Number(tx.inputEl.value) || DEFAULTS.codeSize))); tx.inputEl.value = String(v); set({ codeSize: v }); });
+  });
 
   const size = new PM.Setting(content).setName(t('settings.fontSize'));
   const sizeDesc = () => size.setDesc(`${t('settings.fontSizeDesc')} (${p.fontSize}px)`);

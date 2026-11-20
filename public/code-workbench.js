@@ -7,6 +7,7 @@
 // with changes are saved; if a save fails, nothing is compiled.
 import { t } from '/i18n.js';
 import { sourceFormat, editorFor } from '/code-editor.js';
+import { createAssistant } from '/code-assistant-pane.js';
 
 const CPP = /\.(cpp|cc|cxx|c\+\+)$/i;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -59,6 +60,11 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
   let unsubscribe = null, built = false, visible = false, cursorLine = null, pausedMark = null;
   let persistBad = false;          // unsaved text couldn't be kept in storage: switching projects waits, Retry shows
   let pendingProject = undefined;  // a project switch held back until the unsaved text is kept
+  let assistant = null;            // the code assistant beside the editor (code-assistant-pane.js)
+  // What is kept for a project (drafts, open files, cursors, breakpoints, input, assistant chat) belongs to its
+  // workspace: the same folder visited again gets it back, a new folder put at the same path does not. Requests
+  // to the desktop app, and checks that a late answer still belongs to the open project, use proj.id.
+  const ws = (p = proj) => (p ? p.workspaceId || p.id : '');
 
   /* ---------- layout ---------- */
   function build() {
@@ -85,14 +91,21 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
             <span class="wb-spacer"></span>
             <button type="button" data-wb="save"></button>
             <span class="wb-sep"></span>
-            <button type="button" data-wb="build"></button><button type="button" data-wb="run" class="wb-primary"></button><button type="button" data-wb="debug"></button><button type="button" data-wb="stop"></button>
+            <button type="button" data-wb="build"></button><button type="button" data-wb="run" class="wb-primary"></button><button type="button" data-wb="run-project"></button><button type="button" data-wb="debug"></button><button type="button" data-wb="stop"></button>
+            <button type="button" data-wb="assist" class="wb-assist-toggle" aria-pressed="true"></button>
             <span class="wb-debug-controls"><button type="button" data-wb="continue"></button><button type="button" data-wb="next"></button><button type="button" data-wb="step"></button><button type="button" data-wb="finish"></button></span>
           </div>
+          <div class="wb-run-project" hidden></div>
           <div class="wb-persist" role="alert" hidden></div>
           <div class="wb-problem" hidden></div>
           <div class="wb-cm"><div class="wb-empty"></div></div>
           <div class="wb-tools" role="status"></div>
         </section>
+        <aside class="wb-assist-host"></aside>
+      </div>
+      <div class="wb-quick" role="dialog" aria-modal="true" hidden>
+        <input type="search" class="wb-quick-input" role="combobox" aria-expanded="true" aria-autocomplete="list" aria-controls="wb-quick-list" spellcheck="false">
+        <ul class="wb-quick-list" id="wb-quick-list" role="listbox"></ul>
       </div>
       <footer class="wb-panel">
         <div class="wb-panel-tabs" role="tablist">
@@ -107,7 +120,10 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
         </div>
       </footer>`;
     root.addEventListener('click', onClick);
-    root.querySelector('#wb-stdin').addEventListener('input', e => { if (proj) store.set('wb:stdin:' + proj.id, e.target.value); });
+    assistant = createAssistant(root.querySelector('.wb-assist-host'), { getContext: assistContext, toast });
+    if (store.get('wb:assistHidden', false)) root.classList.add('hide-assist');
+    setupQuick();
+    root.querySelector('#wb-stdin').addEventListener('input', e => { if (proj) store.set('wb:stdin:' + ws(), e.target.value); });
     relabel();
   }
   function relabel() {
@@ -116,13 +132,16 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     L('[data-wb=choose]', 'wb.choose', 'wb.chooseTitle'); L('[data-wb=vault]', 'wb.useVault', 'wb.useVaultTitle');
     L('[data-wb=new-file]', 'wb.newFileShort', 'wb.newFile'); L('[data-wb=new-folder]', 'wb.newFolderShort', 'wb.newFolder');
     root.querySelector('[data-wb=refresh]').title = t('wb.refresh');
-    L('[data-wb=save]', 'wb.save', 'wb.saveTitle'); L('[data-wb=build]', 'wb.build', 'wb.buildTitle'); L('[data-wb=run]', 'wb.run', 'wb.runTitle');
+    L('[data-wb=save]', 'wb.save', 'wb.saveTitle'); L('[data-wb=build]', 'wb.build', 'wb.buildTitle'); L('[data-wb=run]', 'wb.runFile', 'wb.runFileTitle'); L('[data-wb=run-project]', 'wb.runProject', 'wb.runProjectTip');
     L('[data-wb=debug]', 'wb.debug', 'wb.debugTitle'); L('[data-wb=stop]', 'wb.stop');
     L('[data-wb=continue]', 'wb.continue', 'wb.continueTitle'); L('[data-wb=next]', 'wb.next', 'wb.nextTitle'); L('[data-wb=step]', 'wb.step', 'wb.stepTitle'); L('[data-wb=finish]', 'wb.finish', 'wb.finishTitle');
     L('[data-wb=toggle-tree]', 'wb.files'); L('.wb-tree-title', 'wb.files');
     L('[data-panel=output]', 'wb.output'); L('[data-panel=input]', 'wb.input'); L('[data-panel=problems]', 'wb.problems'); L('[data-panel=debug]', 'wb.variables');
     L('.wb-input-label', 'wb.inputHint');
     root.querySelector('.wb-tree').setAttribute('aria-label', t('wb.files'));
+    L('[data-wb=assist]', 'wa.toggle', 'wa.toggleTitle'); root.querySelector('[data-wb=assist]').setAttribute('aria-pressed', String(!root.classList.contains('hide-assist')));
+    root.querySelector('.wb-quick').setAttribute('aria-label', t('wb.quickOpen')); root.querySelector('.wb-quick-input').placeholder = t('wb.quickOpenPh'); root.querySelector('.wb-quick-input').setAttribute('aria-label', t('wb.quickOpen'));
+    assistant?.relabel();
     renderAll();
   }
   function renderAll() { renderProject(); renderTree(); renderTabs(); renderToolbar(); renderPanel(); renderTools(); }
@@ -140,6 +159,23 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     un.hidden = !(proj && !proj.available);
     if (!un.hidden) un.textContent = t('wb.unavailable', { path: proj.root });
   }
+  // Before workspaces, a project's drafts, open files, breakpoints and input were kept under its id. The first
+  // time that project is opened with a workspace, they move there (once; nothing already kept is replaced).
+  function migrateLegacy(p) {
+    const to = ws(p), from = p.id;
+    if (!to || to === from) return;
+    try {
+      for (const k of ['open', 'bp', 'stdin']) {
+        const old = localStorage.getItem('mo:wb:' + k + ':' + from);
+        if (old != null && localStorage.getItem('mo:wb:' + k + ':' + to) == null && store.set('wb:' + k + ':' + to, JSON.parse(old))) localStorage.removeItem('mo:wb:' + k + ':' + from);
+      }
+      const prefix = 'mo:wb:draft:' + from + ':';
+      for (const key of Object.keys(localStorage).filter(k => k.startsWith(prefix))) {
+        const dest = 'wb:draft:' + to + ':' + key.slice(prefix.length);
+        if (localStorage.getItem('mo:' + dest) == null && store.set(dest, JSON.parse(localStorage.getItem(key)))) localStorage.removeItem(key);
+      }
+    } catch { /* storage blocked: the old drafts stay where they are */ }
+  }
   async function loadProject(p) {
     const changed = !proj || !p || proj.id !== p.id;
     // Leaving a project: its unsaved text must be safely kept first. If storage fails, stay (the text stays open
@@ -147,13 +183,15 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     if (changed && proj && !persistOpen()) { pendingProject = p; toast(t('wb.switchBlocked')); renderPersist(); return false; }
     pendingProject = undefined;
     proj = p;
+    if (changed && proj) migrateLegacy(proj);
+    if (changed) assistant?.setProject(proj ? ws() : null);
     if (changed) {
       for (const timer of draftTimers.values()) clearTimeout(timer); // already written by persistOpen above
       draftTimers.clear();
       for (const b of buffers.values()) b.doc = null;
       buffers.clear(); order = []; active = null; wanted = null; openListBad = false; checkPersist(); dirs.clear(); expanded.clear(); expanded.add(''); selectedDir = '';
-      breakpoints = new Map(Object.entries(proj ? store.get('wb:bp:' + proj.id, {}) : {}).map(([k, v]) => [k, new Set(v)]));
-      const stdin = root.querySelector('#wb-stdin'); if (stdin) stdin.value = proj ? store.get('wb:stdin:' + proj.id, '') : '';
+      breakpoints = new Map(Object.entries(proj ? store.get('wb:bp:' + ws(), {}) : {}).map(([k, v]) => [k, new Set(v)]));
+      const stdin = root.querySelector('#wb-stdin'); if (stdin) stdin.value = proj ? store.get('wb:stdin:' + ws(), '') : '';
       if (cm) cm.swapDoc(CM.Doc('', 'text/plain'));
     }
     renderProject();
@@ -161,8 +199,10 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
       await listDir('').catch(e => toast(e.message));
       if (changed) {
         // Reopen the files that were open in this project last time (their unsaved drafts included).
-        const saved = store.get('wb:open:' + proj.id, null);
-        for (const p of saved?.files || []) await openFile(p, { quiet: true, focus: false }).catch(() => {});
+        const saved = store.get('wb:open:' + ws(), null);
+        const pid = proj.id;
+        for (const p of saved?.files || []) { await openFile(p, { quiet: true, focus: false }).catch(() => {}); if (proj?.id !== pid) return; }
+        for (const [path, pos] of Object.entries(saved?.cursors || {})) { const b = buffers.get(path); if (b?.doc && pos) b.doc.setCursor(pos); }
         if (saved?.active && buffers.has(saved.active)) activate(saved.active);
         else if (order.length) activate(order[0]);
       }
@@ -260,8 +300,9 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
         'Ctrl-S': () => saveActive(), 'Cmd-S': () => saveActive(), F5: () => start(run ? 'continue' : 'debug'), 'Ctrl-F5': () => start('run'),
         F9: c => toggleBreakpoint(active, c.getCursor().line + 1), F10: () => debugCmd('next'), F11: () => debugCmd('step'), 'Shift-F11': () => debugCmd('finish') },
     });
+    window.addEventListener('graphite-appearance', () => cm?.refresh()); // code font or size changed
     cm.on('gutterClick', (c, line) => toggleBreakpoint(active, line + 1));
-    cm.on('cursorActivity', markCursorLine);
+    cm.on('cursorActivity', () => { markCursorLine(); clearTimeout(assistTimer); assistTimer = setTimeout(() => assistant?.refresh(), 150); });
     cm.on('change', () => {
       const b = buffers.get(active);
       if (!b) return;
@@ -300,7 +341,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     if (!proj) return true;
     let ok = true;
     for (const b of buffers.values()) if (b.doc && !keepDraft(b, true)) ok = false;
-    openListBad = !store.set('wb:open:' + proj.id, { files: order.slice(0, 30), active });
+    openListBad = !store.set('wb:open:' + ws(), { files: order.slice(0, 300), active, cursors: Object.fromEntries([...buffers.values()].filter(b => b.doc).map(b => [b.path, b.doc.getCursor()])) });
     // Without unsaved text a list that couldn't be kept loses nothing.
     if (openListBad && ![...buffers.values()].some(dirty)) openListBad = false;
     checkPersist();
@@ -335,7 +376,11 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     if (proj?.id !== pid) return null;            // the project changed meanwhile
     if (buffers.has(path)) return buffers.get(path);
     const format = sourceFormat(path);
-    const b = { path, key: draftKey(pid, path), disk: r.editable ? r.content : null, revision: r.revision, eol: r.eol, bom: r.bom, editable: !!r.editable, reason: r.reason || '', conflict: false, problem: '' };
+    // This language's highlighting is loaded before its document is made (Python, JS, Go, … from the first open).
+    await editorFor(format);
+    if (proj?.id !== pid) return null;
+    if (buffers.has(path)) return buffers.get(path);
+    const b = { path, key: draftKey(ws(), path), disk: r.editable ? r.content : null, revision: r.revision, eol: r.eol, bom: r.bom, editable: !!r.editable, reason: r.reason || '', conflict: false, problem: '' };
     const draft = store.get(b.key, null);
     let text = r.editable ? r.content : (r.content || '');
     if (draft && typeof draft.text === 'string' && draft.text !== b.disk) {
@@ -439,7 +484,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     if (!path || !CPP.test(path) && !/\.(h|hpp|hxx|hh)$/i.test(path)) return;
     const s = bpSet(path);
     s.has(line) ? s.delete(line) : s.add(line);
-    store.set('wb:bp:' + proj.id, Object.fromEntries([...breakpoints].filter(([, v]) => v.size).map(([k, v]) => [k, [...v].sort((a, b) => a - b)])));
+    store.set('wb:bp:' + ws(), Object.fromEntries([...breakpoints].filter(([, v]) => v.size).map(([k, v]) => [k, [...v].sort((a, b) => a - b)])));
     markBreakpoints(); renderPanel();
   }
   function markBreakpoints() {
@@ -489,14 +534,36 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     const entries = dirs.get(d) || await listDir(d).catch(() => []);
     return entries.filter(e => e.type === 'file' && CPP.test(e.name) && e.path !== path).map(e => e.path);
   }
-  async function start(mode) {
+  // "Run current file" builds the open file alone (two exercises with their own main() in one folder stay
+  // separate). "Run project…" builds the files you tick (remembered per project): a real multi-file program.
+  async function runProject() {
+    if (!proj?.available || !active || !CPP.test(active)) { toast(t('wb.openCpp')); return; }
+    const host = root.querySelector('.wb-run-project');
+    const found = await project('findFiles', { projectId: proj.id, query: '.c', limit: 100 }).catch(() => ({ entries: [] }));
+    const files = [...new Set([active, ...(found.entries || []).map(e => e.path).filter(p => CPP.test(p))])].sort((a, b) => a.localeCompare(b));
+    const saved = store.get('wb:sources:' + ws(), null);
+    const ticked = new Set(saved?.entry === active ? saved.files : [active, ...await sourcesFor(active)]);
+    host.innerHTML = `<p><b>${esc(t('wb.runProjectTitle'))}</b> <span class="muted">${esc(t('wb.runProjectHint', { file: baseOf(active) }))}</span></p>
+      <div class="wb-run-files" role="group" aria-label="${esc(t('wb.runProjectTitle'))}">${files.map((p, i) => `<label><input type="checkbox" data-src="${esc(p)}"${ticked.has(p) || p === active ? ' checked' : ''}${p === active ? ' disabled' : ''}> ${esc(p)}</label>`).join('')}</div>
+      <div class="wb-run-actions"><button type="button" class="wb-primary" data-wb="run-chosen">${esc(t('wb.runChosen'))}</button><button type="button" data-wb="run-cancel">${esc(t('wb.cancel'))}</button></div>`;
+    host.hidden = false;
+    host.querySelector('input:not(:disabled)')?.focus();
+  }
+  function runChosen() {
+    const host = root.querySelector('.wb-run-project');
+    const files = [...host.querySelectorAll('[data-src]:checked')].map(x => x.dataset.src);
+    store.set('wb:sources:' + ws(), { entry: active, files });
+    host.hidden = true;
+    return start('run', { sources: files.filter(p => p !== active) });
+  }
+  async function start(mode, { sources: chosen = [] } = {}) {
     if (mode === 'continue') return debugCmd('continue');
     if (!proj?.available || !active) { toast(t('wb.openCpp')); return; }
     if (!CPP.test(active)) { toast(t('wb.cppOnly')); return; }
     if (run && !run.status) { toast(t('wb.busy')); return; }
     if (!tools?.compiler?.found) { toast(t('wb.toolMissing', { tool: 'g++' })); return; }
     if (mode === 'debug' && !tools?.debugger?.found) { toast(t('wb.toolMissing', { tool: 'GDB' })); return; }
-    const entry = active, sources = await sourcesFor(entry);
+    const entry = active, sources = chosen;
     // Save what will be compiled first; if a save fails, nothing is compiled.
     for (const b of buffers.values()) {
       if (!dirty(b)) continue;
@@ -555,6 +622,62 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
       out.push({ path: inside ? file : null, file: m[1], line: +m[2], col: +(m[3] || 0), kind: m[4] === 'fatal error' ? 'error' : m[4], text: m[5] });
     }
     return out;
+  }
+  // What the code assistant may send, only when asked: the selection, the open file as it is now (unsaved
+  // changes included), or the compiler's messages. Paths are relative to the project.
+  let assistTimer = 0;
+  function assistContext() {
+    const b = active ? buffers.get(active) : null;
+    return {
+      projectKey: proj ? ws() : null, projectId: proj?.id || null, path: active || '',
+      selection: cm && b ? cm.getSelection() : '', fileText: b?.doc ? b.doc.getValue() : '',
+      diagnostics: diagnostics.length ? diagnostics.map(d => `${d.path || d.file}:${d.line}${d.col ? ':' + d.col : ''}: ${d.kind}: ${d.text}`).join('\n') : run?.status === 'compile_error' ? outText.slice(-30000) : '',
+    };
+  }
+  // Ctrl+P in code mode: find a file of this project by name (the desktop app searches the whole project).
+  let quickSeq = 0, quickItems = [], quickActive = 0;
+  function setupQuick() {
+    const box = root.querySelector('.wb-quick'), input = box.querySelector('input'), list = box.querySelector('ul');
+    const draw = () => {
+      list.innerHTML = quickItems.length ? quickItems.map((e, i) => `<li role="option" id="wb-q-${i}" class="${i === quickActive ? 'is-active' : ''}" aria-selected="${i === quickActive}" data-q="${i}"><b>${esc(e.name)}</b> <span class="muted">${esc(dirOf(e.path))}</span></li>`).join('')
+        : `<li class="muted" role="presentation">${esc(t(input.value.trim() ? 'wb.quickNone' : 'wb.quickHint'))}</li>`;
+      if (quickItems.length) input.setAttribute('aria-activedescendant', 'wb-q-' + quickActive); else input.removeAttribute('aria-activedescendant');
+      list.querySelector('.is-active')?.scrollIntoView({ block: 'nearest' });
+    };
+    const search = async () => {
+      const q = input.value.trim(), me = ++quickSeq, pid = proj?.id;
+      if (!q || !pid) { quickItems = []; draw(); return; }
+      const r = await project('findFiles', { projectId: pid, query: q, limit: 50 }).catch(() => ({ entries: [] }));
+      if (me !== quickSeq || proj?.id !== pid) return; // a newer search, or another project by now
+      quickItems = (r.entries || []).filter(e => e.type === 'file'); quickActive = 0; draw();
+    };
+    let timer = 0;
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(search, 120); });
+    const pick = it => { closeQuick(false); openFile(it.path).catch(err => toast(err.message)); };
+    input.addEventListener('keydown', e => {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); if (quickItems.length) { quickActive = (quickActive + (e.key === 'ArrowDown' ? 1 : -1) + quickItems.length) % quickItems.length; draw(); } }
+      else if (e.key === 'Enter') { e.preventDefault(); const it = quickItems[quickActive]; if (it) pick(it); }
+      else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeQuick(); }
+    });
+    list.addEventListener('mousedown', e => e.preventDefault());
+    list.addEventListener('click', e => { const li = e.target.closest('[data-q]'); if (li) pick(quickItems[+li.dataset.q]); });
+    box.addEventListener('focusout', e => { if (!box.contains(e.relatedTarget)) closeQuick(false); });
+  }
+  function quickOpen() {
+    build();
+    if (!proj?.available) { toast(t('wb.pickFirst')); return; }
+    const box = root.querySelector('.wb-quick'), input = box.querySelector('input');
+    quickItems = []; quickActive = 0; input.value = ''; box.hidden = false;
+    box.querySelector('ul').innerHTML = `<li class="muted" role="presentation">${esc(t('wb.quickHint'))}</li>`;
+    input.focus();
+  }
+  function closeQuick(back = true) { const box = root.querySelector('.wb-quick'); if (!box || box.hidden) return; box.hidden = true; if (back) cm?.focus(); }
+  // Ctrl+G in code mode: go to a line of the open file.
+  async function askLine() {
+    if (!cm || !active) { toast(t('wb.openCpp')); return; }
+    const v = await askText(t('wb.gotoLine'), String(cm.getCursor().line + 1), t('wb.gotoLineHint', { n: cm.lineCount() }));
+    const n = parseInt(v, 10);
+    if (n > 0) goToLine(n);
   }
   async function debugCmd(action) {
     if (!run?.id || run.status || run.phase !== 'paused') return;
@@ -667,9 +790,14 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     if (a === 'keep-mine') return resolveConflict(true);
     if (a === 'load-disk') return resolveConflict(false);
     if (['build', 'run', 'debug'].includes(a)) return start(a);
+    if (a === 'run-project') return runProject();
+    if (a === 'run-chosen') return runChosen();
+    if (a === 'run-cancel') { root.querySelector('.wb-run-project').hidden = true; return; }
     if (a === 'stop') return stop();
     if (['continue', 'next', 'step', 'finish'].includes(a)) return debugCmd(a);
     if (a === 'panel') { panel = { ...panel, open: !panel.open }; store.set('wb:panel', panel); return renderPanel(); }
+    if (a === 'assist' && root.clientWidth <= 900) { const on = !root.classList.contains('show-assist'); root.classList.toggle('show-assist', on); root.classList.remove('hide-assist'); root.querySelector('[data-wb=assist]').setAttribute('aria-pressed', String(on)); if (on) root.querySelector('.wa-input')?.focus(); return; } // a drawer on a narrow pane
+    if (a === 'assist') { const hide = !root.classList.contains('hide-assist'); root.classList.toggle('hide-assist', hide); store.set('wb:assistHidden', hide); root.querySelector('[data-wb=assist]').setAttribute('aria-pressed', String(!hide)); return; }
     if (a === 'toggle-tree') { root.classList.toggle('show-tree'); return; }
   }
 
@@ -687,6 +815,8 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     hide() { visible = false; root.hidden = true; persistOpen(); },
     close() { persistOpen(); },
     relabel,
+    quickOpen, askLine,
+    get shown() { return visible; },
     open: (key) => { /* one workbench tab */ },
     // From "Create a code file": put a new file in the vault (any folder) or in a project folder, then open it.
     async createFile({ where, folder = '', name }) {
