@@ -27,7 +27,8 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
     if (storage) await storage.save(next);
     data = next;
   }
-  const waitingForWebLogin = () => !!pending?.web && pending.until > Date.now();
+  // The school window can stay open past the UI polling deadline.
+  const waitingForWebLogin = () => !!pending?.web;
   function view() {
     const hidden = waitingForWebLogin() || data.webReconnect;
     const visible = hidden ? {} : data;
@@ -247,8 +248,10 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
       await ready();
       if (method === 'GET' && action === 'status') return view();
       if (method !== 'POST') throw error(405, 'Method not allowed');
-      if ((waitingForWebLogin() || data.webReconnect) && !['portal','connect','web-connect','disconnect'].includes(action) &&
-          !(action === 'sync' && !waitingForWebLogin())) throw error(401,'请先完成学校登录并核对账户。');
+      if (waitingForWebLogin() || data.webReconnect) {
+        const allowed=waitingForWebLogin() ? ['portal','web-connect','disconnect'] : ['portal','web-connect','disconnect','connect','sync'];
+        if (!allowed.includes(action)) throw error(401,'请先完成学校登录并核对账户。');
+      }
       if (action === 'portal') {
         let target;
         if(body.courseId || body.assignmentId) {
@@ -263,8 +266,10 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
       if(action==='web-connect') {
         if(!desktop?.openWebLogin)return {url:SITE};
         if(pending?.web && pending.until>Date.now())return {opened:true};
-        const request={web:true,until:Date.now()+15*60000}; pending=request;authError='';
-        await desktop.openWebLogin(ok=>exclusive(async()=>{
+        // Reopening an existing desktop window focuses it. Its original completion callback is still active.
+        const previous=pending?.web ? pending : null, request=previous || {web:true};
+        request.until=Date.now()+15*60000;pending=request;authError='';
+        const onLogin=ok=>exclusive(async()=>{
           if(pending!==request)return;
           if(!ok){pending=null;return;}
           try{
@@ -274,7 +279,12 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
               webVerified:false,webReconnect:true,auth:null,accountId:null,writeEnabled:false});
             await syncWeb();
           } catch(e){authError=e.message;}finally{if(pending===request)pending=null;}
-        }));
+        });
+        try { await desktop.openWebLogin(onLogin); }
+        catch(e) {
+          if (pending===request) { if(previous)request.until=0; else pending=null; }
+          throw e;
+        }
         return {opened:true};
       }
       if (action === 'connect') {

@@ -194,6 +194,30 @@ test('web reconnection temporarily hides history and restores it only after conf
     }
   }
 });
+test('a long-open school login stays private and its original window handles retry, cancellation or success', async t => {
+  let now=Date.now(),failOpen=false;
+  t.mock.method(Date,'now',()=>now);
+  let state={portalSyncEnabled:true,webVerified:true,user:'同名同学',snapshot:{webIdentity:'71',courses:[{id:'2'}]},
+    lastPull:{saved:1}},callback,opened=0;
+  const svc=createCanvasService({storage:{load:async()=>state,save:async v=>{state=v;}},
+    desktop:{openWebLogin:cb=>{
+      if(failOpen)throw Error('window failed');
+      opened++; if(!callback)callback=cb; // desktop focuses the existing window and keeps its first callback.
+    },syncWeb:async()=>({user:'同名同学',snapshot:{webIdentity:'71',courses:[{id:'2'}]},syncedAt:new Date().toISOString()})}});
+  const run=action=>svc.handle(action==='status'?'GET':'POST',action);
+  const original=(await run('status')).accountKey;assert.ok(original);
+  failOpen=true;await assert.rejects(run('web-connect'));assert.equal((await run('status')).accountKey,original);failOpen=false;
+  for(const accept of [false,true]) {
+    await run('web-connect');await run('web-connect');const count=opened;
+    now+=16*60000;
+    const waiting=await run('status');assert.equal(waiting.authPending,false);assert.equal(waiting.accountKey,null);assert.deepEqual(waiting.snapshot.courses,[]);
+    await assert.rejects(run('sync'));await assert.rejects(run('connect'));
+    failOpen=true;await assert.rejects(run('web-connect'));assert.equal((await run('status')).accountKey,null);failOpen=false;
+    await run('web-connect');assert.equal(opened,count+1);assert.equal((await run('status')).authPending,true);
+    await callback(accept);callback=null;
+    const done=await run('status');assert.equal(done.authPending,false);assert.equal(done.accountKey,original);assert.equal(done.lastPull.saved,1);
+  }
+});
 test('official window downloads keep same-name material and hide unfinished files', async () => {
   const vault=await fs.mkdtemp(path.join(os.tmpdir(),'graphite-canvas-docs-'));
   try {
