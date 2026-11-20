@@ -44,14 +44,19 @@ async function destinations(path, profile) {
   try {
     const r = await H.api('GET', 'file', { path: '.obsidian/plugins/claude-chat/imports.json' });
     const man = JSON.parse(r.content || '{}');
-    const src = Object.entries(man.imported || {}).find(([, v]) => String(v.dest || '').toLowerCase() === path.toLowerCase())?.[0];
+    const same = p => String(p || '').replace(/\\/g, '/').toLowerCase() === path.toLowerCase();
+    // This PDF itself, or the PDF made later from a Word/PowerPoint original (its preview record knows both).
+    const previewIds = new Set(Object.entries(man.previews || {}).filter(([, v]) => same(v?.pdfDest)).map(([id]) => id));
+    const src = Object.entries(man.imported || {}).find(([, v]) => same(v?.dest) || (v?.previewId && previewIds.has(v.previewId)))?.[0];
     if (src) {
+      // Import records keep source paths in lower case: match course roots and course codes without case.
       const s = src.replace(/\\/g, '/');
+      const courseOf = code => Object.keys(courses).find(k => k.toLowerCase() === String(code).toLowerCase());
       for (const root of profile?.courseRoots || []) {
         const r0 = root.replace(/\\/g, '/').replace(/\/+$/, '');
         if (!s.toLowerCase().startsWith(r0.toLowerCase() + '/')) continue;
-        const code = s.slice(r0.length + 1).split('/')[0];
-        if (courses[code]) add(courses[code], t('sum.destCourse', { course: courses[code], src: s }));
+        const code = courseOf(s.slice(r0.length + 1).split('/')[0]);
+        if (code) add(courses[code], t('sum.destCourse', { course: courses[code], src: s }));
       }
     }
   } catch { /* no imports yet */ }
@@ -86,7 +91,7 @@ const engineSelect = () => `<label class="ai-field"><span>${esc(t('sum.runBy'))}
 export async function summaryDialog(path) {
   if (!path || !/\.pdf$/i.test(path) || !H.S.files.has(path)) { H.toast(t('sum.pickPdf')); return; }
   const { body, actions } = open(t('sum.title'));
-  const st = await AI.studySettings().catch(() => null);
+  const st = await AI.studySettings(true).catch(() => null);
   if (!win) return;
   const profile = st?.profile || {};
   const total = await pdfPageCount(path).catch(() => 0);
@@ -120,7 +125,8 @@ export async function summaryDialog(path) {
     let only;
     try { only = parsePages(body.querySelector('[data-f=pages]').value, total); } catch (e) { H.toast(pagesError(e)); body.querySelector('[data-f=pages]').focus(); return; }
     const dest = dests[+body.querySelector('[data-f=dest]').value];
-    if (!dest || dest.readOnly) { H.toast(t('sum.readOnlyToast')); return; }
+    // Read-only as Study settings say now (they may have changed since this window opened).
+    if (!dest || dest.readOnly || await AI.readOnlyFolderOf((dest.folder ? dest.folder + '/' : '') + 'summary.md')) { H.toast(t('sum.readOnlyToast')); return; }
     const engine = sel.value;
     if (engine !== AI.choice('summary')) AI.setChoice('summary', engine);
     await generate({ path, only, total, dest, engine, profile, body, actions });

@@ -59,7 +59,12 @@ export function errorText(e, v) {
   // nest the message in itself and repeat the "work folder kept" line.
   if (e?.localized) return e.message;
   const name = LOCAL[v]?.label || (v === CC ? 'Claude Code' : PROVIDERS[v]?.label || v || '');
-  let msg = e?.code && LOCAL[v] ? t('fw.err.' + e.code, { name, detail: e.detail || e.message || '' }) : e?.message || String(e);
+  let msg = e?.message || String(e);
+  if (e?.code && LOCAL[v]) {
+    const key = 'fw.err.' + e.code, vars = { name, detail: e.detail || e.message || '' };
+    // A code without its own text (a newer backend) still reads as a sentence, never as the key itself.
+    msg = t(key, vars); if (msg === key) msg = t('fw.err.generic', vars);
+  }
   if (e?.stage) msg += ' ' + t('fw.stageKept', { path: e.stage });
   return msg;
 }
@@ -341,7 +346,9 @@ export async function agent(feature, job, payload = {}, { onProgress, signal, pr
       if (!line) continue;
       const o = JSON.parse(line);
       if (o.progress) { try { onProgress?.(o.progress); } catch { /* display only */ } }
-      else if (o.error) throw Object.assign(new Error(errorText({ ...o, message: o.error }, v)), { code: o.code, framework: o.framework, stage: o.stage, localized: true });
+      // access / recovery: a permission problem before anything was written (who refused, and whether the
+      // confirmed files can be resumed); failed: files that could not be read. Kept for the import window.
+      else if (o.error) throw Object.assign(new Error(errorText({ ...o, message: o.error }, v)), { code: o.code, framework: o.framework, stage: o.stage, status: o.status, access: o.access, recovery: o.recovery, failed: o.failed, raw: o.error, localized: true });
       else if (o.result) return o.result;
     }
     if (done) throw new Error(t('agent.cutOff'));

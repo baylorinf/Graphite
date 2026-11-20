@@ -169,6 +169,9 @@ function step(p) {
 function fail(e) {
   if (!win) return;
   win.busy = false;
+  // A folder the import could not use: its own page (who refused, which folder, what can be done next).
+  // (While planning, without that evidence, the usual error with Graphite's own scan stays.)
+  if (win.job === 'import' && (e?.access || e?.recovery || (win.applying && ['agentPermission', 'outside'].includes(e?.code)))) return accessProblem(e);
   const body = win.el.querySelector('.fj-body'), actions = win.el.querySelector('.fj-actions');
   const msg = e?.name === 'AbortError' ? t('fj.stopped') : AI.errorText(e, win.v); // agent() errors are already in words; errorText leaves them as they are
   body.innerHTML = header(`<p class="mod-error fj-error">${esc(msg)}</p>`);
@@ -221,7 +224,10 @@ async function plan(extra = {}) {
   // not an AI suggestion: no "read N files" line, files of unclear course start unticked, every folder is editable.
   const manual = r.planMode === 'manual';
   const items = r.items || [], edits = r.edits || [];
-  const ticked = it => (manual || 'selectedByDefault' in it ? it.selectedByDefault === true : true);
+  // An original already in the vault whose PDF preview is still to be made (e.g. after restarting): it keeps its
+  // place and course; only the preview is made. Ticked, no "unclear course" tag, no folder to choose again.
+  const previewOnly = it => !!it.retryPreviewId;
+  const ticked = it => previewOnly(it) || (manual || 'selectedByDefault' in it ? it.selectedByDefault === true : true);
   const fwName = AI.LOCAL[r.planningIssue?.framework]?.label || AI.LOCAL[win.v]?.label || r.planningIssue?.framework || '';
   let intro;
   if (manual) {
@@ -234,6 +240,10 @@ async function plan(extra = {}) {
   const folders = [...new Set([...(r.folders || []), ...items.map(it => folderOf(it.dest)).filter(Boolean)])].sort();
   const row = (it, i) => {
     const title = esc(it.name || (it.quote || '').replace(/\s+/g, ' ').slice(0, 80));
+    if (previewOnly(it)) {
+      return `<div class="fj-item is-preview-only"><input type="checkbox" data-i="${i}" id="fj-i-${i}" checked><span class="fj-text"><label for="fj-i-${i}"><b>${title}</b> <span class="fj-tag is-ok">${esc(t('fj.res.previewOnly'))}</span></label>
+        <span class="muted">${esc(t('fj.res.stays', { path: shownPath(it.originalDest || '') }))}</span><span class="muted">→ ${esc(shownPath(it.dest || ''))}</span></span></div>`;
+    }
     const unknown = manual && !it.course;
     const where = manual
       ? `<span class="fj-dest"><span class="muted">${esc(t('fj.folder'))}</span><input type="text" class="fj-folder" data-f="${i}" list="fj-folders" spellcheck="false" placeholder="${esc(t('fj.vaultRoot'))}" title="${esc(t('fj.folderHint'))}" value="${esc(folderOf(it.dest))}"><span class="muted">/${esc(baseOf(it.dest))}${it.kind === 'convert' ? ' ' + esc(t('fj.pdfCopy')) : ''}</span></span>`
@@ -262,6 +272,7 @@ async function plan(extra = {}) {
     // shown as "Vault root"); the backend checks each one.
     const destinations = {}, err = body.querySelector('.fj-form-error');
     for (const i of accept) {
+      if (previewOnly(items[i])) continue; // its place is already decided
       const it = items[i], raw = String(body.querySelector(`[data-f="${i}"]`)?.value || '').trim().replace(/\\/g, '/');
       if (/(^|\/)\.\.?(\/|$)/.test(raw) || /:/.test(raw)) { err.textContent = t('fj.badFolder', { name: it.name || baseOf(it.dest) }); err.hidden = false; return; }
       const f = raw.replace(/^\/+|\/+$/g, '').replace(/\/{2,}/g, '/');
@@ -284,6 +295,7 @@ async function apply(accept, acceptEdits, { destinations = null, manual = false 
   if (!current()) return;
   win.busy = false;
   await H.sync?.().catch(() => {});
+  if (win.job === 'import') return showImportResult(r);
   const body = win.el.querySelector('.fj-body'), actions = win.el.querySelector('.fj-actions');
   const done = r.done || [], failed = r.failed || [], edited = r.edited || [];
   body.innerHTML = header(`<div class="review-done"><div class="review-done-icon">✔</div><h2>${esc(t('fj.done', { n: done.length }))}</h2></div>
@@ -293,4 +305,195 @@ async function apply(accept, acceptEdits, { destinations = null, manual = false 
     ${r.indexError ? `<p class="mod-error">${esc(AI.errorText({ message: r.indexError }, win.v))}</p>` : ''}`);
   actions.innerHTML = `<button class="mod-button" data-a="close">${esc(t('review.close'))}</button>`;
   actions.querySelector('[data-a=close]').onclick = close;
+}
+
+/* ---------- the import's result, file by file ---------- */
+// Each original counts once. An original that is in the vault but whose PDF preview could not be made is
+// imported (preview to make later), never "lost"; only `failed` means a file was not imported.
+const isPath = s => /^(?:[a-z]:[\\/]|\\\\|\/)/i.test(s);
+// A short, readable reason: the first line, without long paths or broken characters; the full text stays in a
+// "Details" fold when it says more.
+function shortReason(s) {
+  const text = String(s || '').replace(/\r/g, '');
+  const first = text.split('\n').map(x => x.trim()).find(Boolean) || '';
+  const clean = first.replace(/(?:[A-Za-z]:[\\/]|\\\\|\/)(?:[^\s"'<>|]*[\\/])+([^\s"'<>|\\/]+)/g, '$1').replace(/[�\u0000-\u0008\u000B\u000C\u000E-\u001F]+/g, '').replace(/\s{2,}/g, ' ').trim();
+  return clean.length > 140 ? clean.slice(0, 137).trimEnd() + '…' : clean;
+}
+function reasonHtml(full) {
+  const s = shortReason(full);
+  const more = String(full || '').trim();
+  return `<span class="fj-reason">${esc(s)}</span>${more && more !== s ? `<details class="fj-diag"><summary>${esc(t('fj.res.details'))}</summary><pre>${esc(more)}</pre></details>` : ''}`;
+}
+const shownPath = p => (p && !p.includes('/') ? `${t('fj.vaultRoot')} / ${p}` : p || '');
+function showImportResult(r) {
+  if (!win) return;
+  const me = win;
+  me.result = r;
+  const body = me.el.querySelector('.fj-body'), actions = me.el.querySelector('.fj-actions');
+  const done = r.done || [], failed = r.failed || [];
+  const pending = done.filter(d => d.preview?.status === 'failed');
+  const total = done.length + failed.length;
+  const state = !failed.length && !pending.length ? 'ok' : done.length ? 'partial' : 'none';
+  const icon = { ok: '✔', partial: '⚠', none: '✗' }[state];
+  const title = state === 'ok' ? t('fj.done', { n: done.length }) : state === 'partial' ? t('fj.res.partial', { n: done.length, total }) : t('fj.res.none', { total });
+  const lines = [];
+  if (pending.length) lines.push(t('fj.res.previewsLeft', { n: pending.length }));
+  if (failed.length && done.length) lines.push(t('fj.res.notImported', { n: failed.length }));
+  // indexError repeats per-file reasons (missing previews): show only what is new.
+  const reasons = [...pending.map(d => d.preview?.reason || ''), ...failed.map(f => f.error || '')].filter(Boolean);
+  const extraNote = String(r.indexError || '').split('\n').map(x => x.trim()).filter(x => x && !reasons.some(rs => rs.includes(x) || x.includes(rs)) && !pending.some(d => x.includes(d.name || baseOf(d.originalDest || d.dest))));
+  const imported = done.map(d => {
+    const p = d.originalDest || d.dest || d.target || d.name || '';
+    const pend = d.preview?.status === 'failed';
+    const ready = d.preview?.status === 'ready' && d.preview.dest && d.preview.dest !== p ? ` <span class="muted">→ ${esc(shownPath(d.preview.dest))}</span>` : '';
+    return `<li class="fj-res-row${pend ? ' is-pending' : ''}"><span class="fj-res-name">${esc(shownPath(p))}</span>${ready}${pend ? `<div class="fj-res-tag">${esc(t('fj.res.previewPending'))}</div>${reasonHtml(d.preview.reason || d.preview.code || '')}` : ''}</li>`;
+  }).join('');
+  const notDone = failed.map(f => `<li class="fj-res-row is-failed"><span class="fj-res-name">${esc(f.name || baseOf(f.src) || f.id || '')}</span><div class="fj-res-tag">${esc(t('fj.res.notImportedTag'))}</div>${reasonHtml(f.error || '')}</li>`).join('');
+  body.innerHTML = header(`<div class="fj-res-head is-${state}${state === 'ok' ? ' review-done' : ''}" role="status"><div class="fj-res-icon">${icon}</div><div><h2>${esc(title)}</h2>${lines.map(l => `<p>${esc(l)}</p>`).join('')}</div></div>
+    ${done.length ? `<h3 class="fj-res-h">${esc(t('fj.res.importedH', { n: done.length }))}</h3><ul class="fj-res-list fj-res-imported">${imported}</ul>` : ''}
+    ${failed.length ? `<h3 class="fj-res-h">${esc(t('fj.res.failedH', { n: failed.length }))}</h3><ul class="fj-res-list fj-res-failed">${notDone}</ul>` : ''}
+    ${(r.edited || []).length ? `<p class="muted">${esc(t('fj.edited', { list: r.edited.join(', ') }))}</p>` : ''}
+    ${extraNote.length ? `<p class="muted fj-res-note">${esc(extraNote.join(' '))}</p>` : ''}
+    <p class="mod-error fj-res-error" role="alert" hidden></p>`);
+  const retryN = r.retry?.count || 0;
+  actions.innerHTML = `${pending.length ? `<button class="mod-button mod-cta" data-a="previews">${esc(t('fj.res.retryPreviews', { n: pending.length }))}</button>` : ''}${retryN ? `<button class="mod-button${pending.length ? '' : ' mod-cta'}" data-a="resume">${esc(t('fj.res.retryFiles', { n: retryN }))}</button>` : ''}<button class="mod-button" data-a="close">${esc(t('review.close'))}</button>`;
+  actions.querySelector('[data-a=close]').onclick = close;
+  actions.querySelector('[data-a=previews]')?.addEventListener('click', () => retryPreviews(me));
+  actions.querySelector('[data-a=resume]')?.addEventListener('click', () => resumeFailed(me));
+}
+function resultError(me, e) {
+  const el = me.el.querySelector('.fj-res-error');
+  if (el) { el.textContent = e?.name === 'AbortError' ? t('fj.stopped') : AI.errorText(e, me.v); el.hidden = false; }
+}
+function lockActions(me, busy) {
+  me.busy = busy;
+  for (const b of me.el.querySelectorAll('.fj-actions button')) b.disabled = busy && b.dataset.a !== 'close';
+}
+// Make the missing PDF previews of originals already in the vault (nothing is imported again).
+async function retryPreviews(me) {
+  if (me.busy || win !== me) return;
+  lockActions(me, true);
+  const r = me.result, done = [...(r.done || [])];
+  let error = null;
+  for (let i = 0; i < done.length; i++) {
+    const d = done[i];
+    if (d.preview?.status !== 'failed' || !d.preview.retryId) continue;
+    try {
+      const out = await AI.agent(me.feature, 'import', { phase: 'retryPreview', retryId: d.preview.retryId }, { signal: me.ctl.signal, graphite: true });
+      if (out?.done?.[0]) done[i] = out.done[0];
+    } catch (e) { error = e; if (e?.name === 'AbortError') break; }
+    if (win !== me) return;
+  }
+  lockActions(me, false);
+  await H.sync?.().catch(() => {});
+  showImportResult({ ...r, done, indexError: '' });
+  if (error) resultError(me, error);
+}
+// Import again only the files that failed, with the same AI and the folders already confirmed (the server keeps
+// them: nothing else is sent, so files that worked are not copied twice and new files are not added).
+async function resumeFailed(me) {
+  if (me.busy || win !== me || !me.result?.retry?.id) return;
+  lockActions(me, true);
+  const r = me.result, retry = r.retry;
+  try {
+    const out = await AI.agent(me.feature, 'import', { phase: 'resumeImport', recoveryId: retry.id },
+      { signal: me.ctl.signal, provider: retry.framework || retry.provider, graphite: retry.provider === 'graphite' });
+    if (win !== me) return;
+    lockActions(me, false);
+    await H.sync?.().catch(() => {});
+    showImportResult({ ...r, done: [...(r.done || []), ...(out.done || [])], failed: out.failed || [], retry: out.retry || null, indexError: out.indexError || '' });
+  } catch (e) {
+    if (win !== me) return;
+    lockActions(me, false);
+    resultError(me, e);
+    if (e?.access || e?.recovery) accessProblem(e, me);
+  }
+}
+
+/* ---------- a folder the import could not use ---------- */
+// Who refused, from what the backend actually saw: Graphite's limits for this job, the operating system, or the
+// AI program itself. When the path was only guessed from a command's text, say the check could not confirm it
+// (never that the whole disk was read).
+function accessKind(e) {
+  const a = e?.access || {};
+  if (a.source === 'graphite') return a.operation === 'commandPath' ? 'unconfirmed' : 'graphite';
+  if (a.source === 'agent' || e?.code === 'agentPermission') return 'agent';
+  if (a.source === 'system' || /^(EACCES|EPERM)$/.test(e?.code || '')) return 'system';
+  return 'unknown';
+}
+async function accessProblem(e, me = win) {
+  if (!me || win !== me) return;
+  me.busy = false; me.accessError = e;
+  const body = me.el.querySelector('.fj-body'), actions = me.el.querySelector('.fj-actions');
+  const a = e.access || {}, kind = accessKind(e), name = AI.LOCAL[e.framework || me.v]?.label || AI.label(me.v);
+  const desk = window.myobsidianDesktop?.agentFolders;
+  body.innerHTML = header(`<div class="fj-access" data-kind="${kind}">
+    <h3>${esc(t('fj.acc.title'))}</h3>
+    <p class="fj-acc-why">${esc(t('fj.acc.' + kind, { name, path: a.path || '' }))}</p>
+    ${a.path ? `<p class="fj-acc-path"><span class="muted">${esc(t('fj.acc.pathLabel'))}</span> <code>${esc(a.path)}</code></p>` : ''}
+    ${a.driveRoot ? `<p class="fj-acc-root">${esc(t('fj.acc.driveRoot'))}</p>` : ''}
+    <p class="muted">${esc(t('fj.acc.purpose'))}</p>
+    ${desk ? `<div class="fj-folders"><h4>${esc(t('fj.acc.foldersH'))}</h4><ul class="fj-folder-list"><li class="muted">${esc(t('fj.loading'))}</li></ul>
+      <button class="mod-button" data-a="choose">${esc(t('fj.acc.choose'))}</button><p class="muted fj-acc-scope">${esc(t('fj.acc.scope'))}</p></div>` : ''}
+    ${e.recovery ? `<p>${esc(t('fj.acc.canResume', { n: e.recovery.count || 0 }))}</p>` : `<p class="fj-acc-next">${esc(t('fj.acc.noResume'))}</p>`}
+    <p class="mod-error fj-res-error" role="alert" hidden></p></div>`);
+  const rec = e.recovery;
+  actions.innerHTML = (rec ? `<button class="mod-button mod-cta" data-a="resume-fw">${esc(t('fj.acc.resumeFw', { name: AI.LOCAL[rec.framework]?.label || rec.framework || name }))}</button><button class="mod-button" data-a="resume-graphite">${esc(t('fj.acc.resumeGraphite', { n: rec.count || 0 }))}</button>`
+    : `<button class="mod-button mod-cta" data-a="rescan">${esc(t('fj.acc.rescan'))}</button>`) + `<button class="mod-button" data-a="close">${esc(t('review.close'))}</button>`;
+  actions.querySelector('[data-a=close]').onclick = close;
+  actions.querySelector('[data-a=rescan]')?.addEventListener('click', () => { if (!me.busy) { me.ctl = new AbortController(); plan(); } });
+  const resume = async graphite => {
+    if (me.busy || win !== me) return;
+    lockActions(me, true);
+    me.ctl = new AbortController();
+    const tick = working(t('fj.applying'));
+    try {
+      const out = await AI.agent(me.feature, 'import', { phase: 'resumeImport', recoveryId: rec.id },
+        { signal: me.ctl.signal, provider: graphite ? undefined : rec.framework, graphite });
+      clearInterval(tick);
+      if (win !== me) return;
+      me.busy = false;
+      await H.sync?.().catch(() => {});
+      showImportResult(out);
+    } catch (err) {
+      clearInterval(tick);
+      if (win !== me) return;
+      // The recovery can be used once; a second permission problem brings its own.
+      if (err?.access || err?.recovery) return accessProblem(err, me);
+      fail(err);
+    }
+  };
+  actions.querySelector('[data-a=resume-fw]')?.addEventListener('click', () => resume(false));
+  actions.querySelector('[data-a=resume-graphite]')?.addEventListener('click', () => resume(true));
+  if (desk) {
+    const list = body.querySelector('.fj-folder-list');
+    const draw = res => {
+      if (!res?.ok) { list.innerHTML = `<li class="mod-error">${esc(res?.message || t('error'))}</li>`; return; }
+      const fs = res.folders || [];
+      list.innerHTML = fs.length ? fs.map(f => `<li class="fj-folder" data-id="${esc(f.id)}"><code>${esc(f.path)}</code>
+        <span class="fj-chip${f.graphiteAllowed ? ' is-ok' : ''}">${esc(t(f.graphiteAllowed ? 'fj.acc.gYes' : 'fj.acc.gNo'))}</span>
+        <span class="fj-chip${f.processReadable ? ' is-ok' : ''}">${esc(t(f.processReadable ? 'fj.acc.pYes' : 'fj.acc.pNo'))}</span>
+        <span class="fj-chip">${esc(t(f.agentAccess === 'unverified' || !f.agentAccess ? 'fj.acc.aUnverified' : f.agentAccess === 'readable' ? 'fj.acc.aYes' : 'fj.acc.aNo'))}</span>
+        ${f.reason ? `<span class="muted">${esc(f.reason)}</span>` : ''}
+        ${f.revocable ? `<button class="mod-button fj-revoke" data-revoke="${esc(f.id)}">${esc(t('fj.acc.revoke'))}</button>` : ''}</li>`).join('') : `<li class="muted">${esc(t('fj.acc.noFolders'))}</li>`;
+    };
+    desk('list').then(draw, err => draw({ ok: false, message: err.message }));
+    body.querySelector('[data-a=choose]').onclick = async () => {
+      if (me.folderBusy) return;
+      me.folderBusy = true;
+      try {
+        const res = await desk('choose');
+        if (res?.canceled) return;            // nothing written, nothing changed
+        draw(res);
+      } catch (err) { draw({ ok: false, message: err.message }); }
+      finally { me.folderBusy = false; }
+    };
+    list.addEventListener('click', async ev => {
+      const id = ev.target.closest('[data-revoke]')?.dataset.revoke;
+      if (!id || me.folderBusy) return;
+      me.folderBusy = true;
+      try { draw(await desk('revoke', { id })); } catch (err) { draw({ ok: false, message: err.message }); }
+      finally { me.folderBusy = false; }
+    });
+  }
 }
