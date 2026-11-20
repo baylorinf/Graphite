@@ -181,12 +181,23 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
     openWebLogin(callback) {
       if(login && !login.isDestroyed()){login.focus();return;}
       const w=makeWindow(null);login=w;
-      let complete=false;
+      let complete=false, followedSchoolLogin=false;
       w.once('closed',()=>{login=null;if(!complete)callback(false);});
       w.webContents.on('did-finish-load',async()=>{
         try{
           const u=schoolUrl(w.webContents.getURL());
-          if(complete || u?.origin!==SITE || /^\/login(?:\/|$)/.test(u.pathname))return;
+          if(complete || u?.origin!==SITE)return;
+          if(u.pathname==='/login/canvas' && !followedSchoolLogin){
+            // This page also offers a separate non-jAccount password form. Follow the school's own SSO link.
+            const href=await isolated(w,`Array.from(document.links).find(a=>a.origin===location.origin && a.pathname==='/login/openid_connect')?.href`);
+            const sso=schoolUrl(href);
+            if(sso?.origin===SITE && sso.pathname==='/login/openid_connect' && !w.isDestroyed() && w.webContents.getURL()===u.href){
+              followedSchoolLogin=true;
+              await w.loadURL(sso.href);
+            }
+            return;
+          }
+          if(/^\/login(?:\/|$)/.test(u.pathname))return;
           const isLogged=await isolated(w,'!!document.querySelector("#global_nav_profile_link,#my_courses_table,a[href=\'/profile/settings\'],form[action=\'/logout\']")');
           if(!isLogged)return;
           complete=true;callback(true);w.close();

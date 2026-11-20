@@ -33,6 +33,7 @@ async function runElectron() {
   const requests = [], wrongHost = [], protocolSessions = new Set();
   let logged=true, denyFiles=false, submitted=false, windowShown=false, pledge=false, attempt=0, enhanced=false, previousDraft=false;
   const received=[];
+  let signInLanding=true;
   function html(main, extra='') {
     const account=logged ? '<a id="global_nav_profile_link" href="/users/55/profile"><span class="avatar-name">Native Fixture</span></a>' : '';
     return '<!doctype html><meta charset="utf-8">'+account+extra+'<main id="content">'+main+'</main>';
@@ -56,6 +57,9 @@ async function runElectron() {
   }
   function render(u) {
     const p=u.pathname;
+    if (signInLanding && p==='/courses') return '<script>location.replace("/login/canvas")</script>';
+    if (signInLanding && p==='/login/canvas') return '<a href="/login/openid_connect"><img alt=""></a><h1>非 jAccount 用户登录</h1><input type="password">';
+    if (signInLanding && p==='/login/openid_connect') return '<h1>School identity service</h1>';
     if(!logged) return html('<h1>学校登录</h1><button>jAccount</button>');
     if(p==='/courses/110/assignments/310' && enhanced)return enhancedFixture();
     if(p==='/courses') return html('<table id="my_courses_table"><tbody><tr><td class="course-list-course-title-column">'+
@@ -129,6 +133,18 @@ async function runElectron() {
   try {
     const initial=await status();
     assert(!initial.configured && !initial.connected && initial.portalSupported);
+    let loginResult;
+    desktop.openWebLogin(result=>{loginResult=result;});
+    await until(()=>testWindows.at(-1)?.webContents.getURL(),url=>url===origin+'/login/openid_connect','jAccount login choice',8000);
+    const signInWindow=testWindows.at(-1);
+    await signInWindow.loadURL(origin+'/login/canvas');
+    assert.match(await signInWindow.webContents.executeJavaScript('document.body.innerText'),/非 jAccount/);
+    signInWindow.close();
+    await until(()=>loginResult,result=>result===false,'cancelled sign-in',3000);
+    assert.equal(requests.filter(p=>p==='/login/openid_connect').length,1);
+    assert.equal((await status()).connected,false);
+    signInLanding=false;
+    console.log('PASS jAccount uses the school-provided sign-in link, Back stays on the school page and cancel does not connect an account');
     assert.equal((await act('web-connect')).opened,true);
     const s=await until(status,s=>s.syncedAt && !s.authPending,'isolated school sync');
     assert.equal(s.connected,true);assert.equal(s.canSubmit,false);assert.equal(s.authMode,'web');
