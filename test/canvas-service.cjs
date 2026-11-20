@@ -15,6 +15,29 @@ const ICS = ['BEGIN:VCALENDAR','VERSION:2.0','BEGIN:VEVENT','UID:deadline','DTST
   'SUMMARY:Linear Algebra\\, ',' problem set','URL:https://oc.sjtu.edu.cn/courses/7/assignments/9','END:VEVENT',
   'BEGIN:VEVENT','UID:holiday','DTSTART;VALUE=DATE:20261121','SUMMARY:Study day','END:VEVENT','END:VCALENDAR'].join('\r\n');
 
+test('a cancelled or postponed weekly meeting leaves later meetings in the calendar', () => {
+  const master = ['BEGIN:VEVENT','UID:seminar','DTSTART:20261002T011500Z','RRULE:FREQ=WEEKLY;COUNT=4','SUMMARY:Seminar','END:VEVENT'];
+  const now = Date.UTC(2026, 9, 1);
+  const changed = (...properties) => parseCalendar(['BEGIN:VCALENDAR','VERSION:2.0', ...master,
+    'BEGIN:VEVENT','UID:seminar', ...properties,'END:VEVENT','END:VCALENDAR'].join('\r\n'), now);
+  const original = 'RECURRENCE-ID:20261009T011500Z';
+  const remaining = ['2026-10-02','2026-10-16','2026-10-23'];
+  assert.deepEqual(changed(original,'STATUS:CANCELLED').map(e => e.startAt.slice(0,10)), remaining);
+  assert.deepEqual(changed(original,'DTSTART:20271020T011500Z').map(e => e.startAt.slice(0,10)), remaining);
+  assert.deepEqual(changed('RECURRENCE-ID;RANGE=THISANDFUTURE:20261009T011500Z','STATUS:CANCELLED').map(e => e.startAt.slice(0,10)), ['2026-10-02']);
+  const overlapping = changed(original,'DTSTART:20261016T011500Z');
+  assert.equal(overlapping.length,4);
+  assert.equal(new Set(overlapping.map(event => event.id)).size,4);
+});
+
+test('a far future recurring event independently moved into the semester appears on its actual date', () => {
+  const text = ['BEGIN:VCALENDAR','VERSION:2.0','BEGIN:VEVENT','UID:annual','DTSTART:20261002T011500Z',
+    'RRULE:FREQ=YEARLY;COUNT=4','SUMMARY:Talk','END:VEVENT','BEGIN:VEVENT','UID:annual','RECURRENCE-ID:20291002T011500Z',
+    'DTSTART:20261120T101500Z','SUMMARY:Moved talk','END:VEVENT','END:VCALENDAR'].join('\r\n');
+  const weeks = parseCalendar(text,Date.UTC(2026,9,1));
+  assert.equal(weeks.find(event => event.title === 'Moved talk')?.startAt, '2026-11-20T10:15:00.000Z');
+});
+
 function fake() {
   let saved = {}, launch, returned, broken = false, rejectRefresh = false;
   const calls = [], storage = { load: async () => structuredClone(saved), save: async next => { saved = structuredClone(next); } };
