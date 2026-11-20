@@ -9,12 +9,26 @@ const { execFileSync } = require('node:child_process');
 const root = path.join(__dirname, '..');
 const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
 
-async function describeAsset(file) {
+async function describeAsset(file, includeManifestDigest = false) {
   const stat = await fs.promises.stat(file);
   if (!stat.isFile() || !stat.size) throw new Error('Empty release asset: ' + file);
   const hash = createHash('sha256');
-  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
-  return { file, name: path.basename(file), size: stat.size, digest: 'sha256:' + hash.digest('hex') };
+  const sha512 = includeManifestDigest ? createHash('sha512') : null;
+  for await (const chunk of fs.createReadStream(file)) { hash.update(chunk); sha512?.update(chunk); }
+  return { file, name: path.basename(file), size: stat.size, digest: 'sha256:' + hash.digest('hex'),
+    ...(sha512 ? {sha512:sha512.digest('base64')} : {}) };
+}
+
+async function releaseFiles(dist,version) {
+  const name = 'Graphite-Setup-'+version+'.exe', file = path.join(dist,name);
+  const manifestFile = path.join(dist,'latest.yml');
+  const [setup,blockmap,manifest] = await Promise.all([describeAsset(file,true),describeAsset(file+'.blockmap'),describeAsset(manifestFile)]);
+  const bytes = await fs.promises.readFile(manifestFile);
+  const expected = require('../electron/updater').parseUpdateManifest(bytes.toString('utf8'),version,name);
+  if (expected.size !== setup.size || expected.sha512 !== setup.sha512 || 'sha256:'+createHash('sha256').update(bytes).digest('hex') !== manifest.digest) {
+    throw new Error('The update manifest does not match the installer. Build the installer and update manifest together.');
+  }
+  return [setup,blockmap,manifest];
 }
 
 function remoteRefs(repo, tag) {
@@ -162,12 +176,11 @@ async function main() {
     notes = await fs.promises.readFile(notesFile, 'utf8');
   } else if (args.length === 1 && !args[0].startsWith('--')) notes = args[0];
   else if (args.length) throw new Error('Use --notes-file <path> or supply one release-note string.');
-  const installer = path.join(root, 'dist', 'Graphite-Setup-' + pkg.version + '.exe');
-  const files = await Promise.all([installer, installer + '.blockmap'].map(describeAsset));
+  const files = await releaseFiles(path.join(root,'dist'),pkg.version);
   const remote = github({ repo, tag, title, commit, notes, notesFile });
   const url = await publishRelease({ remote, refs: () => remoteRefs(repo, tag), tag, commit, files });
   console.log('Published', url);
 }
 
 if (require.main === module) main().catch(e => { console.error(e.message); process.exitCode = 1; });
-module.exports = { publishRelease };
+module.exports = { publishRelease, releaseFiles };

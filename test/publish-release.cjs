@@ -1,11 +1,15 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { publishRelease } = require('../scripts/publish-github');
+const fs = require('node:fs/promises');
+const os = require('node:os');
+const path = require('node:path');
+const {createHash} = require('node:crypto');
+const { publishRelease, releaseFiles } = require('../scripts/publish-github');
 
 function setup() {
   const tag = 'v1.2.3', commit = 'a'.repeat(40);
-  const files = ['Graphite-Setup-1.2.3.exe','Graphite-Setup-1.2.3.exe.blockmap'].map((name,i) =>
+  const files = ['Graphite-Setup-1.2.3.exe','Graphite-Setup-1.2.3.exe.blockmap','latest.yml'].map((name,i) =>
     ({ name, size: 100+i, digest: 'sha256:' + String(i+1).repeat(64) }));
   let release;
   const head = { head: commit, tag: null }, calls = [];
@@ -52,7 +56,7 @@ test('resumes a matching interrupted draft and drops only an abandoned zero-byte
   await assert.rejects(h.run(), /interrupted/); assert.equal(h.record().draft, true);
   h.remote.upload=upload;
   await h.run();
-  assert.deepEqual(h.calls,['draft','upload:'+h.files[0].name,'remove:99','upload:'+h.files[1].name,'publish']);
+  assert.deepEqual(h.calls,['draft','upload:'+h.files[0].name,'remove:99','upload:'+h.files[1].name,'upload:latest.yml','publish']);
 });
 test('won’t promote files of the wrong size or digest, including corruption between upload and publish', async () => {
   const h=setup(), get=h.remote.get;
@@ -68,4 +72,16 @@ test('refuses unpushed source, unrelated tags, and stale draft targets', async (
   await assert.rejects(h.run(), /different commit/);assert.deepEqual(h.calls,[]);
   h.head.tag=null;await h.remote.create();h.record().target_commitish='other';
   await assert.rejects(h.run(), /not pinned/);assert.deepEqual(h.calls,['draft']);
+});
+
+test('the release includes a manifest matching the actual installer and refuses stale same-length content',async t=>{
+  const dist=await fs.mkdtemp(path.join(os.tmpdir(),'graphite-release-files-'));
+  t.after(()=>fs.rm(dist,{recursive:true,force:true}));
+  const version='1.2.3', name='Graphite-Setup-'+version+'.exe', bytes=Buffer.from('synthetic file');
+  const sha512=createHash('sha512').update(bytes).digest('base64');
+  const yaml=['version: '+version,'files:','  - url: '+name,'    sha512: '+sha512,'    size: '+bytes.length,'path: '+name,'sha512: '+sha512].join('\n');
+  await Promise.all([fs.writeFile(path.join(dist,name),bytes),fs.writeFile(path.join(dist,name+'.blockmap'),'fixture'),fs.writeFile(path.join(dist,'latest.yml'),yaml)]);
+  assert.deepEqual((await releaseFiles(dist,version)).map(f=>f.name),[name,name+'.blockmap','latest.yml']);
+  await fs.writeFile(path.join(dist,name),Buffer.alloc(bytes.length,1));
+  await assert.rejects(releaseFiles(dist,version),/manifest does not match/);
 });
