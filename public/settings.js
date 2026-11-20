@@ -31,7 +31,7 @@ export function closeSettings() {
 }
 export const settingsOpen = () => root && !root.classList.contains('hidden');
 // Re-render (e.g. after a language change).
-export function refreshSettings() { if (settingsOpen()) show(current); }
+export function refreshSettings(tab) { if (settingsOpen() && (!tab || tab === current)) show(current); }
 
 function build() {
   root = document.body.appendChild(createDiv('settings-modal hidden'));
@@ -113,8 +113,12 @@ function renderGeneral() {
   new PM.Setting(content).setName(t('settings.credits')).setDesc(t('settings.creditsDesc', { author: 'MistZero', co: 'Claude' }));
   if (window.myobsidianDesktop?.checkUpdates) { // desktop app only
     const u = H.S.update;
+    const messages = [];
+    if (u?.available) messages.push(t('update.tooltip', { version: u.available }));
+    if (u?.checkError) messages.push(t('update.check.' + u.checkError));
+    if (!messages.length) messages.push(u ? t('update.upToDate', { version: u.current || H.S.version || '' }) : t('update.notChecked'));
     new PM.Setting(content).setName(t('settings.updates'))
-      .setDesc(u?.available ? t('update.tooltip', { version: u.available }) : t('update.upToDate', { version: H.S.version || '' }))
+      .setDesc(messages.join(' '))
       .then(s => {
         if (u?.available) s.addButton(b => b.setButtonText(t('update.install')).setCta().onClick(() => H.installUpdate()));
         s.addButton(b => b.setButtonText(t('update.check')).onClick(() => H.checkUpdates(true)));

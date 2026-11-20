@@ -3290,6 +3290,7 @@ async function boot() {
    Updates (desktop app): show an Update button when a newer version is available
    ===================================================================== */
 function showUpdate(state) {
+  const previous = S.update;
   S.update = state || null;
   const v = state?.available;
   // One update indicator: a highlighted button in the left icon bar, just above Help.
@@ -3299,22 +3300,32 @@ function showUpdate(state) {
   if (v) btn.title = state.progress != null ? t('update.downloading', { pct: Math.round(state.progress * 100) }) : t('update.tooltip', { version: v });
   btn.classList.toggle('downloading', state?.progress != null);
   if (state?.progress != null) btn.style.setProperty('--p', Math.round(state.progress * 100) + '%');
-  refreshSettings();
+  if (!previous || previous.available !== state?.available || previous.checkError !== state?.checkError) refreshSettings('general');
 }
 async function checkUpdates(announce = false) {
   if (!window.myobsidianDesktop?.checkUpdates) return;
-  const state = await window.myobsidianDesktop.checkUpdates().catch(() => null);
+  const state = await window.myobsidianDesktop.checkUpdates({ force: announce }).catch(() => ({
+    ...S.update, current: S.version, checkError: 'offline',
+  }));
+  if (!state) return;
   showUpdate(state);
-  if (announce && state && !state.available) toast(t('update.upToDate', { version: state.current }));
+  if (announce) toast(state.checkError ? t('update.check.' + state.checkError) :
+    state.available ? t('update.tooltip', { version: state.available }) : t('update.upToDate', { version: state.current }));
 }
+let installingUpdate = false;
 async function installUpdate() {
   const v = S.update?.available;
-  if (!v || !window.myobsidianDesktop?.installUpdate) return;
+  if (installingUpdate || !v || !window.myobsidianDesktop?.installUpdate) return;
   if (!confirm(t('update.confirm', { version: v }))) return;
-  await saveNow();
+  installingUpdate = true;
   toast(t('update.installing', { version: v }));
   const r = await window.myobsidianDesktop.installUpdate().catch(e => ({ ok: false, error: e.message }));
-  if (!r?.ok) toast(t('update.failed', { msg: r?.error || '' }));
+  if (!r?.ok) {
+    installingUpdate = false;
+    const reasons = ['unsaved', 'saveTimeout', 'busy', 'download', 'integrity', 'launch', 'noInstaller'];
+    const msg = reasons.includes(r?.errorCode) ? t('update.error.' + r.errorCode) : r?.error || '';
+    toast(t('update.failed', { msg }));
+  }
 }
 
 // The desktop app calls this before closing the window so the last edits are written to disk.

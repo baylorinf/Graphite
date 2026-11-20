@@ -1,39 +1,173 @@
-// Publish the current installer as a GitHub release, so installed copies of Graphite update themselves.
-//   node scripts/publish-github.js            (after npm run dist)
-// Needs: package.json → graphite.updateRepo ("owner/name", a public repo), and a GitHub token with permission
-// to create releases, in the GITHUB_TOKEN environment variable (or, if the GitHub CLI "gh" is installed and
-// logged in, it is used instead). The token is only sent to api.github.com.
-const fs = require('fs');
-const path = require('path');
-const { execFileSync } = require('child_process');
+// npm run publish -- --notes-file release-notes.md (after building and pushing this commit).
+'use strict';
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { createHash } = require('node:crypto');
+const { execFileSync } = require('node:child_process');
 
 const root = path.join(__dirname, '..');
-const pkg = require(path.join(root, 'package.json'));
-const repo = pkg.graphite?.updateRepo;
-if (!repo) { console.error('Set "graphite": { "updateRepo": "owner/name" } in package.json first.'); process.exit(1); }
-const tag = 'v' + pkg.version;
-const files = [`Graphite-Setup-${pkg.version}.exe`, `Graphite-Setup-${pkg.version}.exe.blockmap`].map(f => path.join(root, 'dist', f));
-for (const f of files) if (!fs.existsSync(f)) { console.error('Missing ' + f + ' (run npm run dist first)'); process.exit(1); }
-const notes = process.argv[2] || `Graphite ${pkg.version}`;
+const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8', windowsHide: true }).trim();
 
-function hasGh() { try { execFileSync('gh', ['--version'], { stdio: 'ignore' }); return true; } catch { return false; } }
+async function describeAsset(file) {
+  const stat = await fs.promises.stat(file);
+  if (!stat.isFile() || !stat.size) throw new Error('Empty release asset: ' + file);
+  const hash = createHash('sha256');
+  for await (const chunk of fs.createReadStream(file)) hash.update(chunk);
+  return { file, name: path.basename(file), size: stat.size, digest: 'sha256:' + hash.digest('hex') };
+}
 
-(async () => {
-  if (!process.env.GITHUB_TOKEN && hasGh()) {
-    execFileSync('gh', ['release', 'create', tag, ...files, '--repo', repo, '--title', `Graphite ${pkg.version}`, '--notes', notes], { stdio: 'inherit' });
-    return;
+function remoteRefs(repo, tag) {
+  const ref = 'refs/tags/' + tag;
+  const result = git(['ls-remote', 'https://github.com/' + repo + '.git', 'HEAD', ref, ref + '^{}']);
+  const refs = Object.fromEntries(result.split(/\r?\n/).filter(Boolean).map(line => {
+    const [sha, name] = line.split('\t');
+    return [name, sha];
+  }));
+  return { head: refs.HEAD, tag: refs[ref + '^{}'] || refs[ref] };
+}
+
+function findGh() {
+  const candidates = ['gh'];
+  if (process.platform === 'win32' && process.env.ProgramFiles) {
+    candidates.push(path.join(process.env.ProgramFiles, 'GitHub CLI', 'gh.exe'));
   }
-  const token = process.env.GITHUB_TOKEN;
-  if (!token) { console.error('No GITHUB_TOKEN and no logged-in GitHub CLI.'); process.exit(1); }
-  const h = { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json', 'User-Agent': 'Graphite-publisher' };
-  let r = await fetch(`https://api.github.com/repos/${repo}/releases`, { method: 'POST', headers: h, body: JSON.stringify({ tag_name: tag, name: `Graphite ${pkg.version}`, body: notes }) });
-  if (!r.ok) { console.error('Creating the release failed:', r.status, await r.text()); process.exit(1); }
-  const rel = await r.json();
-  for (const f of files) {
-    const url = rel.upload_url.replace(/\{.*\}$/, '') + '?name=' + encodeURIComponent(path.basename(f));
-    r = await fetch(url, { method: 'POST', headers: { ...h, 'Content-Type': 'application/octet-stream' }, body: fs.readFileSync(f) });
-    if (!r.ok) { console.error('Upload failed for', path.basename(f), r.status, await r.text()); process.exit(1); }
-    console.log('Uploaded', path.basename(f));
+  for (const candidate of candidates) {
+    try { execFileSync(candidate, ['--version'], { stdio: 'ignore', windowsHide: true }); return candidate; }
+    catch { /* try the standard installation if gh is outside PATH */ }
   }
-  console.log('Published', rel.html_url);
-})();
+  throw new Error('Log in with the GitHub CLI or provide a release-capable GITHUB_TOKEN.');
+}
+
+function github({ repo, tag, title, commit, notes, notesFile }) {
+  const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
+  const gh = token ? null : findGh();
+  const prefix = 'repos/' + repo + '/releases';
+  const headers = { Authorization: 'Bearer ' + token, Accept: 'application/vnd.github+json', 'User-Agent': 'Graphite-publisher' };
+  const cli = (args, input) => execFileSync(gh, args, { input, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
+  async function checkResponse(res) {
+    if (!res.ok) throw new Error('GitHub returned HTTP ' + res.status + ': ' + (await res.text()).slice(0, 1000));
+    return res.status === 204 ? null : res.json();
+  }
+  async function api(method, suffix, body) {
+    const endpoint = prefix + suffix;
+    if (gh) {
+      const args = ['api', '--hostname', 'github.com', '--method', method, endpoint];
+      if (body !== undefined) args.push('--input', '-');
+      const output = cli(args, body === undefined ? undefined : JSON.stringify(body));
+      return output.trim() ? JSON.parse(output) : null;
+    }
+    const res = await fetch('https://api.github.com/' + endpoint, {
+      method, headers: { ...headers, 'Content-Type': 'application/json' },
+      body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error',
+    });
+    return checkResponse(res);
+  }
+  return {
+    async find() {
+      for (let page = 1; ; page++) {
+        const releases = await api('GET', '?per_page=100&page=' + page);
+        const release = releases.find(r => r.tag_name === tag);
+        if (release || releases.length < 100) return release;
+      }
+    },
+    async create() {
+      if (gh) {
+        cli(['release', 'create', tag, '--repo', 'github.com/' + repo, '--draft', '--target', commit,
+          '--title', title, '--notes-file', notesFile || '-'], notesFile ? undefined : notes);
+        return;
+      }
+      await api('POST', '', { tag_name: tag, target_commitish: commit, name: title, body: notes, draft: true });
+    },
+    get: id => api('GET', '/' + id),
+    removeEmpty: id => api('DELETE', '/assets/' + id),
+    async upload(id, asset) {
+      if (gh) {
+        cli(['release', 'upload', tag, asset.file, '--repo', 'github.com/' + repo]);
+        return;
+      }
+      const url = new URL('https://uploads.github.com/' + prefix + '/' + id + '/assets');
+      url.searchParams.set('name', asset.name);
+      const res = await fetch(url, { method: 'POST', redirect: 'error', duplex: 'half',
+        headers: { ...headers, 'Content-Type': 'application/octet-stream', 'Content-Length': String(asset.size) },
+        body: fs.createReadStream(asset.file) });
+      await checkResponse(res);
+    },
+    publish: id => api('PATCH', '/' + id, { draft: false, prerelease: false, make_latest: 'true' }),
+  };
+}
+
+function verifyAsset(release, file) {
+  const a = release.assets.find(asset => asset.name === file.name);
+  if (!a || a.state !== 'uploaded' || a.size !== file.size || a.digest !== file.digest) {
+    throw new Error('Remote asset has not matched the local size and SHA-256: ' + file.name);
+  }
+}
+
+// All GitHub mutations before the final PATCH affect only the matching draft.
+async function publishRelease({ remote, refs, tag, commit, files }) {
+  const verifyTarget = release => {
+    const actual = refs();
+    if (actual.tag && actual.tag !== commit) throw new Error(tag + ' already points at a different commit.');
+    if (release?.draft === false) {
+      if (actual.tag !== commit || release.prerelease) throw new Error('Published tag/commit does not match this stable build.');
+      return;
+    }
+    if (actual.head !== commit) throw new Error('Push the intended commit to the GitHub default branch before publishing.');
+    if (release && release.target_commitish !== commit && actual.tag !== commit) {
+      throw new Error('The existing draft is not pinned to the intended commit.');
+    }
+  };
+  let release = await remote.find();
+  verifyTarget(release);
+  if (!release) {
+    await remote.create();
+    release = await remote.find();
+    if (!release) throw new Error('The new GitHub draft is not visible yet. Retry the same release.');
+    verifyTarget(release);
+  }
+  if (release.draft) {
+    for (const file of files) {
+      const asset = release.assets.find(a => a.name === file.name);
+      if (asset && asset.state === 'starter' && asset.size === 0) {
+        await remote.removeEmpty(asset.id); // abandoned empty upload from an interrupted draft
+      } else if (asset) {
+        verifyAsset(release, file);
+        continue;
+      }
+      await remote.upload(release.id, file);
+    }
+    release = await remote.get(release.id);
+    for (const file of files) verifyAsset(release, file);
+    verifyTarget(release);
+    if (release.draft) release = await remote.publish(release.id);
+  }
+  if (release.draft || release.prerelease) throw new Error('GitHub has not published the stable release.');
+  verifyTarget(release);
+  for (const file of files) verifyAsset(release, file);
+  return release.html_url;
+}
+
+async function main() {
+  const pkg = require(path.join(root, 'package.json')), repo = pkg.graphite?.updateRepo;
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo || '') || !/^\d+\.\d+\.\d+$/.test(pkg.version)) {
+    throw new Error('Set a GitHub owner/name and a stable X.Y.Z version in package.json.');
+  }
+  const tag = 'v' + pkg.version, title = 'Graphite ' + pkg.version;
+  const commit = git(['rev-parse', 'HEAD']);
+  const args = process.argv.slice(2);
+  let notesFile, notes = title;
+  if (args[0] === '--notes-file' && args.length === 2) {
+    notesFile = path.resolve(args[1]);
+    notes = await fs.promises.readFile(notesFile, 'utf8');
+  } else if (args.length === 1 && !args[0].startsWith('--')) notes = args[0];
+  else if (args.length) throw new Error('Use --notes-file <path> or supply one release-note string.');
+  const installer = path.join(root, 'dist', 'Graphite-Setup-' + pkg.version + '.exe');
+  const files = await Promise.all([installer, installer + '.blockmap'].map(describeAsset));
+  const remote = github({ repo, tag, title, commit, notes, notesFile });
+  const url = await publishRelease({ remote, refs: () => remoteRefs(repo, tag), tag, commit, files });
+  console.log('Published', url);
+}
+
+if (require.main === module) main().catch(e => { console.error(e.message); process.exitCode = 1; });
+module.exports = { publishRelease };

@@ -33,7 +33,18 @@ let VAULT = ''; // the vault actually open in this window
 let quitting = false;
 
 function loadConfig() { carryOverOldSettings(); try { cfg = JSON.parse(fs.readFileSync(CONFIG(), 'utf8')); } catch { cfg = {}; } }
-function saveConfig() { try { fs.mkdirSync(path.dirname(CONFIG()), { recursive: true }); fs.writeFileSync(CONFIG(), JSON.stringify(cfg, null, 2)); } catch (e) { console.error(e); } }
+function saveConfig(strict = false) {
+  const dest = CONFIG();
+  const tmp = dest + '.' + process.pid + '.tmp';
+  try {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(tmp, JSON.stringify(cfg, null, 2));
+    fs.renameSync(tmp, dest);
+  } catch (error) {
+    if (strict) throw error;
+    console.error(error);
+  }
+}
 const tr = () => strings(cfg.lang || pickLang(app.getLocale()));
 
 function isEmptyDir(p) { try { return fs.readdirSync(p).filter(n => !n.startsWith('.')).length === 0; } catch { return true; } }
@@ -48,87 +59,40 @@ function isEmptyDir(p) { try { return fs.readdirSync(p).filter(n => !n.startsWit
    and reopens the app. */
 const PKG = require(path.join(ROOT, 'package.json'));
 const updateFolder = () => arg('update-folder') || cfg.updateFolder || PKG.myobsidian?.updateFolder || null;
-const cmpVer = (a, b) => { const x = a.split('.').map(Number), y = b.split('.').map(Number); for (let i = 0; i < 3; i++) if ((x[i] || 0) !== (y[i] || 0)) return (x[i] || 0) - (y[i] || 0); return 0; };
-let update = { current: app.getVersion(), available: null, file: null, folder: null };
 const updateRepo = () => arg('update-repo') || cfg.updateRepo || PKG.graphite?.updateRepo || null;
-const SETUP = /^(?:Graphite|MyObsidian)-Setup-(\d+\.\d+\.\d+)\.exe$/;
-// GitHub allows 60 unauthenticated API calls an hour, so ask at most every 15 minutes.
-let gh = { at: 0, best: null };
-async function checkGitHub() {
-  const repo = updateRepo();
-  if (!repo || !/^[\w.-]+\/[\w.-]+$/.test(repo)) return null;
-  if (Date.now() - gh.at < 15 * 60 * 1000) return gh.best;
-  gh.at = Date.now();
-  try {
-    const r = await fetch(`https://api.github.com/repos/${repo}/releases/latest`, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'Graphite-updater' }, signal: AbortSignal.timeout(15000) });
-    if (!r.ok) return (gh.best = null);
-    const rel = await r.json();
-    let best = null;
-    for (const a of rel.assets || []) {
-      const m = a.name.match(SETUP);
-      if (m && cmpVer(m[1], app.getVersion()) > 0 && (!best || cmpVer(m[1], best.version) > 0)) best = { version: m[1], url: a.browser_download_url, size: a.size, name: a.name, notes: rel.body || '' };
-    }
-    return (gh.best = best);
-  } catch { return gh.best; } // offline: keep what we knew
-}
-
-async function checkForUpdates() {
-  const dir = updateFolder();
-  let best = null;
-  try {
-    for (const f of fs.readdirSync(dir)) {
-      const m = f.match(/^(?:Graphite|MyObsidian)-Setup-(\d+\.\d+\.\d+)\.exe$/);
-      // The .blockmap is written last, so its presence means the installer is complete.
-      if (!m || !fs.existsSync(path.join(dir, f + '.blockmap'))) continue;
-      if (cmpVer(m[1], app.getVersion()) > 0 && (!best || cmpVer(m[1], best.version) > 0)) best = { version: m[1], file: path.join(dir, f) };
-    }
-  } catch { /* folder missing: no updates */ }
-  const remote = await checkGitHub();
-  if (remote && (!best || cmpVer(remote.version, best.version) > 0)) best = remote;
-  update = { current: app.getVersion(), available: best?.version || null, file: best?.file || null, url: best?.url || null, size: best?.size || 0,
-    name: best?.name || null, notes: best?.notes || '', source: best?.url ? 'github' : best ? 'folder' : null, folder: dir, repo: updateRepo() };
-  if (win && !win.isDestroyed()) win.webContents.send('update-state', update);
-  return update;
-}
-
-// Download a release installer to the temp folder, reporting progress to the page.
-async function downloadInstaller(u) {
-  const dest = path.join(app.getPath('temp'), u.name || `Graphite-Setup-${u.available}.exe`);
-  const r = await fetch(u.url, { headers: { 'User-Agent': 'Graphite-updater' }, redirect: 'follow' });
-  if (!r.ok || !r.body) throw new Error(`Download failed (${r.status})`);
-  const total = Number(r.headers.get('content-length')) || u.size || 0;
-  const out = fs.createWriteStream(dest);
-  let got = 0, last = 0;
-  for await (const chunk of r.body) {
-    if (!out.write(chunk)) await new Promise(res => out.once('drain', res));
-    got += chunk.length;
-    if (total && Date.now() - last > 250) { last = Date.now(); win?.webContents.send('update-state', { ...update, progress: got / total }); }
-  }
-  await new Promise((res, rej) => out.end(e => (e ? rej(e) : res())));
-  if (total && fs.statSync(dest).size !== total) throw new Error('Download incomplete; try again');
-  return dest;
-}
-
+const { createUpdater, verifyBeforeInstall } = require('./updater');
+let pausedUpdateWindow = null;
+const updater = createUpdater({
+  current: app.getVersion(), getRepo: updateRepo, getFolder: updateFolder, getTemp: () => app.getPath('temp'),
+  onState: state => { if (win && !win.isDestroyed()) win.webContents.send('update-state', state); },
+  beforeInstall: async () => {
+    const target = win;
+    if (!target || target.isDestroyed() || !target.isEnabled()) return { ok: false, errorCode: 'unsaved', error: 'The editor is unavailable' };
+    // Keep editing available during the download, then freeze input for the final save and handoff.
+    target.setEnabled(false);
+    pausedUpdateWindow = target;
+    return verifyBeforeInstall(
+      () => target.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : null'),
+      async () => {
+        if (!target.isMaximized() && !target.isFullScreen()) cfg.bounds = target.getBounds();
+        cfg.maximized = target.isMaximized();
+        await captureStorage(true);
+      },
+    );
+  },
+  onReadyToQuit: () => {
+    quitting = true;
+    setTimeout(() => app.exit(0), 300);
+  },
+});
+const checkForUpdates = options => updater.check(options);
 async function installUpdate() {
-  let downloaded = null;
-  if (update.url) {
-    try { downloaded = await downloadInstaller(update); }
-    catch (e) { win?.webContents.send('update-state', update); return { ok: false, error: e.message }; }
-  } else if (!update.file || !fs.existsSync(update.file)) return { ok: false, error: 'Installer not found' };
-  // Save open notes, remember the window, then hand over to the installer.
-  await win.webContents.executeJavaScript('window.__moFlush ? window.__moFlush() : null').catch(() => {});
-  await captureStorage();
-  if (!win.isMaximized()) cfg.bounds = win.getBounds();
-  cfg.maximized = win.isMaximized();
-  saveConfig();
-  // Run a copy from the temp folder, so the original can be replaced by the next build meanwhile.
-  let tmp = downloaded;
-  if (!tmp) { tmp = path.join(app.getPath('temp'), path.basename(update.file)); fs.copyFileSync(update.file, tmp); }
-  // Same switches electron-updater uses: silent install, then start the app again.
-  require('child_process').spawn(tmp, ['--updated', '/S', '--force-run'], { detached: true, stdio: 'ignore' }).unref();
-  quitting = true;
-  setTimeout(() => app.exit(0), 300);
-  return { ok: true };
+  const result = await updater.install();
+  if (!result.ok && result.errorCode !== 'busy' && pausedUpdateWindow) {
+    if (!pausedUpdateWindow.isDestroyed()) pausedUpdateWindow.setEnabled(true);
+    pausedUpdateWindow = null;
+  }
+  return result;
 }
 
 /* ---------- Remembering the page's settings ----------
@@ -136,12 +100,19 @@ async function installUpdate() {
    belongs to the exact address, and the built-in server uses a new random port at every launch, so we copy
    it into config.json (cfg.storage) and put it back before the page starts (see preload.js). */
 let lastStorage = '';
-async function captureStorage() {
-  if (!win || win.isDestroyed()) return;
+async function captureStorage(strict = false) {
   try {
+    if (!win || win.isDestroyed()) throw new Error('The editor is unavailable');
     const json = await win.webContents.executeJavaScript('JSON.stringify(Object.fromEntries(Object.keys(localStorage).map(k => [k, localStorage.getItem(k)])))');
-    if (json && json !== lastStorage) { lastStorage = json; cfg.storage = JSON.parse(json); saveConfig(); }
-  } catch { /* page not ready */ }
+    if (!json) throw new Error('The editor settings are unavailable');
+    if (json !== lastStorage || strict) {
+      cfg.storage = JSON.parse(json);
+      saveConfig(strict);
+      lastStorage = json;
+    }
+  } catch (error) {
+    if (strict) throw error;
+  }
 }
 function storageForPage() {
   const s = { ...(cfg.storage || {}) };
@@ -381,7 +352,7 @@ async function main() {
   });
   ipcMain.on('set-language', (_e, code) => { if (code && code !== cfg.lang) { cfg.lang = code; saveConfig(); } });
   ipcMain.on('storage-load', e => { e.returnValue = storageForPage(); });
-  ipcMain.handle('update-check', () => checkForUpdates());
+  ipcMain.handle('update-check', (_event, options) => checkForUpdates({ force: options?.force === true }));
   ipcMain.handle('update-install', () => installUpdate());
   ipcMain.handle('copy-text', (_e, text) => { require('electron').clipboard.writeText(String(text)); return true; });
 

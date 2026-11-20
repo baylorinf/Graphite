@@ -2220,6 +2220,20 @@ for (const [k, v] of Object.entries({
 })) ["en", "fr", "es", "ja", "ko", "zh-CN", "zh-TW"].forEach((c, i) => { D[c][k] = v[i]; });
 
 // ---- Settings → Claude Code, and built-in plugins ----
+for (const [key, labels] of Object.entries({
+  "update.notChecked": ["Updates have not been checked yet.","La recherche de mises à jour n’a pas encore eu lieu.","Todavía no se han buscado actualizaciones.","更新はまだ確認されていません。","아직 업데이트를 확인하지 않았습니다.","尚未检查更新。","尚未檢查更新。"],
+  "update.check.offline": ["Could not reach GitHub. Check your connection and try again.","GitHub est inaccessible. Vérifiez la connexion et réessayez.","No se pudo conectar con GitHub. Revisa la conexión e inténtalo de nuevo.","GitHub に接続できません。接続を確認して、もう一度お試しください。","GitHub에 연결할 수 없습니다. 연결을 확인하고 다시 시도하세요.","无法连接 GitHub，请检查网络后重试。","無法連線至 GitHub，請檢查網路後重試。"],
+  "update.check.rateLimit": ["GitHub has temporarily limited update checks. Try again later.","GitHub limite temporairement les vérifications. Réessayez plus tard.","GitHub ha limitado temporalmente las consultas. Inténtalo más tarde.","GitHub の確認回数が上限に達しました。しばらくしてからお試しください。","GitHub 요청 한도에 도달했습니다. 잠시 후 다시 시도하세요.","GitHub 暂时限制了更新检查，请稍后再试。","GitHub 暫時限制了更新檢查，請稍後再試。"],
+  "update.check.release": ["GitHub could not provide a usable release. Try again later.","GitHub n’a pas fourni de version utilisable. Réessayez plus tard.","GitHub no devolvió una versión disponible. Inténtalo más tarde.","GitHub から有効なリリース情報を取得できません。後でもう一度お試しください。","GitHub에서 사용 가능한 릴리스를 받지 못했습니다. 나중에 다시 시도하세요.","未能取得可用的 GitHub 发布信息，请稍后重试。","未能取得可用的 GitHub 發布資訊，請稍後重試。"],
+  "update.error.unsaved": ["Changes still need saving. Save them, then try the update again.","Des modifications restent à enregistrer. Enregistrez-les, puis réessayez.","Quedan cambios por guardar. Guárdalos y vuelve a intentar la actualización.","未保存の変更があります。保存してから更新を再試行してください。","저장되지 않은 변경이 있습니다. 저장한 뒤 업데이트를 다시 시도하세요.","还有改动未保存。请先保存，再试一次更新。","還有變更尚未儲存。請先儲存，再試一次更新。"],
+  "update.error.saveTimeout": ["Save confirmation timed out. Check that your work is saved, then retry.","La confirmation de l’enregistrement a expiré. Vérifiez votre travail et réessayez.","Se agotó el tiempo de espera al guardar. Comprueba los cambios y vuelve a intentarlo.","保存の確認がタイムアウトしました。保存状態を確認してから再試行してください。","저장 확인 시간이 초과되었습니다. 저장 상태를 확인한 뒤 다시 시도하세요.","等待保存确认超时。请核对保存状态，再重试更新。","等待儲存確認逾時。請核對儲存狀態，再重試更新。"],
+  "update.error.busy": ["An update is already in progress.","Une mise à jour est déjà en cours.","Ya hay una actualización en curso.","更新を実行中です。","이미 업데이트가 진행 중입니다.","正在更新。","正在更新。"],
+  "update.error.download": ["The download could not finish. Please retry.","Le téléchargement a échoué. Réessayez.","No se completó la descarga. Vuelve a intentarlo.","ダウンロードを完了できませんでした。もう一度お試しください。","다운로드를 완료하지 못했습니다. 다시 시도하세요.","安装包下载未完成，请重试。","安裝包下載未完成，請重試。"],
+  "update.error.integrity": ["The installer did not match the release. Download it again.","Le programme d’installation ne correspond pas à la version publiée. Téléchargez-le de nouveau.","El instalador no coincide con la versión publicada. Descárgalo de nuevo.","インストーラーが公開されたファイルと一致しません。再度ダウンロードしてください。","설치 파일이 배포본과 일치하지 않습니다. 다시 다운로드하세요.","下载文件与发布版本不一致，请重新下载。","下載檔案與發布版本不一致，請重新下載。"],
+  "update.error.launch": ["Windows could not start the installer. Please retry.","Windows n’a pas pu lancer le programme d’installation. Réessayez.","Windows no pudo iniciar el instalador. Vuelve a intentarlo.","Windows でインストーラーを起動できません。再試行してください。","Windows에서 설치 프로그램을 시작하지 못했습니다. 다시 시도하세요.","Windows 未能启动安装程序，请重试。","Windows 未能啟動安裝程式，請重試。"],
+  "update.error.noInstaller": ["The installer is unavailable. Check for updates again.","Le programme d’installation est indisponible. Recherchez de nouveau les mises à jour.","El instalador ya no está disponible. Vuelve a buscar actualizaciones.","インストーラーが見つかりません。更新をもう一度確認してください。","설치 파일이 없습니다. 업데이트를 다시 확인하세요.","找不到安装包，请重新检查更新。","找不到安裝包，請重新檢查更新。"],
+})) LANGS.forEach(({code}, i) => { D[code][key] = labels[i]; });
+
 const CLAUDEKIT = {
   en: {
     'claude.title': 'Claude Code',

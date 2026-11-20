@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('myobsidianDesktop', {
   // Keep the desktop dialogs in the same language as the app.
   setLanguage: code => ipcRenderer.send('set-language', code),
   // Updates: ask whether a newer version exists, get told when one appears, install it.
-  checkUpdates: () => ipcRenderer.invoke('update-check'),
+  checkUpdates: ({ force = false } = {}) => ipcRenderer.invoke('update-check', { force: force === true }),
   installUpdate: () => ipcRenderer.invoke('update-install'),
   onUpdate: cb => ipcRenderer.on('update-state', (_e, state) => cb(state)),
   copyText: text => ipcRenderer.invoke('copy-text', String(text)),
