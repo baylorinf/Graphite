@@ -38,9 +38,15 @@ async function fixture(t) {
       return {result:{items:[]},reads:[]};
     }},
   });
-  async function request(body) {
+  async function request(body, onProgress) {
     const resp=new EventEmitter(), lines=[];
-    resp.writeHead=()=>{};resp.write=line=>lines.push(JSON.parse(line));resp.end=()=>{};
+    resp.writeHead=()=>{};
+    resp.write=line=>{
+      const entry=JSON.parse(line);
+      lines.push(entry);
+      if (entry.progress) onProgress?.(entry.progress,resp);
+    };
+    resp.end=()=>{};
     try { await agent.handle({headers:{},body:{job:'import',framework:'codex',...body}},resp); }
     catch(e) {return {error:e.message,status:e.status};}
     return lines.at(-1);
@@ -86,6 +92,33 @@ test('other framework failures remain visible and a successful AI plan keeps its
   const f=await fixture(t);
   f.state.error='auth';assert.equal((await f.request({phase:'plan'})).code,'auth');
   f.state.error=null;const {result:p}=await f.request({phase:'plan'});assert.deepEqual(p.items,[]);assert.equal(p.planMode,undefined);
+});
+
+test('Graphite can scan and import without any configured AI',async t=>{
+  const f = await fixture(t);
+  const graphite = {framework:null, provider:'graphite'};
+  assert.equal((await f.request({...graphite, phase:'plan'})).status, 400);
+  assert.equal((await f.request({...graphite, job:'inbox', phase:'plan', planning:'manual'})).status, 400);
+  const {result:plan} = await f.request({...graphite, phase:'plan', planning:'manual'});
+  assert.equal(plan.planMode, 'manual');
+  const index = plan.items.findIndex(file => file.name === 'new.md');
+  assert.ok(index >= 0);
+  const apply = {phase:'apply', planId:plan.planId, accept:[index], destinations:{[index]:'new.md'}};
+  assert.equal((await f.request({...apply, framework:'codex'})).status, 409);
+  const {result:saved} = await f.request({...graphite, ...apply});
+  assert.deepEqual(saved.done.map(file => file.dest), ['new.md']);
+  assert.equal(await fs.readFile(path.join(f.vault,'new.md'),'utf8'), 'xyz');
+  assert.deepEqual(f.state.calls, []);
+});
+
+test('leaving an active scan stops it before asking the AI to plan',async t=>{
+  const f = await fixture(t);
+  const response = await f.request({phase:'plan'}, (progress,res)=>{
+    if (progress.step === 'scan') res.emit('close');
+  });
+  assert.ok(response.error);
+  assert.deepEqual(f.state.calls, []);
+  assert.equal(await f.exists(path.join(f.vault,'.obsidian')), false);
 });
 
 test('recorded imports detect equal-length revisions even with the same timestamp for both raw and converted files',async t=>{

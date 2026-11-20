@@ -294,8 +294,10 @@ module.exports = function createAgent(h) {
      after checking the note hasn't changed since the plan; if anything fails, what was already applied is undone.
      A failed run, a check that doesn't pass or an error keeps the stage folder (its path is in the error). */
   const normText = t => String(t ?? '').replace(/\r\n/g, '\n').replace(/[ \t]+$/gm, '').replace(/\n{3,}/g, '\n\n').trim();
-  async function fileHash(abs) {
-    return new Promise((resolve, reject) => { const h2 = crypto.createHash('sha256'); fs.createReadStream(abs).on('error', reject).on('data', d => h2.update(d)).on('end', () => resolve(h2.digest('hex'))); });
+  async function fileHash(abs, signal) {
+    const digest = crypto.createHash('sha256');
+    for await (const chunk of fs.createReadStream(abs, {signal})) digest.update(chunk);
+    return digest.digest('hex');
   }
   async function walkFiles(dir, base = dir, out = []) {
     for (const e of await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])) {
@@ -406,20 +408,22 @@ module.exports = function createAgent(h) {
   async function readManifest() {
     try { return { imported: {}, ignored: {}, ...JSON.parse(await fsp.readFile(inVault(MANIFEST), 'utf8')) }; } catch { return { imported: {}, ignored: {} }; }
   }
-  async function scan(sb, extras, progress, opts = {}) {
+  async function scan(sb, extras, progress, opts = {}, signal) {
     const recentDays = Math.max(1, +opts.recentDays || 180);
     const recentFolders = (Array.isArray(opts.recentFolders) && opts.recentFolders.length ? opts.recentFolders : ['Downloads', 'Desktop', 'Documents']).map(String);
     const manifest = await readManifest();
     const key = p => norm(p).toLowerCase();
     const bySize = new Map(), vaultFiles = new Map(), folders = [], digests = new Map(), duplicates = [];
     async function digest(file) {
+      signal?.throwIfAborted();
       const key = low(path.resolve(file));
-      if (!digests.has(key)) digests.set(key, await fileHash(file).catch(()=>null));
+      if (!digests.has(key)) digests.set(key, await fileHash(file, signal).catch(()=>null));
       return digests.get(key); // A file that vanished or could not be read is not evidence of a match.
     }
     async function walkVault(dir, depth) {
       let ents = []; try { ents = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
       for (const e of ents) {
+        signal?.throwIfAborted();
         if (e.name.startsWith('.')) continue;
         const p = path.join(dir, e.name);
         if (e.isDirectory()) { if (depth < 3) folders.push(toRel(p)); await walkVault(p, depth + 1); continue; }
@@ -466,6 +470,7 @@ module.exports = function createAgent(h) {
     async function walk(dir, course, base, { recentOnly = false, depth = 0, maxDepth = 8 } = {}) {
       let ents = []; try { ents = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
       for (const e of ents) {
+        signal?.throwIfAborted();
         const p = path.join(dir, e.name);
         if (e.isDirectory()) {
           if (!SKIP_DIR.test(e.name) && !sb.skip.includes(low(e.name)) && depth < maxDepth && !inside(p, VAULT())) await walk(p, course, base, { recentOnly, depth: depth + 1, maxDepth });
@@ -483,8 +488,10 @@ module.exports = function createAgent(h) {
     for (const root of sb.roots) {
       if (skipped(root, sb)) continue;
       progress({ step: 'scan', path: norm(root) });
+      signal?.throwIfAborted();
       let ents = []; try { ents = await fsp.readdir(root, { withFileTypes: true }); } catch { continue; }
       for (const e of ents) {
+        signal?.throwIfAborted();
         const p = path.join(root, e.name);
         if (e.isDirectory()) { if (!SKIP_DIR.test(e.name) && !sb.skip.includes(low(e.name)) && !e.name.startsWith('.')) await walk(p, e.name, p); }
         else if (e.isFile() && !SKIP_FILE.test(e.name) && (DOC_EXT.test(e.name) || NOTE_EXT.test(e.name))) {
@@ -553,9 +560,10 @@ Write reasons, questions and the note in ${lang}.`;
       items, folders:folders.filter(folder=>!NO_WRITE.test(folder)), duplicates, ignore:[], questions:[]};
   }
   async function importPlan(run) {
-    const scanResult = await scan(run.sb, !!run.body.extras, run.progress, run.body);
+    const scanResult = await scan(run.sb, !!run.body.extras, run.progress, run.body, run.signal);
+    run.signal.throwIfAborted();
     const { candidates, counts, folders, hints, duplicates } = scanResult;
-    if (!candidates.length) return { job: 'import', empty: true, counts, duplicates, items: [], ignore: [], questions: [] };
+    if (!candidates.length) return { job: 'import', planMode: 'manual', empty: true, counts, duplicates, items: [], ignore: [], questions: [] };
     if (run.body.planning === 'manual') return manualImportPlan(run, scanResult);
     const shown = candidates.slice(0, 300);
     const user = `Today: ${today()}\n\n<candidates>\n${shown.map((c, i) => JSON.stringify({ id: i, ...c })).join('\n')}\n</candidates>\n` +
@@ -917,7 +925,6 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
     if (!job) throw new HttpError(400, 'Unknown agent job');
     const fw = body.framework && h.frameworks.ids.includes(body.framework) ? body.framework : null;
     const provider = fw ? null : body.provider || 'anthropic';
-    if (!fw && provider !== 'anthropic' && !h.COMPAT[provider]) throw new HttpError(400, 'Unknown AI provider');
     const model = fw ? '' : String(body.model || '').trim() || (provider === 'anthropic' ? h.ANTHROPIC_DEFAULT : '');
     for (const [k, v] of plans) if (Date.now() - v.at > 3600e3) plans.delete(k);
     let plan = null;
@@ -929,6 +936,8 @@ Then call submit_plan with edits (each the whole new file) and a short summary i
       }
     }
     const manual = body.job === 'import' && (plan ? plan.planMode === 'manual' : body.planning === 'manual');
+    const localScan = provider === 'graphite' && manual;
+    if (!fw && !localScan && provider !== 'anthropic' && !Object.hasOwn(h.COMPAT, provider)) throw new HttpError(400, 'Unknown AI provider');
     if (!manual && !fw && !key && provider !== 'custom') throw new HttpError(400, 'No API key');
     if (!manual && !fw && !model) throw new HttpError(400, 'Choose a model first (Settings → AI)');
     const ctl = new AbortController();
