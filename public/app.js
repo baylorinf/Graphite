@@ -175,6 +175,12 @@ function parseYaml(src) {
 const stripCode = t => t.replace(/^[ \t]*(```|~~~)[\s\S]*?^[ \t]*\1.*$/gm, '').replace(/`[^`\n]*`/g, '').replace(/%%[\s\S]*?%%/g, '').replace(/\$\$[\s\S]*?\$\$/g, '');
 
 function splitOnce(s, ch) { const i = s.indexOf(ch); return i < 0 ? [s, ''] : [s.slice(0, i), s.slice(i + 1)]; }
+// Percent-escapes decoded once, and only valid ones: "%23" → "#", "%25" → "%", while a literal "%" (as in
+// "Grade100%.md") or a broken escape stays as written instead of failing.
+function decodeLink(s) { return String(s).replace(/(?:%[0-9a-f]{2})+/gi, run => { try { return decodeURIComponent(run); } catch { return run; } }); }
+// A Markdown link target: split on the literal "#" first (the path's own "#" is written "%23"), then decode the
+// path and the heading separately, once each.
+function splitLink(href) { const [p, h] = splitOnce(String(href), '#'); return [decodeLink(p), decodeLink(h)]; }
 function splitWiki(inner) {
   const [target, alias] = splitOnce(inner, '|');
   const [name, heading] = splitOnce(target, '#');
@@ -190,7 +196,7 @@ function parseLinks(text) {
   MDLINK_RE.lastIndex = 0;
   while ((m = MDLINK_RE.exec(text))) {
     if (/^[a-z]+:/i.test(m[1])) continue;
-    try { out.push({ name: decodeURIComponent(m[1]), raw: m[0] }); } catch { /* bad uri */ }
+    out.push({ name: decodeLink(m[1]), raw: m[0] });
   }
   return out;
 }
@@ -530,7 +536,7 @@ function postProcess(el, from, depth) {
     const href = a.getAttribute('href');
     if (/^[a-z][\w+.-]*:/i.test(href)) { a.target = '_blank'; a.rel = 'noopener'; a.classList.add('external'); }
     else if (/\.md(#.*)?$/i.test(href) && !a.classList.contains('internal-link')) {
-      const [p, h] = splitOnce(decodeURIComponent(href), '#');
+      const [p, h] = splitLink(href);
       a.classList.add('internal-link'); a.dataset.target = p; a.dataset.heading = h;
       if (!resolve(p, from)) a.classList.add('unresolved');
       a.setAttribute('href', '#');
@@ -539,8 +545,7 @@ function postProcess(el, from, depth) {
     // folder first, so a same-named file of another course is never opened instead; then the vault-wide name.
     // It opens inside Graphite (PDF, text, images…), with #page=N kept.
     else if (href && !href.startsWith('#') && !href.startsWith('/') && !a.classList.contains('internal-link') && !a.dataset.open) {
-      let raw = href; try { raw = decodeURIComponent(href); } catch { /* keep as written */ }
-      const [p, h] = splitOnce(raw, '#');
+      const [p, h] = splitLink(href);
       if (!p) continue;
       const near = normalize(joinPath(dirName(from || ''), p.replace(/^\.\//, '')));
       const target = S.files.has(near) ? near : S.files.has(p) ? p : resolve(p, from);
@@ -553,7 +558,7 @@ function postProcess(el, from, depth) {
   for (const img of el.querySelectorAll('img[src]')) {
     const src = img.getAttribute('src');
     if (!/^([a-z]+:|\/|data:)/i.test(src)) {
-      const p = resolve(decodeURIComponent(src), from) || normalize(joinPath(dirName(from), decodeURIComponent(src)));
+      const p = resolve(decodeLink(src), from) || normalize(joinPath(dirName(from), decodeLink(src)));
       img.src = '/vault/' + encPath(p);
     }
   }

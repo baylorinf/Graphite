@@ -151,3 +151,12 @@
 .cc-agent-pre { white-space: pre-wrap; font-size: 11px; max-height: 180px; overflow: auto; margin: 4px 0 0; }
 .cc-agent-acts { display: flex; gap: 8px; flex-wrap: wrap; }
 .cc-agent-hint { font-size: 11px; color: var(--text-faint); }
+/* "Link these notes?": tick the proposed links, then confirm (nothing is written before). */
+.cc-connect-modal .cc-connect-list { display: flex; flex-direction: column; gap: 6px; max-height: min(50vh, 420px); overflow: auto; margin: 8px 0; }
+.cc-connect-modal .cc-connect-row { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border: 1px solid var(--background-modifier-border, var(--border)); border-radius: 8px; cursor: pointer; }
+.cc-connect-modal .cc-connect-row.is-locked { opacity: .65; cursor: default; }
+.cc-connect-modal .cc-connect-pair { font-weight: 600; }
+.cc-connect-modal .cc-connect-path, .cc-connect-modal .cc-connect-why { font-size: 12px; color: var(--text-muted); }
+.cc-connect-modal .cc-connect-lock, .cc-connect-modal .cc-connect-locked, .cc-connect-modal .cc-connect-error { color: var(--text-error, #d84c51); font-size: 13px; }
+.cc-connect-modal .cc-connect-buttons { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.cc-connect-note.is-busy { opacity: .5; cursor: progress; }

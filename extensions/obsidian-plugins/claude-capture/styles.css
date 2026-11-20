@@ -48,3 +48,6 @@
 :root[data-theme="dark"] .cc-selbar::after, :root[data-theme="dark"] .cc-selbar.below::after { border-color: rgba(255,255,255,.09); }
 :root[data-theme="dark"] .cc-selbar button.cc-q-unf svg { color: #ff8a80; }
 :root[data-theme="dark"] .cc-selbar button.cc-q-int svg { color: #f0c870; }
+/* A save that failed: the reason and Retry, above the buttons (the text stays in the boxes). */
+.claude-capture-modal .cc-error { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 12px; padding: 8px 10px; border-radius: 8px; background: color-mix(in srgb, var(--text-error, #d84c51) 12%, transparent); color: var(--text-normal); }
+.claude-capture-modal.cc-saving .cc-btn { opacity: .6; cursor: progress; }

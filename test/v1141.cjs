@@ -578,7 +578,7 @@ async function main() {
       await switchTo(C); await load();
       await sleep(800);
       for (const id of ['claude-chat', 'claude-capture', 'claude-quizzes']) {
-        assert.equal(JSON.parse(await fs.readFile(path.join(plug, id, 'manifest.json'), 'utf8')).version, '1.2.0', id + ' not updated');
+        assert.equal(JSON.parse(await fs.readFile(path.join(plug, id, 'manifest.json'), 'utf8')).version, JSON.parse(await fs.readFile(path.join(ship, id, 'manifest.json'), 'utf8')).version, id + ' not updated');
         assert.equal(JSON.parse(await fs.readFile(path.join(plug, id, 'data.json'), 'utf8')).mine, id, id + ' lost its settings');
       }
       assert.deepEqual(JSON.parse(await fs.readFile(path.join(C, '.obsidian/community-plugins.json'), 'utf8')).sort(), ['claude-capture', 'claude-chat', 'claude-quizzes']);

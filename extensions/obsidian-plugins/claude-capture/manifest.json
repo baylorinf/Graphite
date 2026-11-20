@@ -1,7 +1,7 @@
 {
   "id": "claude-capture",
   "name": "Graphite Capture",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "minAppVersion": "1.0.0",
   "description": "Mark anything interesting or unfamiliar with one click. Captures wait in the capture inbox (Claude Inbox.md) until the AI you chose in Settings → AI files them into your notes.",
   "author": "Graphite",

@@ -60,6 +60,15 @@ function selectionMarkdown(sel) {
 
 const pendingCount = text => (text.match(/^- \[ \] /gm) || []).length;
 
+// A capture's id: "cap-" + local time to the second (as before, so old ids still read the same) + a random part,
+// so captures made in the same second or millisecond, in two windows or after reopening never share an id.
+function newCaptureId(now = moment()) {
+  let rand = '';
+  try { const a = new Uint32Array(2); crypto.getRandomValues(a); rand = a[0].toString(36) + a[1].toString(36); }
+  catch { rand = Math.random().toString(36).slice(2) + Date.now().toString(36); }
+  return 'cap-' + now.format('YYYYMMDD-HHmmss') + '-' + rand.replace(/[^a-z0-9]/g, '').slice(0, 10).padStart(10, '0');
+}
+
 // Nearest heading above a line in Markdown source.
 function headingAbove(src, line) {
   const ls = src.split('\n');
@@ -124,12 +133,38 @@ class CaptureModal extends Modal {
     setTimeout(() => (this.textEl.value ? this.noteEl : this.textEl).focus(), 30);
   }
 
+  // The window closes only once the capture is in the inbox. If saving fails, everything stays (text, thought,
+  // kind, source) with the reason and a Retry. A second click while saving does nothing; a retry reuses the same
+  // id, so the capture is written once even if an earlier attempt did reach the disk.
   async save(kind) {
+    if (this.saving) return;
     const text = this.textEl.value.trim();
     const thought = this.noteEl.value.trim();
     if (!text && !thought) { new Notice(T('Type or select something first.')); return; }
-    this.close();
-    await this.plugin.saveCapture({ ...this.ctx, kind, text, thought });
+    if (!this.capId || this.capFor !== kind + '\n' + text + '\n' + thought) { this.capId = newCaptureId(); this.capFor = kind + '\n' + text + '\n' + thought; }
+    this.saving = true; this.setBusy(true, kind);
+    try {
+      await this.plugin.saveCapture({ ...this.ctx, kind, text, thought, id: this.capId });
+      this.saving = false;
+      this.close();
+    } catch (e) {
+      this.saving = false; this.setBusy(false);
+      this.showError(e, kind);
+    }
+  }
+  // Not while saving (Esc, ×, or a click outside): if that save fails, the text must still be here.
+  close() { if (this.saving) return; super.close(); }
+  setBusy(busy) {
+    for (const b of this.contentEl.querySelectorAll('.cc-btn, .cc-retry')) b.disabled = busy;
+    this.modalEl.toggleClass('cc-saving', busy);
+  }
+  showError(e, kind) {
+    this.errEl?.remove();
+    this.errEl = this.contentEl.createDiv({ cls: 'cc-error', attr: { role: 'alert' } });
+    this.errEl.createSpan({ text: T('Not saved: {msg}. Your text is kept here; try again.', { msg: (e && e.message) || T('the inbox could not be written') }) });
+    const retry = this.errEl.createEl('button', { cls: 'cc-retry mod-cta', attr: { type: 'button' }, text: T('Retry') });
+    retry.onclick = () => this.save(kind);
+    this.contentEl.querySelector(`.cc-${kind}`)?.addClass('cc-suggested');
   }
 
   onClose() {
@@ -276,10 +311,22 @@ module.exports = class ClaudeCapturePlugin extends Plugin {
     bar.style.top = (above ? rect.top - bh - 10 : rect.bottom + 10) + 'px';
   }
 
+  // The bar's one-click save: if it fails, the capture window opens with the text, kind and source kept, the
+  // reason, and Retry (with the same id), so nothing selected is lost.
   async quickSave(kind) {
     const ctx = this.currentContext();
     if (!ctx.selection) { new Notice(T('Select some text first.')); return; }
-    await this.saveCapture({ ...ctx, kind, text: ctx.selection, thought: '' });
+    if (this.quickBusy) return;
+    this.quickBusy = true;
+    const id = newCaptureId();
+    try { await this.saveCapture({ ...ctx, kind, text: ctx.selection, thought: '', id }); }
+    catch (e) {
+      if (this.modal) this.modal.close();
+      const m = this.modal = new CaptureModal(this, { ...ctx, kind });
+      m.open();
+      m.capId = id; m.capFor = kind + '\n' + ctx.selection.trim() + '\n';
+      m.showError(e, kind);
+    } finally { this.quickBusy = false; }
   }
 
   rememberSelection() {
@@ -335,7 +382,16 @@ module.exports = class ClaudeCapturePlugin extends Plugin {
     this.modal.open();
   }
 
-  async saveCapture({ kind, text, thought, file, heading, source, course }) {
+  // Adds one capture to the inbox; throws if it couldn't be written (the caller keeps the text). Saves from this
+  // window run one after another, so two quick saves never overwrite each other; an id already in the inbox (an
+  // earlier attempt that did arrive) is not written again.
+  saveCapture(capture) {
+    const run = () => this.writeCapture(capture);
+    const next = (this.saveChain || Promise.resolve()).then(run, run);
+    this.saveChain = next.catch(() => {});
+    return next;
+  }
+  async writeCapture({ kind, text, thought, file, heading, source, course, id }) {
     const k = KINDS[kind];
     const now = moment();
     let where = '';
@@ -345,7 +401,7 @@ module.exports = class ClaudeCapturePlugin extends Plugin {
       const shown = file.basename + (heading ? ' › ' + heading : '');
       where = ` · [[${target}|${shown.replace(/[[\]|]/g, ' ')}]]`;
     }
-    const id = 'cap-' + now.format('YYYYMMDD-HHmmss');
+    id = id || newCaptureId(now);
     const lines = [`- [ ] **${k.label}** · ${now.format('YYYY-MM-DD HH:mm')}${where} %%${id}%%`];
     if (text) for (const l of text.split('\n')) lines.push('    > ' + l);
     if (thought) lines.push('    - Thought: ' + thought.replace(/\n+/g, ' '));
@@ -356,7 +412,7 @@ module.exports = class ClaudeCapturePlugin extends Plugin {
     if (!inbox) await vault.create(INBOX, INBOX_HEADER + entry);
     else {
       const cur = await vault.read(inbox);
-      await vault.modify(inbox, cur + (cur.endsWith('\n') ? '' : '\n') + entry);
+      if (!cur.includes(`%%${id}%%`)) await vault.modify(inbox, cur + (cur.endsWith('\n') ? '' : '\n') + entry);
     }
     this.lastSel = { text: '', heading: '', at: 0 };
     const n = await this.updateStatus();

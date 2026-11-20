@@ -20,15 +20,54 @@ function lev(a, b) {
   }
   return d[b.length];
 }
+// Parts of a note a correction never touches, as [start, end) offsets into the text (the same UTF-16 offsets
+// the editor uses, so Chinese and other multi-byte text line up): frontmatter, fenced code, display math
+// ($$…$$, \[…\]), inline code, and inline math ($…$, \(…\)). Inline math follows the usual Markdown rule: an
+// unescaped $ followed by a non-space opens it, an unescaped $ after a non-space and not before a digit closes
+// it, within one paragraph. So "\$5", "$5 and $10" and "costs $3." stay plain text.
+const blank = s => s.replace(/[^\n]/g, ' ');
+export function protectedRanges(text) {
+  const out = [];
+  let masked = text;
+  const take = re => { masked = masked.replace(re, (m, ...rest) => { const at = rest.find(x => typeof x === 'number'); out.push([at, at + m.length]); return blank(m); }); };
+  take(/^---\r?\n[\s\S]*?\r?\n---(?=\r?\n|$)/);
+  take(/^[ \t]*(```|~~~)[\s\S]*?^[ \t]*\1.*$/gm);
+  take(/`[^`\n]*`/g);
+  take(/\$\$[\s\S]*?\$\$/g);
+  take(/\\\[[\s\S]*?\\\]/g);
+  take(/\\\([\s\S]*?\\\)/g);
+  for (let i = 0; i < masked.length; i++) {
+    const c = masked[i];
+    if (c === '\\') { i++; continue; }
+    if (c !== '$' || !masked[i + 1] || /\s/.test(masked[i + 1])) continue;
+    let j = i + 1, found = -1;
+    for (; j < masked.length; j++) {
+      if (masked[j] === '\\') { j++; continue; }
+      if (masked[j] === '\n' && masked[j + 1] === '\n') break;   // not across paragraphs
+      if (masked[j] === '$') { if (!/\s/.test(masked[j - 1]) && !/\d/.test(masked[j + 1] || '')) { found = j; } break; }
+    }
+    if (found > 0) { out.push([i, found + 1]); i = found; }
+  }
+  return out.sort((a, b) => a[0] - b[0]);
+}
+const overlaps = (ranges, start, end) => ranges.some(([s, e]) => start < e && end > s);
+// Where a quoted phrase is in the text outside every protected part, nearest to `near`; -1 if nowhere.
+export function placeOutside(text, quote, ranges = protectedRanges(text), near = 0) {
+  if (!quote) return -1;
+  let best = -1;
+  for (let at = text.indexOf(quote); at >= 0; at = text.indexOf(quote, at + 1)) {
+    if (overlaps(ranges, at, at + quote.length)) continue;
+    if (best < 0 || Math.abs(at - near) < Math.abs(best - near)) best = at;
+  }
+  return best;
+}
 export function basicCheck(text, path) {
   const issues = [];
-  // Blank out frontmatter, code and math so nothing inside them is "corrected" (offsets stay the same).
-  const masked = text
-    .replace(/^---\r?\n[\s\S]*?\r?\n---/, m => m.replace(/[^\n]/g, ' '))
-    .replace(/^[ \t]*(```|~~~)[\s\S]*?^[ \t]*\1.*$/gm, m => m.replace(/[^\n]/g, ' '))
-    .replace(/\$\$[\s\S]*?\$\$/g, m => m.replace(/[^\n]/g, ' '))
-    .replace(/`[^`\n]*`/g, m => ' '.repeat(m.length))
-    .replace(/https?:\/\/\S+/g, m => ' '.repeat(m.length));
+  // Blank out frontmatter, code and math so nothing inside them is "corrected" (offsets stay the same). They
+  // become a placeholder that is neither a letter nor a space, so a formula between words isn't "two spaces".
+  let masked = text;
+  for (const [s, e] of protectedRanges(text)) masked = masked.slice(0, s) + masked.slice(s, e).replace(/[^\n]/g, '\u0001') + masked.slice(e);
+  masked = masked.replace(/https?:\/\/\S+/g, m => ' '.repeat(m.length));
   const add = (type, start, quote, suggestion, explanation) => issues.push({ type, start, quote, suggestion, explanation, source: 'basic' });
   let m;
   // Repeated word: "the the"
@@ -117,7 +156,10 @@ export async function checkNote(path) {
       usedAI = true;
       summary = r.summary || '';
       // Place each AI finding in the text (it quotes the exact words it wants to change).
-      const ai = (r.issues || []).map(i => ({ ...i, start: text.indexOf(i.quote), source: 'ai' })).filter(i => i.quote && i.start >= 0);
+      // Never inside formulas or code: a quote found only there is left out.
+      const ranges = protectedRanges(text);
+      const ai = (r.issues || []).filter(i => i && typeof i.quote === 'string' && i.quote && (i.suggestion == null || typeof i.suggestion === 'string'))
+        .map(i => ({ ...i, start: placeOutside(text, i.quote, ranges), source: 'ai' })).filter(i => i.start >= 0);
       // Basic findings the AI didn't already cover
       issues = [...ai, ...issues.filter(b => !ai.some(a => Math.abs(a.start - b.start) < 3))].sort((a, b) => a.start - b.start);
     } catch (e) {
@@ -159,15 +201,24 @@ function render(path, issues, { usedAI, summary, aiError, use }) {
   actions.innerHTML = `${fixable.length > 1 ? `<button class="mod-button mod-cta" data-act="all">${esc(t('check.applyAll', { n: fixable.length }))}</button>` : ''}
     <button class="mod-button" data-act="close">${esc(t('review.close'))}</button>`;
   actions.querySelector('[data-act=close]').onclick = close;
-  actions.querySelector('[data-act=all]')?.addEventListener('click', () => {
+  actions.querySelector('[data-act=all]')?.addEventListener('click', async () => {
+    const locked = fixable.some(i => i.source === 'ai') ? await AI.readOnlyFolderOf(path) : null;
+    if (!win) return;
+    if (locked) H.toast(t('check.readOnly', { folder: locked }));
     // Apply from the end of the note backwards so earlier positions stay correct.
-    for (const i of [...fixable].sort((a, b) => b.start - a.start)) if (apply(path, i)) i.done = true;
+    for (const i of [...fixable].sort((a, b) => b.start - a.start)) if (!(locked && i.source === 'ai') && apply(path, i)) i.done = true;
     render(path, issues, { usedAI, summary, aiError, use });
   });
   list.querySelectorAll('.check-item').forEach(el => {
     const i = issues[+el.dataset.k];
-    el.querySelectorAll('[data-act]').forEach(b => b.onclick = () => {
-      if (b.dataset.act === 'apply') { if (apply(path, i)) i.done = true; }
+    el.querySelectorAll('[data-act]').forEach(b => b.onclick = async () => {
+      if (b.dataset.act === 'apply') {
+        // An AI's correction is not written into a read-only folder (Study settings, as they are now).
+        const locked = i.source === 'ai' ? await AI.readOnlyFolderOf(path) : null;
+        if (!win) return;
+        if (locked) H.toast(t('check.readOnly', { folder: locked }));
+        else if (apply(path, i)) i.done = true;
+      }
       else if (b.dataset.act === 'dismiss') i.done = true;
       else if (b.dataset.act === 'show') { close(); H.showInEditor(path, i.quote, i.start); return; }
       render(path, issues, { usedAI, summary, aiError, use });
@@ -177,8 +228,9 @@ function render(path, issues, { usedAI, summary, aiError, use }) {
 
 // Replace the quoted text with the suggestion in the open note (undo works with Ctrl+Z).
 function apply(path, issue) {
-  const text = H.getNoteText(path);
-  let at = text.slice(issue.start, issue.start + issue.quote.length) === issue.quote ? issue.start : text.indexOf(issue.quote);
+  const text = H.getNoteText(path), ranges = protectedRanges(text), end = issue.start + issue.quote.length;
+  // At its place if it is still there (and not in a formula or code); otherwise the nearest copy outside them.
+  const at = text.slice(issue.start, end) === issue.quote && !overlaps(ranges, issue.start, end) ? issue.start : placeOutside(text, issue.quote, ranges, issue.start);
   if (at < 0) { H.toast(t('check.moved')); return false; }
   H.replaceInNote(path, at, at + issue.quote.length, issue.suggestion);
   return true;

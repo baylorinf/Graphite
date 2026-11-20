@@ -18,7 +18,7 @@ export function initAI(host) {
   H = host;
   // For plugins (the chat panel): window.myobsidianAI
   window.myobsidianAI = { FEATURES, options, choice, setChoice, label, parts, request, ccListening, openSettings: () => H.openSettings('ai'), onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
-  Object.assign(window.myobsidianAI, { AGENT_FEATURES, agent, isApi: v => !!PROVIDERS[v], isLocal: v => !!LOCAL[v], isAgent: v => !!PROVIDERS[v] || !!LOCAL[v], frameworks: () => fwState, refreshFrameworks, errorText });
+  Object.assign(window.myobsidianAI, { AGENT_FEATURES, agent, isApi: v => !!PROVIDERS[v], isLocal: v => !!LOCAL[v], isAgent: v => !!PROVIDERS[v] || !!LOCAL[v], frameworks: () => fwState, refreshFrameworks, errorText, readOnlyFolderOf: p => readOnlyFolderOf(p) });
   Object.assign(window.myobsidianAI, { studySettings, executor, executorName });
   refreshFrameworks().catch(() => {});
   studySettings().catch(() => {}); // moves the old settings over on the first start after the update
@@ -285,6 +285,16 @@ export async function studySettings(force = false) {
   }
   studyCache = r;
   return r;
+}
+// The read-only folder (Study settings, as they are right now) that holds this vault path, or null. Read fresh
+// every time: it is checked just before an AI's change is written. If the settings can't be read, the last known
+// ones count (never "nothing is read-only" by default when they were known).
+export async function readOnlyFolderOf(path) {
+  const st = await studySettings(true).catch(() => studyCache);
+  const norm = s => String(s || '').replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLowerCase();
+  const p = norm(path);
+  const hit = (st?.profile?.readOnlyFolders || []).find(r => { const n = norm(r); return n && (p === n || p.startsWith(n + '/')); });
+  return hit ? String(hit).replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : null; // as written in the settings
 }
 export async function saveStudySettings(profile, { keepDifferences = false } = {}) {
   const res = await fetch('/api/study-profile', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ profile, keepDifferences }) });

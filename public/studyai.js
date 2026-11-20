@@ -511,6 +511,15 @@ export async function tidyFormat(path) {
     ui.actions.innerHTML = `<button class="mod-button mod-cta" data-a="apply">${esc(t('format.apply'))}</button><button class="mod-button" data-a="cancel">${esc(t('review.close'))}</button>`;
     ui.actions.querySelector('[data-a=cancel]').onclick = close;
     ui.actions.querySelector('[data-a=apply]').onclick = async () => {
+      // The note's folder may be read-only for every AI (Study settings, checked now, whichever AI wrote this):
+      // the preview stays, the note and any unsaved edits stay as they are, and the reason is shown.
+      const locked = await AI.readOnlyFolderOf(path);
+      if (!win) return;
+      if (locked) {
+        ui.body.querySelector('.ai-readonly')?.remove();
+        ui.body.insertAdjacentHTML('afterbegin', `<p class="mod-error ai-readonly" role="alert">${esc(t('format.readOnly', { folder: locked }))}</p>`);
+        return;
+      }
       if (H.getNoteText(path) !== before) { H.toast(t('format.changedMeanwhile')); return; }
       H.replaceInNote(path, 0, before.length, after);
       close();

@@ -8,7 +8,7 @@ const T = (s, v = {}) => (window.graphiteT ? window.graphiteT(s, v) : String(s).
 // - An API model (Settings → AI: Anthropic, OpenAI, Gemini, DeepSeek, Qwen, Kimi, GLM or a custom URL): the
 //   panel asks it through Graphite (window.myobsidianAI) and writes the answer to the same replies folder.
 //   Those messages carry "via", so the Claude Code watcher leaves them alone.
-const { Plugin, Notice, MarkdownView, MarkdownRenderer, moment } = require('obsidian');
+const { Plugin, Notice, Modal, MarkdownView, MarkdownRenderer, moment } = require('obsidian');
 
 const LISTEN_FRESH_MS = 15000;
 const CC = 'claude-code';
@@ -31,6 +31,69 @@ const ICON = {
   findFiles: svg('<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v3"/><path d="M3 7v10a2 2 0 0 0 2 2h6"/><circle cx="17" cy="17" r="3"/><path d="M21 21l-1.8-1.8"/>'),
   connect: svg('<circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="8" r="2.5"/><circle cx="9" cy="18" r="2.5"/><path d="M8.3 7l7.4.8M7 8.4l1.4 7.2M16.6 10l-5.8 6.3"/>'),
 };
+
+// "Link these notes?": each proposed note as "this note → that note" with a tick box, why it was proposed, and
+// which ones can't be linked (a read-only folder). Nothing is written until "Link selected"; one request writes
+// the links both ways; a failure keeps the window and your ticks with Retry. Closing or Cancel writes nothing.
+class ConnectModal extends Modal {
+  constructor(plugin, file, picked, sourceLock, via) { super(plugin.app); Object.assign(this, { plugin, file, picked, sourceLock, via }); }
+  onOpen() {
+    const { contentEl, file } = this;
+    this.modalEl.addClass('cc-connect-modal');
+    this.setTitle(T('Link “{note}” to these notes?', { note: file.basename }));
+    contentEl.createEl('p', { cls: 'cc-connect-intro', text: T('Proposed by {model}. Tick the links you want; each is added both ways. Nothing changes until you confirm.', { model: this.plugin.engineLabel(this.via) }) });
+    if (this.sourceLock) contentEl.createEl('p', { cls: 'cc-connect-locked', attr: { role: 'alert' }, text: T('“{note}” is in “{folder}”, a read-only folder in Study settings, so no links can be added to it.', { note: file.basename, folder: this.sourceLock }) });
+    const list = contentEl.createDiv({ cls: 'cc-connect-list', attr: { role: 'group' } });
+    this.picked.forEach((p, i) => {
+      const locked = this.sourceLock || p.lock;
+      const row = list.createEl('label', { cls: 'cc-connect-row' + (locked ? ' is-locked' : '') });
+      const box = row.createEl('input', { attr: { type: 'checkbox', 'data-i': String(i) } });
+      box.checked = !locked; box.disabled = !!locked;
+      const main = row.createDiv({ cls: 'cc-connect-main' });
+      main.createDiv({ cls: 'cc-connect-pair', text: `${file.basename} → ${p.f.basename}` });
+      main.createDiv({ cls: 'cc-connect-path', text: p.f.path });
+      if (p.why) main.createDiv({ cls: 'cc-connect-why', text: p.why });
+      if (p.lock && !this.sourceLock) main.createDiv({ cls: 'cc-connect-lock', text: T('Read-only folder “{folder}”: not linked.', { folder: p.lock }) });
+    });
+    this.errEl = contentEl.createDiv({ cls: 'cc-connect-error', attr: { role: 'alert' } });
+    this.errEl.hide?.(); this.errEl.style.display = 'none';
+    const row = contentEl.createDiv({ cls: 'cc-connect-buttons' });
+    this.okBtn = row.createEl('button', { cls: 'mod-cta', attr: { type: 'button', 'data-connect': 'confirm' }, text: T('Link selected') });
+    this.cancelBtn = row.createEl('button', { attr: { type: 'button', 'data-connect': 'cancel' }, text: T('Cancel') });
+    this.okBtn.onclick = () => this.confirm();
+    this.cancelBtn.onclick = () => this.close();
+    this.okBtn.disabled = !!this.sourceLock || this.picked.every(p => p.lock);
+  }
+  targets() { return [...this.contentEl.querySelectorAll('input[data-i]:checked:not(:disabled)')].map(b => this.picked[+b.dataset.i].f.path); }
+  async confirm() {
+    if (this.busy) return;
+    const targets = this.targets();
+    if (!targets.length) { new Notice(T('Tick at least one note to link.')); return; }
+    this.busy = true;
+    this.okBtn.disabled = this.cancelBtn.disabled = true; this.okBtn.setText(T('Linking…'));
+    for (const b of this.contentEl.querySelectorAll('input[data-i]')) b.disabled = true;
+    let result;
+    try {
+      const res = await fetch('/api/note-links', { method: 'POST', headers: { 'X-Vault': '1', 'Content-Type': 'application/json' }, body: JSON.stringify({ source: this.file.path, targets }) });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw Object.assign(new Error(d.error || res.statusText || T('the notes could not be written')), { paths: d.paths });
+      result = d;
+    } catch (e) {
+      // Your ticks stay; say what went wrong (and which notes) and offer Retry.
+      this.busy = false;
+      this.errEl.style.display = '';
+      this.errEl.setText(T('Not linked: {msg}', { msg: e.message }) + (Array.isArray(e.paths) && e.paths.length ? ' (' + e.paths.join(', ') + ')' : ''));
+      this.okBtn.setText(T('Retry')); this.okBtn.disabled = this.cancelBtn.disabled = false;
+      this.contentEl.querySelectorAll('input[data-i]').forEach(b => { b.disabled = !!(this.sourceLock || this.picked[+b.dataset.i].lock); });
+      return;
+    }
+    this.busy = false;
+    this.close();
+    await this.plugin.linked(this.file, result, this.picked, this.via);
+  }
+  close() { if (this.busy) return; super.close(); }
+  onClose() { this.contentEl.empty(); if (this.plugin.connectWin === this) this.plugin.endConnect(); }
+}
 
 module.exports = class ClaudeChatPlugin extends Plugin {
   async onload() {
@@ -491,88 +554,72 @@ module.exports = class ClaudeChatPlugin extends Plugin {
     if (!this.listening) new Notice(T('Saved. Graphie will look once your Claude Code window is connected.'));
   }
 
-  // The "Connect this note" button: a message with task "connect" for the open note.
+  // The "Connect this note" button. Whatever AI is chosen for it (an API model, a local framework or Claude Code)
+  // only proposes which existing notes to link. You see "this note → that note" for each, tick the ones you want
+  // and confirm; only then does Graphite add the links, both ways, in one request (POST /api/note-links), which
+  // never writes into a read-only folder. Closing or cancelling writes nothing; a failed write keeps your choice
+  // for Retry. A second click while this runs does nothing.
   async connectNote() {
     if (!this.pane) return;
     const file = this.app.workspace.getActiveFile();
     if (!file || !/\.md$/i.test(file.path)) { new Notice(T('Open a note first.')); return; }
-    if (this.msgs.some(m => m.task === 'connect' && m.note === file.path && m.reply == null)) { this.show(); new Notice(T('Graphie is already connecting this note.')); return; }
-    // With an API model chosen for this job (Settings → AI → Connect note), Graphite does it here.
+    if (this.connecting) { new Notice(T('Graphie is already connecting this note.')); return; }
     const via = AIAPI()?.choice?.('connect');
-    if (via && via !== CC && via !== 'off') return this.connectApi(file, via);
-    const m = {
-      type: 'user', id: 'm-' + moment().format('YYYYMMDD-HHmmss-SSS'), at: moment().format('YYYY-MM-DD HH:mm'),
-      text: T('Connect “{note}” to related notes and tidy its format.', { note: file.basename }), task: 'connect',
-      note: file.path, study: '', selection: '',
-    };
-    try { await this.appendOutbox(m); }
-    catch (e) { new Notice(T('Couldn’t send: {msg}', { msg: e.message })); return; }
-    this.msgs.push({ ...m, reply: null });
-    this.show();
-    this.renderAll();
-    if (!this.listening) new Notice(T('Saved. Graphie will do it once your Claude Code window is connected.'));
+    if (!via || via === 'off') { new Notice(T('Choose an AI for “Connect note” in Settings → AI first.')); return; }
+    this.connecting = file.path; this.setConnectBusy(true); // before the first await
+    try { await this.proposeLinks(file, via); }
+    catch (e) { new Notice(T('{model} couldn’t answer: {msg}', { model: this.engineLabel(via), msg: e.message })); }
+    finally { if (!this.connectWin) this.endConnect(); }
   }
-
-  // Connect a note using an API model: it picks the related notes from a list of your notes (titles, folders,
-  // headings); Graphite then adds the links both ways on a "相关 Related:" line, like Claude Code does.
-  async connectApi(file, via) {
-    const m = {
-      type: 'user', id: 'm-' + moment().format('YYYYMMDD-HHmmss-SSS'), at: moment().format('YYYY-MM-DD HH:mm'),
-      text: T('Connect “{note}” to related notes.', { note: file.basename }), task: 'connect', via,
-      note: file.path, study: '', selection: '',
-    };
-    try { await this.appendOutbox(m); } catch { /* the chat history is optional here */ }
-    this.msgs.push({ ...m, reply: null });
-    this.show(); this.renderAll();
-    let reply;
-    try {
-      const SKIP = /^(Claude Brain|My Brain|我的大脑知识库|Claude Chats|Daily Notes|Claude Inbox)(\/|$)|(^|\/)\./;
-      const all = this.app.vault.getMarkdownFiles().filter(f => f.path !== file.path && !SKIP.test(f.path));
-      const cache = f => this.app.metadataCache.getFileCache(f) || {};
-      const notes = all.filter(f => cache(f).frontmatter?.graph !== 'hide');
-      // Same course first, then the rest; at most 400 entries.
-      const course = file.path.includes('/') ? file.path.split('/')[0] : '';
-      notes.sort((a, b) => (b.path.startsWith(course + '/') - a.path.startsWith(course + '/')) || a.path.localeCompare(b.path));
-      const list = notes.slice(0, 400).map(f => `- ${f.basename} (${f.parent?.path || '/'})${(cache(f).headings || []).slice(0, 6).map(h => h.heading).join('; ') ? ' · ' + (cache(f).headings || []).slice(0, 6).map(h => h.heading).join('; ') : ''}`).join('\n');
-      const text = await this.app.vault.read(file);
-      const r = await AIAPI().request('connect', 'connect', { title: file.basename, content: `${text}\n\n<other_notes>\n${list}\n</other_notes>` }, { provider: via });
-      const byName = new Map();
-      for (const f of notes) { const k = f.basename.toLowerCase(); byName.set(k, byName.has(k) ? null : f); } // null: name used twice
-      const picked = [];
-      for (const x of r.related || []) {
-        const f = byName.get(String(x.title).trim().toLowerCase()) || notes.find(n => n.path.replace(/\.md$/i, '').toLowerCase() === String(x.title).trim().toLowerCase());
-        if (f && !picked.some(p => p.f === f)) picked.push({ f, why: x.why });
-      }
-      const linkTo = f => (byName.get(f.basename.toLowerCase()) === f ? f.basename : f.path.replace(/\.md$/i, ''));
-      const addRelated = async (target, links) => {
-        const cur = await this.app.vault.read(target);
-        const lines = cur.split('\n');
-        const i = lines.findIndex(l => /^\s*(\*\*)?相关\s*Related(\*\*)?\s*[:：]/.test(l));
-        const fresh = links.filter(l => !cur.includes('[[' + l + ']]') && !cur.includes('[[' + l + '|'));
-        if (!fresh.length) return;
-        if (i >= 0) lines[i] = lines[i].replace(/\s*$/, '') + ' ' + fresh.map(l => `[[${l}]]`).join(' ');
-        else { while (lines.length && !lines[lines.length - 1].trim()) lines.pop(); lines.push('', '相关 Related: ' + fresh.map(l => `[[${l}]]`).join(' '), ''); }
-        await this.app.vault.modify(target, lines.join('\n'));
-      };
-      if (picked.length) {
-        await addRelated(file, picked.map(p => linkTo(p.f)));
-        for (const p of picked) await addRelated(p.f, [linkTo(file)]);
-        reply = T('Linked “{note}” with:', { note: file.basename }) + '\n\n' + picked.map(p => `- [[${linkTo(p.f)}]]${p.why ? ' — ' + p.why : ''}`).join('\n') +
-          '\n\n' + T('Each link was added both ways, on a “相关 Related” line in each note.');
-      } else reply = T('No other note is closely related enough to link.');
-      // Then tidy its format, like Claude Code does: with an API model for Tidy format, its preview opens to
-      // confirm (nothing changes until Apply); otherwise point to the command.
-      const fmt = AIAPI()?.choice?.('format');
-      if (fmt && AIAPI().isApi?.(fmt) && this.app.workspace.getActiveFile()?.path === file.path) {
-        reply += '\n\n' + T('Tidy format is open: check the preview and press Apply to keep it.');
-        setTimeout(() => this.app.commands?.executeCommandById?.('tidy-format'), 300);
-      } else reply += ' ' + T('To tidy its format too, use “Tidy format” in the command menu.');
-    } catch (e) {
-      reply = '⚠️ ' + T('{model} couldn’t answer: {msg}', { model: this.engineLabel(via), msg: e.message });
+  endConnect() { this.connecting = null; this.connectWin = null; this.setConnectBusy(false); }
+  setConnectBusy(busy) {
+    const b = this.connectBtn;
+    if (!b) return;
+    b.disabled = busy; b.toggleClass('is-busy', busy); b.setAttr('aria-busy', busy ? 'true' : 'false');
+  }
+  async proposeLinks(file, via) {
+    const SKIP = /^(Claude Brain|My Brain|我的大脑知识库|Claude Chats|Daily Notes|Claude Inbox)(\/|$)|(^|\/)\./;
+    const all = this.app.vault.getMarkdownFiles().filter(f => f.path !== file.path && !SKIP.test(f.path));
+    const cache = f => this.app.metadataCache.getFileCache(f) || {};
+    const notes = all.filter(f => cache(f).frontmatter?.graph !== 'hide');
+    // Same course first, then the rest; at most 400 entries.
+    const course = file.path.includes('/') ? file.path.split('/')[0] : '';
+    notes.sort((a, b) => (b.path.startsWith(course + '/') - a.path.startsWith(course + '/')) || a.path.localeCompare(b.path));
+    const heads = f => (cache(f).headings || []).slice(0, 6).map(h => h.heading).join('; ');
+    const list = notes.slice(0, 400).map(f => `- ${f.basename} (${f.parent?.path || '/'})${heads(f) ? ' · ' + heads(f) : ''}`).join('\n');
+    const text = await this.app.vault.read(file);
+    const r = await AIAPI().request('connect', 'connect', { title: file.basename, path: file.path, content: `${text}\n\n<other_notes>\n${list}\n</other_notes>`,
+      job: { candidates: notes.slice(0, 400).map(f => f.path) } }, { provider: via });
+    // Only notes that exist: by unique name, or by path.
+    const byName = new Map();
+    for (const f of notes) { const k = f.basename.toLowerCase(); byName.set(k, byName.has(k) ? null : f); } // null: name used twice
+    const picked = [];
+    for (const x of Array.isArray(r?.related) ? r.related : []) {
+      const want = String(x?.path || x?.title || '').trim().replace(/\.md$/i, '').toLowerCase();
+      const f = notes.find(n => n.path.replace(/\.md$/i, '').toLowerCase() === want) || byName.get(want);
+      if (f && !picked.some(p => p.f === f)) picked.push({ f, why: typeof x.why === 'string' ? x.why : '' });
     }
-    try { await this.app.vault.adapter.write(`${this.dir}/replies/${m.id}.md`, reply); } catch { /* shown anyway */ }
-    const mm = this.msgs.find(x => x.id === m.id);
-    if (mm) { mm.reply = reply; this.renderAll(); }
+    if (!picked.length) { new Notice(T('No other note is closely related enough to link.')); return; }
+    const ro = AIAPI().readOnlyFolderOf || (async () => null);
+    const sourceLock = await ro(file.path);
+    for (const p of picked) p.lock = await ro(p.f.path);
+    if (this.connecting !== file.path) return;
+    this.connectWin = new ConnectModal(this, file, picked, sourceLock, via);
+    this.connectWin.open();
+  }
+  // After Graphite wrote the links: a short record in the chat (nothing for Claude Code to do).
+  async linked(file, result, picked, via) {
+    const name = p => (picked.find(x => x.f.path === p)?.f.basename) || p.replace(/\.md$/i, '').split('/').pop();
+    const linked = Array.isArray(result?.linked) ? result.linked : [], same = Array.isArray(result?.unchanged) ? result.unchanged : [];
+    let reply = linked.length ? T('Linked “{note}” with:', { note: file.basename }) + '\n\n' + linked.map(p => `- ${name(p)}`).join('\n') + '\n\n' + T('Each link was added both ways, on a “相关 Related” line in each note.') : '';
+    if (same.length) reply += (reply ? '\n\n' : '') + T('Already linked: {list}', { list: same.map(name).join(', ') });
+    if (!reply) reply = T('No links were added.');
+    reply += ' ' + T('To tidy its format too, use “Tidy format” in the command menu.');
+    const m = { type: 'user', id: 'm-' + moment().format('YYYYMMDD-HHmmss-SSS'), at: moment().format('YYYY-MM-DD HH:mm'),
+      text: T('Connect “{note}” to related notes.', { note: file.basename }), task: 'connect', via: via === CC ? 'graphite' : via, note: file.path, study: '', selection: '' };
+    try { await this.appendOutbox(m); await this.app.vault.adapter.write(`${this.dir}/replies/${m.id}.md`, reply); } catch { /* the chat history is optional here */ }
+    this.msgs.push({ ...m, reply });
+    this.show(); this.renderAll();
   }
 
   /* ---------- the agent: jobs on your files with an API model (Graphite's server does them, agent.js) ---------- */
