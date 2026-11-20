@@ -183,7 +183,15 @@ async function main() {
     const names = await p.locator('.fj-modal .fj-item b').allInnerTexts();
     await boxes.nth(names.indexOf('Homework.pdf')).uncheck();
     assert.ok(!fs.existsSync(path.join(nv, 'Algebra/Slides.pdf')));
+    const started = Date.now();
+    const applying = p.waitForResponse(r => r.url() === origin2 + '/api/agent' && r.request().postDataJSON()?.phase === 'apply', { timeout: 120000 });
     await p.locator('.fj-modal [data-a="apply"]').click();
+    const response = await applying;
+    const events = (await response.text()).trim().split('\n').map(line => JSON.parse(line));
+    const last = events.at(-1);
+    assert.ok(response.ok() && last.result && !last.error, JSON.stringify(last));
+    assert.deepEqual(last.result.done.map(f => f.dest), ['Algebra/Slides.pdf']);
+    console.log('  confirmed Codex import finished in ' + ((Date.now() - started) / 1000).toFixed(1) + ' s');
     await p.locator('.fj-modal .review-done').waitFor({ timeout: 120000 });
     assert.deepEqual(await fsp.readFile(path.join(nv, 'Algebra/Slides.pdf')), pdf);
     assert.ok(!fs.existsSync(path.join(nv, 'Algebra/Homework.pdf')), 'an unticked file was copied');
