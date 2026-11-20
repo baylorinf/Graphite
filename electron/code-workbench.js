@@ -28,7 +28,7 @@ function registerCodeWorkbench({ipcMain, url, getWindow, projects, runner, agent
       }
     });
   }
-  register('code-project', projects, ['status', 'choose', 'useVault', 'list', 'read', 'write', 'create', 'mkdir']);
+  register('code-project', projects, ['status', 'choose', 'useVault', 'list', 'findFiles', 'read', 'write', 'create', 'mkdir']);
   register('code-run', runner, ['tools', 'start', 'stop', 'debug']);
   if (agentFolders) register('agent-folders', agentFolders, ['list', 'choose', 'revoke']);
   return data => {

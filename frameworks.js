@@ -50,7 +50,8 @@ const FRAMEWORKS = {
     },
     versionArgs: ['--version'],
     parseVersion: s => (String(s).match(/\d+\.\d+\.\d+(?:-[\w.]+)?/) || [''])[0],
-    args: ({ mode }) => ['--profile', 'headless', '--permission-mode', mode === 'write' ? 'workspace-write' : 'read-only', '--approval-policy', 'never', '--json', '-'],
+    args: ({ mode, patch }) => ['--profile', 'headless', ...(patch ? ['--patch', patch] : []),
+      '--permission-mode', mode === 'write' ? 'workspace-write' : 'read-only', '--approval-policy', 'never', '--json', '-'],
     env: ({ key }) => (key ? { DEEPSEEK_API_KEY: key } : {}),
     // One JSON event per line. Reads show as progress; the final text carries the result.
     onLine(line, st) {
@@ -81,7 +82,14 @@ const FRAMEWORKS = {
     },
     versionArgs: ['--version'],
     parseVersion: s => (String(s).match(/\d+\.\d+\.\d+(?:-[\w.]+)?/) || [''])[0],
-    args: ({ outFile, mode }) => ['exec', ...(WIN ? ['-c', 'windows.sandbox="unelevated"'] : []), '--sandbox', mode === 'write' ? 'workspace-write' : 'read-only', '--skip-git-repo-check', '--ephemeral', '--color', 'never', '--json', '--output-last-message', outFile, '-'],
+    args: ({ outFile, mode, answerArgs = [] }) => ['exec', ...(WIN ? ['-c', 'windows.sandbox="unelevated"'] : []),
+      ...(mode === 'answer' ? ['--ignore-rules',
+        ...['shell_tool', 'unified_exec', 'hooks', 'shell_snapshot', 'apps', 'plugins', 'multi_agent', 'multi_agent_v2',
+          'code_mode', 'view_image', 'image_generation', 'memories', 'goals'].flatMap(name => ['--disable', name]),
+        '-c', 'tools.experimental_request_user_input.enabled=false', '-c', 'tools.update_plan.enabled=false',
+        '-c', 'mcp_servers={}', '-c', 'approval_policy="never"', '-c', 'project_doc_max_bytes=0', '-c', 'skills.include_instructions=false',
+        '-c', 'skills.bundled.enabled=false', '-c', 'web_search="disabled"'] : []),
+      ...answerArgs, '--sandbox', mode === 'write' ? 'workspace-write' : 'read-only', '--skip-git-repo-check', '--ephemeral', '--color', 'never', '--json', '--output-last-message', outFile, '-'],
     env: () => ({}),
     onLine(line, st) {
       let ev; try { ev = JSON.parse(line); } catch { return null; }
@@ -151,13 +159,32 @@ module.exports = function createFrameworks({ HttpError }) {
   }
 
   // Run one task. Resolves with { text, result, reads } or throws an HttpError with a code the app shows in words.
-  async function run(id, { prompt, cwd, key, paths = {}, signal, onProgress, timeoutMs = 15 * 60 * 1000, mode = 'read', allow = null }) {
+  async function run(id, { prompt, cwd, key, paths = {}, signal, onProgress, timeoutMs = 15 * 60 * 1000, mode = 'read', allow = null, useNativeCodexInstructions = false }) {
     const F = FRAMEWORKS[id];
     if (!F) throw Object.assign(new HttpError(400, 'Unknown local framework'), { code: 'unknown' });
     const info = await detectOne(id, paths[id], false);
     if (!info.found) throw Object.assign(new HttpError(424, `${F.name}: ${info.reason}${info.detail ? ' — ' + info.detail : ''}`), { code: info.reason, framework: id });
     const outFile = path.join(os.tmpdir(), `graphite-${id}-${crypto.randomBytes(6).toString('hex')}.txt`);
-    const child = launch(info.path, F.args({ outFile, mode }), { cwd, env: { ...process.env, ...F.env({ key }) }, stdio: ['pipe', 'pipe', 'pipe'] });
+    let patch;
+    if (mode === 'answer' && id === 'dsh') {
+      // The CLI is an external process and cannot import a plugin from Electron's app.asar.
+      // Put the shipped tool-free executor beside the empty workspace, for the lifetime of this question.
+      const dir = path.dirname(cwd);
+      const executor = path.join(dir, 'dsh-answer.mjs');
+      await fsp.copyFile(path.join(__dirname, 'extensions/code-assistant/dsh-answer.mjs'), executor);
+      patch = path.join(dir, 'code-answer.yml');
+      const overlay = [
+        { id: 'tool-executor-native', disabled: true },
+        { id: 'tool-executor-ptc', disabled: true },
+        { insert: [{ id: 'graphite-code-answer', name: executor.replace(/\\/g, '/') }] },
+        ...['agent-instructions', 'skill-filesystem', 'tool-skill', 'session-persistence-jsonl'].map(id => ({ id, disabled: true })),
+      ];
+      await fsp.writeFile(patch, JSON.stringify(overlay));
+    }
+    const answer = mode === 'answer' && id === 'codex'
+      ? await require('./extensions/code-assistant/codex-answer.cjs')({launch,file:info.path,cwd,signal,killTree,HttpError,useNativeCodexInstructions}) : {};
+    if (signal?.aborted) throw Object.assign(new HttpError(499, 'Stopped'), { code: 'stopped', framework: id });
+    const child = launch(info.path, F.args({ outFile, mode, patch, answerArgs:answer.args }), { cwd, env: { ...process.env, ...F.env({ key }), ...answer.env }, stdio: ['pipe', 'pipe', 'pipe'] });
     const st = { text: '', final: '', failure: '', reads: [], completed: null };
     let err = '', buf = '', timedOut = false, aborted = false, outside = '', operation = '';
     // Every path the framework touches must be inside the allowed folders (and not in a left-out folder).

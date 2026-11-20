@@ -11,6 +11,33 @@ const changed = () => error(409, 'changed', 'The file changed on disk. Reload be
 const projectChanged = () => error(409, 'project_changed', 'The selected project changed. Reopen the file.');
 const invalidPath = () => error(400, 'invalid_path', 'Choose a relative path inside the project.');
 const unsupported = () => error(400, 'not_regular', 'This is not an ordinary project file or directory.');
+const searchSkipDirs = new Set([
+  '.git', '.hg', '.svn', '.obsidian', '.trash', 'node_modules', 'bower_components', 'vendor',
+  'build', 'dist', 'out', 'target', 'obj', 'cmakefiles', 'coverage', '__pycache__', '.venv', 'venv',
+  '.cache', '.next', '.nuxt', '.svelte-kit', '.gradle', '.pytest_cache', '.mypy_cache', '.turbo', '.vs'
+]);
+const naturalOrder = new Intl.Collator(undefined, { numeric:true, sensitivity:'base' });
+const fold = value => value.normalize('NFC').toLowerCase();
+
+function fileMatch(entry, query, terms) {
+  if (!query) return 0;
+  const name = fold(entry.name), rel = fold(entry.path);
+  if (rel === query) return 0;
+  if (name === query) return 1;
+  const dot = name.lastIndexOf('.');
+  if (dot > 0 && name.slice(0,dot) === query) return 2;
+  if (name.startsWith(query)) return 3;
+  if (name.includes(query)) return 4;
+  if (rel.startsWith(query) || rel.includes('/' + query)) return 5;
+  if (rel.includes(query)) return 6;
+  if (terms.length > 1 && terms.every(term => rel.includes(term))) return 7;
+  return -1;
+}
+
+function compareHits(a, b) {
+  return a.rank - b.rank || a.depth - b.depth || naturalOrder.compare(a.entry.path,b.entry.path) ||
+    (a.entry.path < b.entry.path ? -1 : a.entry.path > b.entry.path ? 1 : 0);
+}
 
 function pathParts(value, allowRoot = false) {
   if (allowRoot && value === '') return [];
@@ -48,7 +75,13 @@ function createCodeProjects({ stateFile, pickDirectory, getVault, atomicWrite, w
     }
     throw error(404, 'project_unavailable', 'The project folder has moved or is unavailable. Choose it again.');
   }
-  const describe = (s, available) => ({ id:s.id, name:path.basename(s.root) || s.root, root:s.root, available });
+  // The active grant changes when switching folders. Drafts and tabs belong to the folder across visits.
+  const folderKey = ({root, dev, ino}) => createHash('sha256').update(JSON.stringify([
+    process.platform === 'win32' ? root.toLowerCase() : root, dev, ino,
+  ])).digest('hex');
+  const describe = (s, available) => ({
+    id:s.id, workspaceId:s.workspaceId || s.id, name:path.basename(s.root) || s.root, root:s.root, available,
+  });
   async function status() {
     const s = await load();
     if (!s) return { project:null };
@@ -65,7 +98,15 @@ function createCodeProjects({ stateFile, pickDirectory, getVault, atomicWrite, w
       let prev;
       try { prev = await load(); } catch (err) { if (err.code !== 'invalid_state') throw err; }
       const keep = prev && samePath(prev.root, root) && dev === prev.dev && ino === prev.ino;
-      const s = { id: keep ? prev.id : randomUUID(), root, dev, ino };
+      const id = keep ? prev.id : randomUUID();
+      const key = folderKey({root, dev, ino});
+      // Older versions named drafts after the active grant. Retain that namespace on upgrade.
+      // All new folders have a deterministic namespace, so only this one legacy alias needs storing.
+      const legacyWorkspace = prev?.legacyWorkspace || (prev && !prev.workspaceId
+        ? {key:folderKey(prev), id:prev.id} : null);
+      const workspaceId = legacyWorkspace?.key === key ? legacyWorkspace.id : key;
+      const s = { id, root, dev, ino, workspaceId };
+      if (legacyWorkspace) s.legacyWorkspace = legacyWorkspace;
       await verifyRoot(s);
       await atomicWrite(stateFile, JSON.stringify(s)+'\n', {mode:0o600});
       return { project:describe(s, true) };
@@ -94,7 +135,7 @@ function createCodeProjects({ stateFile, pickDirectory, getVault, atomicWrite, w
     return { root, file:current, path:parts.join('/') };
   }
   const resolveFile = input => resolveEntry(input, 'file');
-  async function list(input) {
+  async function directoryEntries(input) {
     const at=await resolveEntry({...input,path:input?.path ?? ''}, 'directory');
     const entries=[];
     for (const e of await fs.readdir(at.file, {withFileTypes:true})) {
@@ -104,8 +145,58 @@ function createCodeProjects({ stateFile, pickDirectory, getVault, atomicWrite, w
       entries.push({name:e.name,path:rel,type:e.isDirectory()?'directory':'file'});
     }
     await resolveEntry({...input,path:at.path}, 'directory');
+    return entries;
+  }
+  async function list(input) {
+    const entries = await directoryEntries(input);
     entries.sort((a,b) => Number(a.type!=='directory')-Number(b.type!=='directory') || a.name.localeCompare(b.name, undefined, {numeric:true}));
     return {entries};
+  }
+  // Share an active walk while someone types. A later search sees newly created or renamed files.
+  const walking = new Map();
+  async function walkFiles(projectId) {
+    const directories = [''], files = [];
+    while (directories.length) {
+      const directory = directories.pop();
+      let entries;
+      try { entries = await directoryEntries({projectId,path:directory}); }
+      catch (err) {
+        // A subfolder can be moved, removed or become unreadable during a walk.
+        if (directory && (missing(err) || ['not_found','not_regular','invalid_path','EACCES','EPERM'].includes(err.code))) continue;
+        throw err;
+      }
+      for (const entry of entries) {
+        try { pathParts(entry.name); } catch (err) { if (err.code === 'invalid_path') continue; throw err; }
+        if (entry.type === 'file') { files.push(entry); continue; }
+        const name = fold(entry.name);
+        if (!searchSkipDirs.has(name) && !name.startsWith('cmake-build-')) directories.push(entry.path);
+      }
+    }
+    return files;
+  }
+  async function findFiles({projectId, query = '', limit = 50} = {}) {
+    if (typeof query !== 'string' || query.length > 2048) throw error(400,'invalid_query','Enter a file name or relative path.');
+    if (!Number.isSafeInteger(limit) || limit < 1) throw error(400,'invalid_limit','Choose a positive file result limit.');
+    limit = Math.min(limit,100);
+    query = fold(query.trim().replace(/\\/g,'/').replace(/^(?:\.\/)+/,''));
+    const terms = query.split(/\s+/);
+    let walk = walking.get(projectId);
+    if (!walk) {
+      walk = walkFiles(projectId).finally(() => walking.delete(projectId));
+      walking.set(projectId,walk);
+    }
+    const files = await walk, best = [];
+    let total = 0;
+    for (const entry of files) {
+      const rank = fileMatch(entry,query,terms);
+      if (rank < 0) continue;
+      total++;
+      best.push({entry,rank,depth:entry.path.split('/').length});
+      if (best.length === 2*limit) best.sort(compareHits).length = limit;
+    }
+    const entries = best.sort(compareHits).slice(0,limit).map(hit => hit.entry);
+    await resolveRoot({projectId});
+    return {entries,total,truncated:total > entries.length};
   }
   async function read(input) {
     const target=await resolveFile(input), result=await readSource(target.file);
@@ -175,7 +266,7 @@ function createCodeProjects({ stateFile, pickDirectory, getVault, atomicWrite, w
     catch (err) { if (err.code==='not_found' || missing(err)) throw changed(); throw err; }
   }
   return {
-    status, list, read, write, resolveRoot, resolveFile,
+    status, list, findFiles, read, write, resolveRoot, resolveFile,
     async choose() { const p=await pickDirectory();return p ? {canceled:false,...await select(p)} : {canceled:true,...await status()}; },
     useVault:()=>select(getVault()),
     mkdir:input=>withFileLock(stateFile,()=>mkdir(input)),

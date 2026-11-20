@@ -7,6 +7,11 @@ const http = require('node:http');
 function start(script) {
   const log = [];
   const server = http.createServer(async (req, res) => {
+    if (req.headers.upgrade?.toLowerCase() === 'websocket') {
+      // This fixture implements the HTTP streaming transport. Codex's native provider negotiates it with 426.
+      res.writeHead(426, { 'Content-Type':'text/plain', Connection:'close' });
+      return res.end('Use HTTP streaming');
+    }
     let body = '';
     for await (const c of req) body += c;
     let json = {};
