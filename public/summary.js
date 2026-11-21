@@ -157,7 +157,11 @@ export function planBatches(pages, { budget = BATCH_CHARS, agent = false } = {})
       let end = Math.min(text.length, at + room);
       if (end < text.length) {
         const nl = text.lastIndexOf('\n', end - 1), sp = Math.max(text.lastIndexOf(' ', end - 1), text.lastIndexOf('\t', end - 1));
-        const best = nl > at + room / 2 ? nl + 1 : sp > at + room / 2 ? sp + 1 : end;
+        let best = nl > at + room / 2 ? nl + 1 : sp > at + room / 2 ? sp + 1 : end;
+        // A hard cut never falls between the two halves of a character outside the BMP (𝑥, 😀, rare CJK…),
+        // which would send each request half a character.
+        const code = text.charCodeAt(best - 1);
+        if (best === end && code >= 0xD800 && code <= 0xDBFF) best -= 1;
         end = best;
       }
       cuts.push(text.slice(at, end)); at = end;
@@ -181,16 +185,49 @@ export const citable = (b, agent) => new Set([...b.pages, ...(agent ? b.open : [
 // Keep a batch's answer to the pages it was given: any other page number becomes 0 (shown without a link).
 // Links the AI wrote into its own text are not trusted either: every link (wiki [[…]] or Markdown [..](..))
 // and raw URL in the text becomes plain words, so the only links in the note are the page links Graphite adds.
-export function plainText(s) {
-  return String(s ?? '')
-    .replace(/!?\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/g, (_, target, label) => label || String(target).replace(/#page=(\d+)/i, ' p. $1'))
-    .replace(/!?\[([^\]]*)\]\(([^)]*)\)/g, (_, label) => label)
-    .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, '$1')
-    .replace(/\b(?:https?|file|obsidian):\/\/\S+/gi, m => m.replace(/:\/\//, ':​//'))
-    .replace(/(^|[\s(])#page=(\d+)/gi, '$1p. $2');
+// Every kind of link becomes its words. Where a link pointed to a page of this PDF: a page this batch sent keeps
+// a jump, rebuilt by Graphite (pageLink); any other page stays as readable text "p. N" with no jump. Covered:
+// [[wiki]] / ![[embeds]], [inline](url), [reference][ref] / [ref][] / [ref] with their "[ref]: url" lines (the
+// lines are removed), <autolinks>, <a href> and bare URLs.
+export function plainText(s, ok = new Set(), pageLink = null) {
+  const jumps = [];
+  const pageOf = target => { let t = String(target || ''); try { t = decodeURIComponent(t); } catch { /* keep */ } const m = t.match(/#page=(\d+)/i); return m ? +m[1] : 0; };
+  // A link's replacement: its words, then the page (a checked jump, or plain "p. N").
+  const cite = (label, target) => {
+    const n = pageOf(target);
+    let words = String(label || '').trim();
+    if (!n) return words;
+    if (new RegExp(`^(?:p\\.?|page|第)?\\s*${n}\\s*页?$`, 'i').test(words)) words = ''; // the words are just the page
+    if (ok.has(n) && pageLink) { jumps.push(n); return words ? `${words} \u0001${jumps.length - 1}\u0002` : `\u0003${jumps.length - 1}\u0002`; }
+    return words ? `${words} (p. ${n})` : `p. ${n}`;
+  };
+  let out = String(s ?? '').replace(/\r\n?/g, '\n').replace(/[\u0001-\u0003]/g, ''); // (the marks used below)
+  // 1. Reference definitions: remember, then remove the lines.
+  const refs = new Map();
+  // Taken liberally: any line starting "[label]:" (even with spaces in the target, as "Long lecture.pdf#page=9").
+  out = out.replace(/^[ \t]*\[([^\]\n]+)\]:[ \t]*(.*)$\n?/gm, (_, label, rest) => {
+    const target = rest.trim().replace(/[ \t]+(?:"[^"]*"|'[^']*'|\([^)]*\))$/, '').replace(/^<([^>]*)>$/, '$1');
+    refs.set(label.trim().toLowerCase(), target); return '';
+  });
+  out = out
+    // 2. Wiki links and embeds.
+    .replace(/!?\[\[([^\]|\n]*)(?:\|([^\]\n]*))?\]\]/g, (_, target, label) => cite(label || String(target).replace(/#.*$/, '').trim(), target))
+    // 3. Inline links and images: [words](target "title").
+    .replace(/!?\[([^\]\n]*)\]\(\s*(?:<([^>\n]*)>|([^)\s]*))(?:\s+(?:"[^"\n]*"|'[^'\n]*'))?\s*\)/g, (_, label, a, b) => cite(label, a ?? b))
+    // 4. Reference links: [words][ref], [ref][], and [ref] when it was defined.
+    .replace(/!?\[([^\]\n]+)\]\[([^\]\n]*)\]/g, (_, label, ref) => cite(label, refs.get((ref || label).trim().toLowerCase()) || ''))
+    .replace(/!?\[([^\]\n]+)\](?![(:])/g, (m, label) => (refs.has(label.trim().toLowerCase()) ? cite(label, refs.get(label.trim().toLowerCase())) : m))
+    // 5. HTML links, <autolinks>, bare URLs and bare "#page=N".
+    .replace(/<a\b[^>]*?href\s*=\s*["']?([^"'\s>]*)[^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => cite(label.replace(/<[^>]*>/g, ''), href))
+    .replace(/<([^<>\s]+)>/g, (m, target) => (/^[a-z][\w+.-]*:|#page=\d+|^[^@\s]+@[^@\s]+$/i.test(target) ? cite(String(target).replace(/#.*$/, ''), target) : m))
+    .replace(/\b(?:https?|file|obsidian|ftp):\/\/\S+/gi, m => m.replace(/:\/\//, ':​//'))
+    .replace(/(^|[\s(])#page=(\d+)/gi, (_, pre, n) => pre + cite('', '#page=' + n));
+  // 6. Only now the checked jumps go in, so nothing above can touch them.
+  return out.replace(/\u0001(\d+)\u0002/g, (_, i) => `(${pageLink(jumps[+i])})`).replace(/\u0003(\d+)\u0002/g, (_, i) => pageLink(jumps[+i]))
+    .replace(/[\u0001\u0002\u0003]/g, '').replace(/\n{3,}/g, '\n\n').trim();
 }
-export function checkCitations(r, ok) {
-  const fix = n => (ok.has(n) ? n : 0), clean = plainText;
+export function checkCitations(r, ok, pageLink = null) {
+  const fix = n => (ok.has(n) ? n : 0), clean = s => plainText(s, ok, pageLink);
   return {
     title: clean(r.title), overview: clean(r.overview),
     sections: (r.sections || []).map(s => ({ ...s, heading: clean(s.heading), page: fix(s.page), points: (s.points || []).map(p => ({ ...p, text: clean(p.text), page: fix(p.page) })) })),
@@ -264,7 +301,9 @@ async function runBatches(job) {
       const content = `${hint}<pdf file="${path}">\n${b.text}</pdf>\n<pages_included>${pageRanges(agent ? range : b.pages)} of ${total}</pages_included>`;
       const r = await AI.request('summary', 'summary', { title: stem(path), content, path, job: { pages: pageRanges(range), total, pdf: path, part: i + 1, parts: n } }, { signal: stop.signal, provider: engine });
       if (!win || stop.signal.aborted) return;
-      results.push(checkCitations(r, citable(b, agent)));
+      // Links in the answer's text are rebuilt by Graphite, and only for pages this batch sent.
+      const link = H.linkNameFor(path);
+      results.push(checkCitations(r, citable(b, agent), n => `[[${link}#page=${n}|p. ${n}]]`));
     }
     const covered = [...new Set(batches.flatMap(b => [...b.pages, ...(agent ? b.open : [])]))].sort((x, y) => x - y);
     const md = buildNote(path, mergeResults(results), { pages: covered, empty, engine, profile });

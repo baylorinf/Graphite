@@ -70,7 +70,9 @@ async function main() {
     const bogus = [sent.includes(TOTAL) ? 1 : TOTAL, 999];
     // Links written into the prose itself, to pages this batch never sent (Codex retest, 2026-11-22).
     const foreign = sent.includes(TOTAL) ? 1 : TOTAL;
-    const prose = `See [[Long lecture.pdf#page=${foreign}|p. ${foreign}]] and [there](Long%20lecture.pdf#page=999) and <a href="#page=998">here</a>.`;
+    // …and reference-style links (Codex retest 2): "见 [来源][ref]" with "[ref]: Long lecture.pdf#page=140" on its
+    // own line, plus one valid inline link to a page this batch did send.
+    const prose = `See [[Long lecture.pdf#page=${foreign}|p. ${foreign}]] and [there](Long%20lecture.pdf#page=999) and <a href="#page=998">here</a>. 见 [来源][ref]，[本页](Long%20lecture.pdf#page=${sent[0]})。\n\n[ref]: Long lecture.pdf#page=${foreign}\n`;
     return { title: 'Long lecture summary', overview: 'Part with pages ' + sent.join(',') + '. ' + prose, sections: [{ heading: 'Pages ' + sent[0], page: sent[0] || 0, points: [...sent.map(p => ({ text: 'Sent page ' + p, page: p })), ...bogus.map(p => ({ text: 'Bogus ' + p + ' ' + prose, page: p })), ...(open ? [{ text: 'Open page', page: BLANK[0] }] : [])] }], concepts: [{ term: 'Shared term', meaning: 'm ' + prose, page: sent[0] }],
       formulas: [{ latex: 'f(x)=x', meaning: 'lower f', page: sent[0] }, { latex: 'F(x)=x', meaning: 'upper F', page: sent[0] }, { latex: 'f(x) = x', meaning: 'same as lower f', page: sent[0] }] };
   };
@@ -125,6 +127,43 @@ async function main() {
       assert.deepEqual(r.none, []);
     });
 
+    await test('reference-style and other links in the AI\'s prose: only pages the batch sent become (Graphite) links', async () => {
+      const r = await p.evaluate(() => import('/summary.js').then(m => {
+        const ok = new Set(Array.from({ length: 24 }, (_, i) => i + 1));
+        const link = n => `[[Long.pdf#page=${n}|p. ${n}]]`;
+        const prose = '见 [来源][ref]，也见 [第三页](Long.pdf#page=3)、[[Long.pdf#page=5|第五页]]、[[Long.pdf#page=140]]、<Long.pdf#page=140>、[ref2]。\n\n[ref]: Long.pdf#page=140\n[ref2]: <Long.pdf#page=7> "title"\n  [REF3]: https://example.com/x#page=2';
+        const out = m.checkCitations({ title: 't', overview: prose, sections: [{ heading: 'h', page: 1, points: [{ text: prose, page: 1 }] }], concepts: [], formulas: [] }, ok, link);
+        return { overview: out.overview, point: out.sections[0].points[0].text };
+      }));
+      for (const s of [r.overview, r.point]) {
+        assert.ok(!/page=140/.test(s.replace(/p\. 140/g, '')) || !/\[\[[^\]]*page=140/.test(s), 'page 140 still linked: ' + s);
+        assert.ok(!/\[\[[^\]]*page=140/.test(s), 'page 140 became a link: ' + s);
+        assert.ok(!/^\s*\[[^\]]+\]:/m.test(s), 'a link definition is left: ' + s);
+        assert.ok(!/\]\(|<[^>]*#page=|\]\[/.test(s), 'a Markdown link is left: ' + s);
+        assert.match(s, /见 来源/, 'the source words were lost: ' + s);
+        for (const n of [3, 5, 7]) assert.ok(s.includes(`[[Long.pdf#page=${n}|p. ${n}]]`), `valid page ${n} lost its link: ` + s);
+        assert.match(s, /p\. 140/, 'the readable page number was dropped: ' + s);
+      }
+    });
+
+    await test('a page with no spaces longer than a batch: no UTF-16 surrogate is split; every character, in order, within the limit', async () => {
+      const r = await p.evaluate(() => import('/summary.js').then(m => {
+        const B = m.BATCH_CHARS;
+        const text = '文'.repeat(B - 65) + '𝑥' + '字'.repeat(300);
+        const plans = [m.planBatches([{ n: 1, text }]), m.planBatches([{ n: 1, text: '𝑥'.repeat(B) }]), m.planBatches([{ n: 1, text: 'a' + '😀'.repeat(B) + 'b' }])];
+        const lone = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
+        const body = b => b.text.replace(/^--- page \d+(?: \(part \d+\/\d+\))? ---\n/, '').replace(/\n$/, '');
+        const inputs = [text, '𝑥'.repeat(B), 'a' + '😀'.repeat(B) + 'b'];
+        return plans.map((bs, i) => ({ n: bs.length, maxLen: Math.max(...bs.map(b => b.text.length)), budget: B, lone: bs.some(b => lone.test(b.text)), same: bs.map(body).join('') === inputs[i] }));
+      }));
+      for (const x of r) {
+        assert.ok(x.n >= 2, 'not split');
+        assert.equal(x.lone, false, 'a request would carry a lone surrogate');
+        assert.equal(x.same, true, 'characters lost or reordered');
+        assert.ok(x.maxLen <= x.budget, `batch over the limit: ${x.maxLen} > ${x.budget}`);
+      }
+    });
+
     await test('140-page lecture (> 300 000 characters): every text page incl. the last reaches the AI, in batches under the limit', async () => {
       calls.length = 0;
       await start('Course/Long lecture.pdf');
@@ -169,9 +208,10 @@ async function main() {
       assert.ok(!linked.includes(999), 'page 999 linked');
       assert.ok(!linked.some(n => BLANK.includes(n)), 'a blank page was linked for an API model');
       assert.deepEqual([...new Set(linked)].sort((a, b) => a - b), textPages, 'linked pages differ from sent pages');
-      // A "Bogus 140" line exists in batches that did not send page 140: it must not carry a link.
-      const bogus = await p.evaluate(() => [...document.querySelectorAll('.ai-summary .sum-preview li')].filter(li => /^Bogus 140/.test(li.textContent)).map(li => li.querySelectorAll('a').length));
-      assert.ok(bogus.length >= 1 && bogus.every(n => n === 0), 'an unsent page 140 was linked: ' + JSON.stringify(bogus));
+      // A "Bogus 140" line exists in batches that did not send page 140: it must not link page 140 (its prose
+      // also holds one valid link to a page that batch did send, which is kept).
+      const bogus = await p.evaluate(() => [...document.querySelectorAll('.ai-summary .sum-preview li')].filter(li => /^Bogus 140/.test(li.textContent)).map(li => [...li.querySelectorAll('a')].map(a => a.dataset.heading)));
+      assert.ok(bogus.length >= 1 && bogus.every(hs => !hs.includes('page=140') && hs.length === 1), 'an unsent page 140 was linked: ' + JSON.stringify(bogus));
       void md;
       assert.equal(await p.locator('.ai-summary .sum-preview li', { hasText: 'Shared term' }).count(), 1, 'the same concept was repeated');
       // Links the AI wrote into its prose are plain text: none points to page 999, 998 or another batch's page.
@@ -180,7 +220,10 @@ async function main() {
       assert.equal(all.filter(([txt, , target, heading]) => txt === 'Long lecture.pdf' && target === 'Long lecture.pdf' && !heading).length, 1);
       const hrefs = all.filter(([txt, , , heading]) => !(txt === 'Long lecture.pdf' && !heading));
       assert.ok(hrefs.every(([txt, href, target, heading]) => target === 'Long lecture.pdf' && /^page=\d+$/.test(heading) && /^p\. \d+$/.test(txt)), 'a link not added by Graphite: ' + JSON.stringify(hrefs.find(([txt, href, target, heading]) => !(target === 'Long lecture.pdf' && /^page=\d+$/.test(heading) && /^p\. \d+$/.test(txt)))));
-      assert.match(await p.locator('.ai-summary .sum-preview').innerText(), /See p\. \d+ and there and here/);
+      const shown = await p.locator('.ai-summary .sum-preview').innerText();
+      assert.match(shown, /See p\. \d+ and there \(p\. 999\) and here \(p\. 998\)/);
+      assert.match(shown, /见 来源 \(p\. \d+\)，本页 \(p\. \d+\)/, 'source words or the valid page link lost');
+      assert.ok(!/\[ref\]|\]:/.test(shown), 'a reference definition is shown');
       // f(x)=x and F(x)=x are different formulas; "f(x) = x" is the same as f(x)=x.
       const formulas = await p.evaluate(() => [...document.querySelectorAll('.ai-summary .sum-preview li')].map(li => li.textContent).filter(s => /lower f|upper F/.test(s)));
       assert.equal(formulas.filter(s => /upper F/.test(s)).length, 1, 'F(x)=x was dropped or repeated');
@@ -192,7 +235,22 @@ async function main() {
       await p.locator('.ai-summary [data-a=save]').click();
       await p.waitForFunction(() => !document.querySelector('.ai-summary'));
       const f = path.join(vault, 'Course', 'Long lecture summary.md');
-      const edited = (await fs.readFile(f, 'utf8')).replace('Sent page 2', 'MY OWN NOTE');
+      // The saved note: no reference definitions; the only jumps are Graphite's, each to a page its batch sent —
+      // page 140 exactly once (its own "Sent page 140"), never from the batches that did not send it.
+      const saved = await fs.readFile(f, 'utf8');
+      assert.ok(!/^\s*\[[^\]]+\]:/m.test(saved), 'a reference definition was saved: ' + JSON.stringify(saved.split('\n').filter(l => /^\s*\[[^\]]+\]:/.test(l)).slice(0, 3)));
+      assert.ok(!/\]\(|\]\[/.test(saved), 'a Markdown link was saved');
+      const jumps = [...saved.matchAll(/\[\[([^\]|]*)#page=(\d+)\|p\. (\d+)\]\]/g)];
+      assert.ok(jumps.every(m => m[1] === 'Long lecture.pdf' && m[2] === m[3] && textPages.includes(+m[2])), 'a jump not made by Graphite');
+      assert.equal(saved.split('#page=').length - 1, jumps.length, 'a page link Graphite did not check');
+      assert.equal(jumps.filter(m => m[2] === '140').length, 1, 'page 140 linked from a batch that did not send it');
+      // Reopened in the app, the reading view offers the same jumps (page 140 once).
+      await p.locator('#tree [data-path="Course/Long lecture summary.md"]').click();
+      await p.evaluate(() => document.querySelector('[data-cmd="mode-preview"]')?.click());
+      await p.waitForFunction(() => document.querySelectorAll('#preview a[data-heading^="page="]').length > 100);
+      assert.equal(await p.locator('#preview a[data-heading="page=140"]').count(), 1);
+      assert.equal(await p.locator('#preview a[data-heading="page=999"], #preview a[data-heading="page=998"]').count(), 0);
+      const edited = saved.replace('Sent page 2', 'MY OWN NOTE');
       await fs.writeFile(f, edited); await sleep(900);
       await start('Course/Short.pdf'); await p.locator('.ai-summary .sum-preview').waitFor(); await p.evaluate(() => document.querySelector('.ai-tool .review-x')?.click());
       await start('Course/Long lecture.pdf');
