@@ -153,7 +153,7 @@ module.exports = class ClaudeQuizzesPlugin extends Plugin {
     if (this.active) return window.moTabs?.cycle(-1);
     const first = (this.data?.lastPage && pageById(this.data.lastPage) ? this.data.lastPage : PAGES[0]?.id) // (also before its settings have loaded)
       || (this.app.vault.getFiles().find(f => /\.html?$/i.test(f.path)) ? 'file:' + this.app.vault.getFiles().find(f => /\.html?$/i.test(f.path)).path : null);
-    if (!first) { new Notice(T('No study pages yet. To open your first one, add an .html study page to your vault (drag it into the file list, or put it in a course folder such as “Study Pages”), then click 🎓 again or click the file in the list.')); return; }
+    if (!first) { new Notice(T('No study pages yet. To open your first one, use your file manager to copy an .html study page into your vault folder (or a course folder in it, such as “Study Pages”), then come back to Graphite and click 🎓 or the file in the list.')); return; }
     this.openTab(first);
   }
 

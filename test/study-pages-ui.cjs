@@ -39,12 +39,14 @@ async function main() {
   await test('empty vault, Chinese: the hint is in Chinese and says how to open the first page', 'zh-CN', async p => {
     await press(p);
     const text = await notice(p);
-    assert.match(text, /还没有学习页。要打开第一份，请把一个 \.html 学习页加入笔记库/);
-    assert.doesNotMatch(text, /No study pages yet/);
+    assert.match(text, /还没有学习页。要打开第一份，请用文件管理器把一个 \.html 学习页复制到笔记库文件夹.*回到 Graphite/);
+    assert.doesNotMatch(text, /No study pages yet|拖/);
   });
   await test('empty vault, English', 'en', async p => {
     await press(p);
-    assert.match(await notice(p), /No study pages yet\. To open your first one, add an \.html study page to your vault/);
+    const text = await notice(p);
+    assert.match(text, /No study pages yet\. To open your first one, use your file manager to copy an \.html study page into your vault folder.*come back to Graphite/);
+    assert.doesNotMatch(text, /drag/i);
   });
   await fs.mkdir(path.join(vault, 'Study Pages'), { recursive: true });
   await fs.writeFile(path.join(vault, 'Study Pages', 'Week 1.html'), '<!doctype html><title>Week 1</title><h1>STUDY_PAGE_WEEK_1</h1>');
