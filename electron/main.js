@@ -337,6 +337,8 @@ function createWindow(url) {
       quitting = true;
       await stopProjectTasks();
       win.destroy();
+      // Hidden Canvas windows (a background sync) must not keep Graphite running without its window.
+      app.quit();
     }
     for (;;) {
       if (!win || win.isDestroyed()) return;
@@ -499,7 +501,13 @@ function runSelfTest() {
 
 if (!app.requestSingleInstanceLock()) app.quit();
 else {
-  app.on('second-instance', () => { if (win) { if (win.isMinimized()) win.restore(); win.focus(); } });
+  // A second launch brings the window forward. If this process is only finishing up (its window already gone),
+  // it quits, so the next launch can open normally.
+  app.on('second-instance', () => {
+    if (!win || win.isDestroyed()) { if (quitting) app.exit(0); return; }
+    if (win.isMinimized()) win.restore();
+    win.focus();
+  });
   app.whenReady().then(main).catch(e => { dialog.showErrorBox('Graphite', String(e?.stack || e)); app.exit(1); });
   app.on('window-all-closed', () => app.quit());
 }
