@@ -75,6 +75,7 @@ const AI_SCHEMAS = {
     topics: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['topic', 'pastCount', 'note'], properties: { topic: { type: 'string' }, pastCount: { type: 'integer' }, note: { type: 'string' } } } } } },
   connect: { type: 'object', additionalProperties: false, required: ['related'], properties: { related: { type: 'array', items: {
     type: 'object', additionalProperties: false, required: ['title', 'why'], properties: { title: { type: 'string' }, why: { type: 'string' } } } } } },
+  transcribe: { type: 'object', additionalProperties: false, required: ['markdown', 'title'], properties: { markdown: { type: 'string' }, title: { type: 'string' } } },
   format: { type: 'object', additionalProperties: false, required: ['markdown', 'changes'], properties: { markdown: { type: 'string' }, changes: { type: 'array', items: { type: 'string' } } } },
   summary: { type: 'object', additionalProperties: false, required: ['title', 'overview', 'sections', 'concepts', 'formulas'], properties: {
     title: { type: 'string' }, overview: { type: 'string' },
@@ -135,6 +136,12 @@ title: a short title such as "<course> mock paper".`,
 The input is the note and a list of their other notes (title, folder, headings).
 - Pick 2 to 6 notes that share a concept, give a definition or theorem this note relies on, or continue its topic. Never pick a note only because it is in the same course. Pick none if nothing really fits.
 related: the chosen notes, each with title (copied exactly from the list) and why (one short phrase in ${ui}).`,
+  transcribe: ui => `You transcribe a screenshot of a lecture slide, textbook or study page into clean Markdown for a student's notes.
+Copy the content faithfully (same language as the image, same order); do not summarize, explain or add anything.
+Maths: every formula in LaTeX, inline as $...$ and displayed as $$...$$ (one display per line); never Unicode maths or images.
+Keep structure: headings (###), bullet and numbered lists, **bold** for defined terms, tables as Markdown tables; drop page numbers, logos and slide footers.
+A diagram you cannot write as text: one short line in ${ui} in brackets, e.g. [Figure: commutative diagram of f and g].
+title: a short name for what the screenshot shows (a few words, in the image's language).`,
   format: ui => `You reformat one Markdown note so that its format matches the user's other notes (examples given), without changing its content.
 - Copy the examples' conventions: frontmatter fields, heading levels and style, numbering, the source line (e.g. "来源：" with slide links), the "相关 Related:" line, list style, maths style ($...$), bilingual titles if they use them.
 - Keep every piece of content, every link and the user's wording and language. Do not add new facts or remove anything. Fix only obvious typos and broken maths.
@@ -163,6 +170,7 @@ const AI_EXAMPLES = {
   exam: { title: 'Mock midterm analysis', markdown: '---\ntags: [Exam analysis]\ncreated: 2026.11.20\n---\n## Summary\n...', problems: [{ no: '1', page: 1, topic: 'Eigenvalues', question: 'Find the eigenvalues of A.', myAnswer: 'lambda = 2', mistake: 'Missed the repeated root.' }] },
   connect: { related: [{ title: 'Exact note title from the list', why: 'uses its definition of X' }] },
   mock: { title: 'Linear Algebra mock paper', problems: [{ no: '1', marks: 10, kind: 'past', sourceFile: 'LA/复习资料/2024 midterm.pdf', sourcePage: 2, sourceLabel: '2024 midterm Q4', topic: 'Determinants', question: 'Compute $\\det A$ for ...', answer: 'Expand along the first row: ...' }], topics: [{ topic: 'Determinants', pastCount: 3, note: 'appears every year' }] },
+  transcribe: { title: 'Definition of injectivity', markdown: '**Injective.** $T$ is injective if $T(u) = T(w)$ implies $u = w$.' },
   format: { markdown: 'the whole reformatted note', changes: ['Added frontmatter', 'Numbered the key points'] },
   summary: { title: 'Lecture 3 summary', overview: 'What the lecture covers.', sections: [{ heading: '3.1 Eigenvalues', page: 2, points: [{ text: 'An eigenvector keeps its direction under $A$.', page: 2 }] }], concepts: [{ term: 'Eigenvalue', meaning: 'A scalar $\\lambda$ with $Av = \\lambda v$ for some $v \\neq 0$.', page: 2 }], formulas: [{ latex: '\\det(A - \\lambda I) = 0', meaning: 'characteristic equation', page: 3 }] },
 };
@@ -200,6 +208,7 @@ function parseJsonReply(text) {
 function tidyResult(task, out) {
   if (task === 'check') { out.summary = String(out.summary || ''); out.issues = Array.isArray(out.issues) ? out.issues : []; }
   else if (task === 'questions') out.questions = Array.isArray(out.questions) ? out.questions : [];
+  else if (task === 'transcribe') { out.markdown = String(out.markdown || '').trim(); out.title = String(out.title || ''); if (!out.markdown) throw new SyntaxError('empty'); }
   else if (task === 'plan' || task === 'exam') {
     out.title = String(out.title || ''); out.markdown = String(out.markdown || ''); if (!out.markdown) throw new SyntaxError('empty');
     if (task === 'exam') out.problems = (Array.isArray(out.problems) ? out.problems : []).filter(x => x && typeof x === 'object').map(x => ({
@@ -290,7 +299,7 @@ async function compatTask(provider, key, body, signal) {
   if (json) {
     tooLong(String(body.content || ''));
     messages = [{ role: 'system', content: `${body.__system || prompt(LANG_NAMES[body.lang] || 'English')}\n\nReply with JSON only, in exactly this format:\n${JSON.stringify(AI_EXAMPLES[body.task], null, 2)}` },
-      { role: 'user', content: noteBlock(body) }];
+      { role: 'user', content: body.__image ? [{ type: 'image_url', image_url: { url: `data:${body.__image.type};base64,${body.__image.data}` } }, { type: 'text', text: 'Transcribe this screenshot.' }] : noteBlock(body) }];
   } else messages = [{ role: 'system', content: body.__system || prompt() }, ...chatMessages(body)];
   const tokens = P.tokens || 'max_tokens';
   const full = { model, messages, [tokens]: 16000, ...(json ? { response_format: { type: 'json_object' } } : {}), ...(P.extra || {}) };
@@ -347,7 +356,7 @@ async function anthropicTask(key, body, signal) {
     const params = {
       model, max_tokens: 16000,
       system: body.__system || (json ? prompt(LANG_NAMES[body.lang] || 'English') : prompt()),
-      messages: json ? [{ role: 'user', content: noteBlock(body) }] : chatMessages(body),
+      messages: json ? [{ role: 'user', content: body.__image ? [{ type: 'image', source: { type: 'base64', media_type: body.__image.type, data: body.__image.data } }, { type: 'text', text: 'Transcribe this screenshot.' }] : noteBlock(body) }] : chatMessages(body),
       output_config: json
         ? { format: { type: 'json_schema', schema: AI_SCHEMAS[body.task] }, effort: body.task === 'questions' ? 'low' : 'medium' }
         : { effort: 'low' },
@@ -384,11 +393,21 @@ async function jobSystem(task, body) {
   const block = PROFILE.promptBlock(task, p, study.file());
   return block ? base + '\n\n' + block : base;
 }
+// A clipped screenshot in the vault, for the AI to read (transcribe): PNG/JPEG/WebP, at most 5 MB.
+async function imageOf(rel) {
+  const abs = inVault(String(rel || ''));
+  const type = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp' }[path.extname(abs).toLowerCase()];
+  if (!type) throw new HttpError(400, 'Not an image');
+  const bytes = await fsp.readFile(abs).catch(() => { throw new HttpError(404, 'Image not found'); });
+  if (bytes.length > 5 * 1024 * 1024) throw new HttpError(413, 'Image too large');
+  return { type, data: bytes.toString('base64') };
+}
 async function aiTask(req) {
   const key = String(req.headers['x-ai-key'] || '').trim();
   const body = JSON.parse((await readBody(req, 5 * 1024 * 1024)).toString('utf8') || '{}');
   delete body.__system;
   if (AI_PROMPTS[body.task]) body.__system = await jobSystem(body.task, body);
+  if (body.task === 'transcribe') body.__image = await imageOf(body.img);
   const provider = body.provider || 'anthropic';
   if (provider === 'anthropic') return anthropicTask(key, body);
   if (!COMPAT[provider]) throw new HttpError(400, 'Unknown AI provider');
@@ -1306,7 +1325,7 @@ async function installClaudeKit(input) {
 
 async function start({ vault, port = 0, token = null, retry = 0, canvasOptions = {} } = {}) {
   VAULT = path.resolve(vault);
-  canvas = require('./canvas-service').createCanvasService({ ...canvasOptions, vault: VAULT, noteWriter: {withFileLock, atomicWrite} });
+  canvas = require('./canvas-service').createCanvasService({ officeToPdf, ...canvasOptions, vault: VAULT, noteWriter: {withFileLock, atomicWrite} });
   CONFIG_DIR = path.join(VAULT, '.obsidian');
   PLUGIN_DIR = path.join(CONFIG_DIR, 'plugins');
   TOKEN = token;

@@ -219,10 +219,11 @@ async function main() {
       assert.equal(await p.locator('.study-card [data-f=a]').inputValue(), 'LEC-page-2');
       await p.locator('.study-card [data-a=save]').click();
       // Clip: drag a box over page 1.
+      // (Since 1.1.50 the scissors start the snip tool; the capture panel then offers Card.)
       await p.locator('[data-pdf="clip"]').click();
-      await p.locator('#ctxmenu .ctx-item').first().click();
       const pg = await p.locator('.page[data-page-number="1"] canvas').boundingBox();
       await p.mouse.move(pg.x + 20, pg.y + 20); await p.mouse.down(); await p.mouse.move(pg.x + 200, pg.y + 120, { steps: 5 }); await p.mouse.up();
+      await p.locator('.snip-panel [data-cap="card"]').click();
       await p.locator('.study-card img.study-clip').waitFor();
       await p.locator('.study-card [data-f=a]').fill('The first lecture page');
       await p.locator('.study-card [data-a=save]').click();

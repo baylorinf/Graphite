@@ -329,7 +329,32 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
       return { path: path.relative(base, saved.target).split(path.sep).join('/'), unchanged: saved.unchanged };
     } finally { await fsp.unlink(temp).catch(() => {}); }
   }
-  return { sync, download };
+  // One Canvas page read inside Graphite (assignment, announcement, discussion, page, quiz, syllabus) instead of
+  // sending the student out to a browser: its title, its text and the files it links.
+  async function read(raw) {
+    let u;
+    try { u = new URL(raw, ORIGIN); } catch { throw problem(400, 'invalid_url', '无效的 Canvas 地址。'); }
+    if (u.origin !== ORIGIN) throw problem(400, 'invalid_url', '无效的 Canvas 地址。');
+    const m = u.pathname.replace(/\/$/, '').match(/^\/courses\/(\d+)(?:\/(assignments|discussion_topics|announcements|pages|quizzes|wiki)(?:\/([^/]+))?)?$/);
+    if (!m) throw problem(404, 'unsupported_page', '这个页面暂时不能在 Graphite 里显示。', u.href);
+    const [, cid, kind, item] = m;
+    const base = '/api/v1/courses/' + cid + '/';
+    let route, field = 'description', titleField = 'name';
+    if (!kind) { route = ''; field = 'syllabus_body'; }
+    else if (kind === 'assignments' && item) route = 'assignments/' + item;
+    else if ((kind === 'discussion_topics' || kind === 'announcements') && item) { route = 'discussion_topics/' + item; field = 'message'; titleField = 'title'; }
+    else if (kind === 'pages' && item) { route = 'pages/' + encodeURIComponent(decodeURIComponent(item)); field = 'body'; titleField = 'title'; }
+    else if (kind === 'wiki' || kind === 'pages') { route = 'front_page'; field = 'body'; titleField = 'title'; }
+    else if (kind === 'quizzes' && item) { route = 'quizzes/' + item; titleField = 'title'; }
+    else throw problem(404, 'unsupported_page', '这个页面暂时不能在 Graphite 里显示。', u.href);
+    const url = new URL(base + route, ORIGIN);
+    if (!kind) url.search = 'include[]=syllabus_body';
+    const { value } = await json(url);
+    const body = courseContent(value?.locked_for_user ? '' : value?.[field] || '', cid);
+    return { url: u.href, courseId: cid, kind: kind || 'syllabus', title: String(value?.[titleField] || value?.title || value?.name || ''),
+      text: body.text, attachments: body.attachments, at: date(value?.posted_at || value?.updated_at || value?.created_at), dueAt: date(value?.due_at) };
+  }
+  return { sync, download, read };
 }
 
 module.exports = { createCanvasApi, SCOPES, safeName, courseFolder, verifiedSubdirectory, publish };

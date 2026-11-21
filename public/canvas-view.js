@@ -16,7 +16,7 @@ function schoolLink(value) {
 }
 const link = (title, url) => {
   const href = schoolLink(url);
-  return href ? `<a href="${esc(href)}" target="_blank" rel="noopener noreferrer">${esc(title)}</a>` : esc(title);
+  return href ? `<a href="${esc(href)}" data-cv-read="${esc(href)}">${esc(title)}</a>` : esc(title);
 };
 const button = (action, text, cls = '', attrs = '') =>
   `<button type="button" class="mod-button ${cls}" data-cv="${action}" ${attrs}>${esc(text)}</button>`;
@@ -71,7 +71,7 @@ function upcoming(state) {
     const existing = keys.some(key => completed.has(key)) || occurrences.some(key => seen.has(key));
     for (const key of occurrences) seen.add(key);
     if (existing) return;
-    items.push({ title: item.title, url: item.url, date, course: course?.name, allDay: item.allDay || dateOnly(date), time: +time });
+    items.push({ title: item.title, url: item.url, date, course: course?.name, courseId: course?.id, assignmentId: kind === 'assignments' ? item.id : null, allDay: item.allDay || dateOnly(date), time: +time });
   }
   const courses = state.snapshot?.courses || [];
   for (const course of courses) {
@@ -96,11 +96,11 @@ function upcoming(state) {
 }
 
 // Graphite's tabs keep the original note open while the student checks a deadline or downloads a file.
-export function createCanvasView(root, { api, openFile }) {
+export function createCanvasView(root, { api, openFile, onSeen }) {
   let state = null, message = '', failed = false, busy = '', readVersion = 0, poll = 0, authUntil = 0;
   let awaitWrite = false, pendingVerification = null, summaryReceipt = '', firstSyncUntil = 0;
   let selected = '', group = 'files', limit = STEP, dateLimit = STEP, confirmDisconnect = false;
-  let receipt = null, bulkFailures = [], visible = false, lastPull = null, progressTimer = 0;
+  let receipt = null, bulkFailures = [], visible = false, lastPull = null, progressTimer = 0, reader = null;
   const call = (method, name, body) => api(method, 'canvas/' + name, {}, body);
   // By ID only (two courses or assignments can share a name).
   const findAssignment = (courseId, assignmentId) => state?.snapshot?.courses?.find(c => String(c.id) === String(courseId))?.assignments?.find(a => String(a.id) === String(assignmentId)) || null;
@@ -188,11 +188,52 @@ export function createCanvasView(root, { api, openFile }) {
   function canOpenSubmission(item) {
     return state.connected && !item.excused && (state.authMode !== 'web' || state.canSubmitFiles) && supportedTypes(item, state.authMode).length > 0;
   }
+  function daysLeft(item) {
+    const start = new Date().setHours(0, 0, 0, 0), d = new Date(item.time).setHours(0, 0, 0, 0);
+    const n = Math.round((d - start) / 86400000);
+    return `<span class="cv-due${n <= 1 ? ' cv-due-soon' : n <= 3 ? ' cv-due-near' : ''}">${esc(n <= 0 ? label('today') : n === 1 ? label('tomorrow') : label('inDays').replace('{n}', n))}</span>`;
+  }
   function agenda() {
     const entries = upcoming(state);
-    return `<section class="cv-block"><h2>${esc(label('upcoming'))}</h2>${entries.length
-      ? `<ul class="cv-list">${entries.slice(0, dateLimit).map(item => row(item.title, item.url, [formatTime(item.date, item.allDay), item.allDay ? label('allDay') : '', item.course].filter(Boolean).join(' · '))).join('')}</ul>${entries.length > dateLimit ? button('more-dates', label('more')) : ''}`
+    return `<section class="cv-block cv-agenda"><h2>${esc(label('upcoming'))}</h2>${entries.length
+      ? `<ul class="cv-list">${entries.slice(0, dateLimit).map(item => {
+        const a = item.assignmentId != null ? findAssignment(item.courseId, item.assignmentId) : null;
+        const quick = a && canOpenSubmission(a) ? button('quick-submit', label('submitTask'), 'mod-cta cv-quick', `data-course="${esc(item.courseId)}" data-assignment="${esc(item.assignmentId)}"`) : '';
+        return `<li class="cv-row">${daysLeft(item)}<div class="cv-row-text"><div class="cv-title">${link(item.title, item.url)}</div><div class="cv-meta">${esc([formatTime(item.date, item.allDay), item.allDay ? label('allDay') : '', item.course].filter(Boolean).join(' · '))}</div></div>${quick}</li>`;
+      }).join('')}</ul>${entries.length > dateLimit ? button('more-dates', label('more')) : ''}`
       : `<p class="cv-meta">${esc(label('noDates'))}</p>`}</section>`;
+  }
+  // What the last pull put into the course folders (slides, homework, exams), with buttons to open them.
+  function newFiles() {
+    const m = lastPull?.mirror;
+    if (!m || (!m.added?.length && !m.unlinked?.length && !m.failed?.length)) return '';
+    const added = m.added || [];
+    return `<section class="cv-block cv-new" data-cv-new><h2>${esc(label('newFiles'))} <small>${esc(formatTime(lastPull.finishedAt))}</small></h2>
+      ${added.length ? `<ul class="cv-list">${added.slice(0, 30).map(f => `<li class="cv-row"><div class="cv-row-text"><div class="cv-title">${esc(f.path.split('/').pop())}</div><div class="cv-meta">${esc(f.path.split('/').slice(0, -1).join(' / '))}</div></div>${button('open-path', label('openFile'), '', `data-path="${esc(f.path)}"`)}</li>`).join('')}</ul>` : `<p class="cv-meta">${esc(label('noNewFiles'))}</p>`}
+      ${m.duplicates ? `<p class="cv-meta">${esc(label('duplicates').replace('{n}', m.duplicates))}</p>` : ''}
+      ${m.unlinked?.length ? `<p class="cv-meta">${esc(label('unlinked'))} ${esc(m.unlinked.join('、'))}</p>` : ''}
+      ${m.index?.length ? `<p class="cv-meta">${esc(label('indexUpdated'))} ${m.index.map(p => `<a href="#" data-open-path="${esc(p)}">${esc(p.split('/').pop().replace(/\.md$/, ''))}</a>`).join('、')}</p>` : ''}
+      ${warnings((m.failed || []).map(f => [f.course, f.name, f.error].filter(Boolean).join(' · ')))}</section>`;
+  }
+  // A Canvas page read inside Graphite (no browser): text, the files it links, and what you can do next.
+  function readerPanel() {
+    const r = reader;
+    const files = r.data?.attachments || [];
+    const course = state.snapshot?.courses?.find(c => String(c.id) === String(r.data?.courseId || r.courseId));
+    const assignment = r.assignment ? findAssignment(r.assignment.courseId, r.assignment.id) : null;
+    return `<section class="cv-block cv-reader" data-cv-reader><div class="cv-reader-bar">${button('reader-back', '← ' + label('back'))}${button('portal-url', label('inWindow'), '', `data-url="${esc(r.url)}"`)}</div>
+      <h2>${esc(r.data?.title || r.title || '')}</h2>
+      <p class="cv-meta">${esc([course?.name, r.data?.dueAt ? label('due') + ' ' + formatTime(r.data.dueAt) : '', r.data?.at ? formatTime(r.data.at) : ''].filter(Boolean).join(' · '))}</p>
+      ${r.loading ? `<p class="cv-meta">${esc(label('loading'))}</p>` : r.error ? `<p class="cv-feedback cv-error">${esc(r.error)}</p>` :
+        `<div class="cv-reader-text">${r.data?.text ? esc(r.data.text) : `<span class="cv-meta">${esc(label('emptyPage'))}</span>`}</div>`}
+      ${files.length ? `<h3>${esc(label('files'))}</h3><ul class="cv-list">${files.map(f => `<li class="cv-row"><div class="cv-row-text"><div class="cv-title">${esc(f.name)}</div></div>${state.connected ? button('open-attachment', label('saveOpen'), '', `data-course="${esc(r.data.courseId)}" data-file="${esc(f.id)}"`) : ''}</li>`).join('')}</ul>` : ''}
+      ${assignment && canOpenSubmission(assignment) ? `<div class="cv-reader-actions">${button('quick-submit', label(assignment.submitted ? 'resubmit' : 'submitTask'), 'mod-cta', `data-course="${esc(r.assignment.courseId)}" data-assignment="${esc(assignment.id)}"`)}</div>` : ''}
+    </section>`;
+  }
+  // Where this course's new files go in the vault ('' = only Canvas/).
+  function linkPicker(course) {
+    const folders = state.vaultFolders || [], cur = state.courseLinks?.[String(course.id)] || '';
+    return `<div class="cv-link"><label for="cv-link">${esc(label('linkFolder'))}</label><select id="cv-link" data-course="${esc(course.id)}"><option value="">${esc(label('canvasOnly'))}</option>${folders.map(f => `<option value="${esc(f)}"${f === cur ? ' selected' : ''}>${esc(f)}</option>`).join('')}</select></div>`;
   }
   function resource(item) {
     if (group === 'modules') {
@@ -226,6 +267,7 @@ export function createCanvasView(root, { api, openFile }) {
     const items = course[group] || [];
     return `<section class="cv-block"><h2>${esc(label('sections'))}</h2><label for="cv-course">${esc(label('choose'))}</label>
       <select id="cv-course">${courses.map(c => `<option value="${esc(c.id)}"${String(c.id) === selected ? ' selected' : ''}>${esc(c.name)}${c.code && c.code !== c.name ? ` · ${esc(c.code)}` : ''}</option>`).join('')}</select>
+      ${state.connected ? linkPicker(course) : ''}
       ${warnings(course.warnings)}
       ${state.connected && course.files?.length ? `<div class="cv-bulk">${button('download-course', label('courseDownload') + ' (' + course.files.length + ')')}</div>` : ''}
       ${bulkFailures.length ? warnings(bulkFailures) : ''}
@@ -238,7 +280,7 @@ export function createCanvasView(root, { api, openFile }) {
     const draft = root.querySelector('#cv-feed-input')?.value || '';
     const focus = document.activeElement;
     const restore = root.contains(focus) && (focus.id || ['cv','group'].some(key => key in focus.dataset)) ? {id:focus.id, action:focus.dataset.cv, group:focus.dataset.group, file:focus.dataset.file} : null;
-    const header = `<header class="cv-head"><div><h1>${esc(label('title'))}</h1>${state?.user ? `<div class="cv-meta">${esc(state.user)}</div>` : ''}</div>${button('portal', label('portal'))}</header>`;
+    const header = `<header class="cv-head"><div class="cv-head-title"><h1>${esc(label('title'))}</h1>${state?.user ? `<div class="cv-meta">${esc(state.user)}</div>` : ''}</div>${button('portal', label('portal'))}</header>`;
     if (!state) {
       root.innerHTML = `<div class="cv-inner">${header}${feedback()}${failed ? button('refresh', label('retry')) : `<p>${esc(label('loading'))}</p>`}</div>`;
       return;
@@ -263,8 +305,9 @@ export function createCanvasView(root, { api, openFile }) {
       ${state.lastDownload ? `<div class="cv-bar"><span class="cv-meta">${esc(label('latestFile'))} · ${esc(state.lastDownload)}</span>${button('open-latest', label('openFile'))}</div>` : ''}
       ${state.sessionOnly && (connected || state.calendar) ? `<p class="cv-meta">${esc(label('sessionOnly'))}</p>` : ''}
       ${calendarForm()}</div>
-      ${hasData ? `<div class="cv-bar cv-sync"><span class="cv-meta">${esc([state.syncing ? label('syncRunning') : '', latest ? label('synced') + ' · ' + formatTime(latest) : ''].filter(Boolean).join('　'))}</span><div class="cv-actions">${(connected || state.calendar) && !state.syncing ? button('sync', label('sync')) : ''}${connected ? button('pull', label('pullAll'), 'mod-cta') : ''}</div></div>${pullReport()}${state.snapshot?.courses?.length && (!connected || state.syncing || state.authError) ? `<p class="cv-meta">${esc(label('cache'))}</p>` : ''}${warnings(state.snapshot?.warnings)}${agenda()}` : ''}
-      ${connected || state.snapshot?.courses?.length ? coursePanel() : ''}</div>`;
+      ${hasData ? `<div class="cv-bar cv-sync"><label class="cv-auto" title="${esc(label('autoHelp'))}"><input type="checkbox" data-cv-auto${state.autoMirror !== false ? ' checked' : ''}> ${esc(label('auto'))}</label><span class="cv-meta">${esc([state.syncing ? label('syncRunning') : '', latest ? label('synced') + ' · ' + formatTime(latest) : ''].filter(Boolean).join('　'))}</span><div class="cv-actions">${(connected || state.calendar) && !state.syncing ? button('sync', label('sync')) : ''}${connected ? button('pull', label('pullAll'), 'mod-cta') : ''}</div></div>${pullReport()}${state.snapshot?.courses?.length && (!connected || state.syncing || state.authError) ? `<p class="cv-meta">${esc(label('cache'))}</p>` : ''}${warnings(state.snapshot?.warnings)}` : ''}
+      <div class="cv-grid"><div class="cv-col">${hasData ? newFiles() + agenda() : ''}</div>
+      <div class="cv-col cv-col-main">${reader ? readerPanel() : connected || state.snapshot?.courses?.length ? coursePanel() : ''}</div></div></div>`;
     for (const el of root.querySelectorAll('details[data-keep]')) el.open = open.has(el.dataset.keep);
     const input = root.querySelector('#cv-feed-input'); if (input && draft) input.value = draft;
     if (restore) {
@@ -373,12 +416,54 @@ export function createCanvasView(root, { api, openFile }) {
     } finally { clearTimeout(progressTimer); if (action === 'pull' && state) state.pullProgress = null; busy = ''; confirmDisconnect = false; render(); schedulePoll(); }
     return actionError;
   }
+  async function openReader(url, title) {
+    const path = new URL(url).pathname;
+    // A file link: save it into the vault and open it in Graphite.
+    const file = path.match(/^\/courses\/(\d+)\/files\/(\d+)/);
+    if (file) return void saveAndOpen(file[1], file[2]);
+    const m = path.match(/^\/courses\/(\d+)\/assignments\/(\d+)/);
+    reader = { url, title, loading: true, assignment: m ? { courseId: m[1], id: m[2] } : null, courseId: path.match(/^\/courses\/(\d+)/)?.[1] };
+    const mine = reader; render();
+    root.querySelector('[data-cv-reader]')?.scrollIntoView({ block: 'nearest' });
+    try { mine.data = await call('POST', 'read', { url }); }
+    catch (error) {
+      const a = mine.assignment && findAssignment(mine.assignment.courseId, mine.assignment.id);
+      // Offline or not readable: the assignment text from the last sync.
+      if (a) mine.data = { title: a.title, text: a.description, attachments: a.attachments || [], courseId: mine.assignment.courseId, dueAt: a.dueAt };
+      else mine.error = error.message || label('error');
+    }
+    mine.loading = false;
+    if (reader === mine) render();
+  }
+  async function saveAndOpen(courseId, fileId) {
+    if (busy) return;
+    busy = 'download'; busyControls();
+    try { const r = await call('POST', 'download', { courseId, fileId }); await openFile(r.path); }
+    catch (error) { notice(error.message || label('error'), true); }
+    finally { busy = ''; render(); }
+  }
   root.addEventListener('click', e => {
+    const a = e.target.closest('a[data-cv-read], a[data-open-path]');
+    if (a) {
+      e.preventDefault();
+      if (a.dataset.openPath) return void openFile(a.dataset.openPath).catch(error => { notice(error.message, true); render(); });
+      return void openReader(a.dataset.cvRead, a.textContent);
+    }
     const el = e.target.closest('button');
     if (!el || busy) return;
-    if (el.dataset.group) { group = el.dataset.group; limit = STEP; render(); return; }
+    if (el.dataset.group) { group = el.dataset.group; limit = STEP; reader = null; render(); return; }
     const action = el.dataset.cv;
     if (action === 'refresh') return void refresh();
+    if (action === 'reader-back') { reader = null; render(); return; }
+    if (action === 'portal-url') return void perform('portal', { url: el.dataset.url });
+    if (action === 'open-attachment') return void saveAndOpen(el.dataset.course, el.dataset.file);
+    if (action === 'open-path') return void openFile(el.dataset.path).catch(error => { notice(error.message, true); render(); });
+    if (action === 'quick-submit') {
+      const course = state.snapshot?.courses?.find(c => String(c.id) === String(el.dataset.course));
+      const item = course?.assignments?.find(x => String(x.id) === String(el.dataset.assignment));
+      if (course && item) submission.open(course, item, { quick: true, folder: state.courseLinks?.[String(course.id)] || '' });
+      return;
+    }
     if (action === 'more' || action === 'more-dates') {
       if (action === 'more') limit += STEP; else dateLimit += STEP;
       render(); return;
@@ -412,7 +497,9 @@ export function createCanvasView(root, { api, openFile }) {
     if (['portal','connect','web-connect','sync','calendar-remove','pull'].includes(action)) void perform(action);
   });
   root.addEventListener('change', e => {
-    if (e.target.id === 'cv-course') { selected = e.target.value; group = 'files'; limit = STEP; bulkFailures = []; notice(''); render(); }
+    if (e.target.id === 'cv-link') return void perform('link', { courseId: e.target.dataset.course, folder: e.target.value });
+    if (e.target.matches('[data-cv-auto]')) return void perform('auto-mirror', { enabled: e.target.checked });
+    if (e.target.id === 'cv-course') { reader = null; selected = e.target.value; group = 'files'; limit = STEP; bulkFailures = []; notice(''); render(); }
   });
   root.addEventListener('submit', e => {
     if (!e.target.matches('[data-cv-form]')) return;
@@ -428,7 +515,9 @@ export function createCanvasView(root, { api, openFile }) {
   document.addEventListener('visibilitychange', () => { if (visible && !document.hidden) void refresh(true); });
   return {
     id: 'sjtu-canvas', title: () => label('title'),
-    show() { visible = true; root.hidden = false; render(); void refresh(); },
+    show() { visible = true; root.hidden = false; render(); void refresh(); (onSeen || this.onSeen)?.(); },
+    // For the ribbon badge: the latest status (it holds the last pull and its "new files" summary).
+    status: () => call('GET', 'status'),
     hide() { visible = false; root.hidden = true; submission.dismiss(); clearTimeout(poll); ++readVersion; },
     close() { root.replaceChildren(); submission.clear(); state = null; receipt = null; lastPull = null; bulkFailures = []; message = ''; failed = false; authUntil = 0; awaitWrite = false; confirmDisconnect = false; pendingVerification = null; summaryReceipt = ''; },
     relabel() { if (visible) render(); },

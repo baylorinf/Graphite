@@ -468,8 +468,8 @@ input.slider { accent-color: var(--accent); }
 .font-missing { color: #e0a100; font-size: 12px; }
 
 /* ---------- review: badge, check window, prompt, page, related notes ---------- */
-#review-btn { position: relative; }
-#review-btn .badge { position: absolute; top: 1px; right: 0; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--bg-2); }
+#review-btn, #canvas-btn { position: relative; }
+#review-btn .badge, #canvas-btn .badge { position: absolute; top: 1px; right: 0; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--bg-2); }
 #review-view { flex: 1; min-height: 0; overflow: auto; }
 
 .review-modal { position: fixed; inset: 0; z-index: 70; display: grid; place-items: center; }

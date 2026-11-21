@@ -439,6 +439,14 @@ async function main() {
   ipcMain.handle('update-check', (_event, options) => checkForUpdates({ force: options?.force === true }));
   ipcMain.handle('update-install', () => installUpdate());
   ipcMain.handle('copy-text', (_e, text) => { require('electron').clipboard.writeText(String(text)); return true; });
+  // Region screenshot (the snip tool): a box of this window, in CSS pixels, as PNG bytes. Only the window that asks.
+  ipcMain.handle('capture-region', async (e, r) => {
+    const n = v => Math.max(0, Math.round(Number(v) || 0)), z = e.sender.getZoomFactor() || 1;
+    const rect = { x: n(r?.x * z), y: n(r?.y * z), width: n(r?.width * z), height: n(r?.height * z) };
+    if (rect.width < 2 || rect.height < 2 || rect.width > 10000 || rect.height > 10000) throw new Error('bad region');
+    return (await e.sender.capturePage(rect)).toPNG();
+  });
+  ipcMain.handle('copy-image', (_e, bytes) => { const { clipboard, nativeImage } = require('electron'); clipboard.writeImage(nativeImage.createFromBuffer(Buffer.from(bytes))); return true; });
 
   createWindow(url);
   // Also save settings every 15 s, so they survive even if Windows ends the app without a normal quit.

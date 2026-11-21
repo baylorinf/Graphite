@@ -131,10 +131,13 @@ function decorateProblems(el, from) {
 /* =====================================================================
    B. Cards from PDFs (text or a clipped image)
    ===================================================================== */
+// Decks: one per course by default (the card's top folder), or any name the student types.
+export const decks = () => [...new Set(RV.items('card').map(i => i.deck).filter(Boolean))].sort();
 export function cardForm(pre = {}) {
   const imgUrl = pre.img ? '/vault/' + enc(pre.img) : '';
   const { body, actions } = openModal(t(pre.id ? 'pcard.editTitle' : 'pcard.addTitle'), `
     ${sourceLine(pre.src, pre.page)}
+    ${field(t('deck.label'), `<input data-f="deck" list="study-decks" value="${esc(pre.deck ?? (pre.id ? '' : (pre.src || '').split('/').slice(0, -1)[0] || ''))}" placeholder="${esc(t('deck.none'))}"><datalist id="study-decks">${decks().map(d => `<option value="${esc(d)}">`).join('')}</datalist>`)}
     ${field(t('pcard.q'), `<textarea data-f="q" rows="3" placeholder="${esc(t('pcard.qPh'))}">${esc(pre.q || '')}</textarea>`)}
     <div class="study-preview markdown" data-pv="q"></div>
     ${field(t('pcard.a'), `<textarea data-f="a" rows="4" placeholder="${esc(t('pcard.aPh'))}">${esc(pre.a || '')}</textarea>`)}
@@ -147,13 +150,13 @@ export function cardForm(pre = {}) {
   wireGoto(body);
   actions.innerHTML = `<button class="mod-button mod-cta" data-a="save">${esc(t(pre.id ? 'study.save' : 'pcard.add'))}</button>${pre.id ? '' : `<button class="mod-button" data-a="mistake">${esc(t('pcard.asMistake'))}</button>`}<button class="mod-button" data-a="cancel">${esc(t('review.close'))}</button>`;
   actions.querySelector('[data-a=cancel]').onclick = closeModal;
-  const vals = () => ({ q: body.querySelector('[data-f=q]').value.trim(), a: body.querySelector('[data-f=a]').value.trim(), side: body.querySelector('input[name=side]:checked')?.value || 'q' });
+  const vals = () => ({ q: body.querySelector('[data-f=q]').value.trim(), a: body.querySelector('[data-f=a]').value.trim(), deck: body.querySelector('[data-f=deck]').value.trim(), side: body.querySelector('input[name=side]:checked')?.value || 'q' });
   actions.querySelector('[data-a=mistake]')?.addEventListener('click', () => { const v = vals(); mistakeForm({ src: pre.src, page: pre.page, question: v.q || v.a, img: pre.img }); });
   actions.querySelector('[data-a=save]').onclick = () => {
     const v = vals();
     if (!v.q && !(pre.img && v.side === 'q')) { H.toast(t('pcard.needQ')); return; }
     if (!v.a && !(pre.img && v.side === 'a')) { H.toast(t('pcard.needA')); return; }
-    const item = { kind: 'card', src: pre.src || '', page: pre.page || 0, q: v.q, a: v.a, ...(pre.img ? { img: pre.img, imgSide: v.side } : {}) };
+    const item = { kind: 'card', src: pre.src || '', page: pre.page || 0, q: v.q, a: v.a, ...(v.deck ? { deck: v.deck } : {}), ...(pre.tag ? { tag: pre.tag } : {}), ...(pre.img ? { img: pre.img, imgSide: v.side } : {}) };
     if (pre.id) RV.updateItem(pre.id, item); else RV.addItem(item);
     closeModal();
     H.toast(t(pre.id ? 'study.saved' : 'pcard.added'));
@@ -325,7 +328,7 @@ function reviewPageExtras(page) {
   sec.className = 'study-book';
   const dueText = id => { const d = RV.dueOf(id); return d == null ? '' : d <= today ? t('mist.dueNow') : t('mist.dueOn', { date: RV.dateOfDay(d) }); };
   const row = (i, kind) => `<div class="review-note study-item" data-id="${esc(i.id)}">
-      <span class="study-item-main"><b>${esc(kind === 'mistake' ? (i.no ? t('mist.problem', { no: i.no }) : t('mist.kind')) : t('pcard.kind'))}</b>
+      <span class="study-item-main"><b>${esc(kind === 'mistake' ? (i.no ? t('mist.problem', { no: i.no }) : t('mist.kind')) : i.deck || t('pcard.kind'))}</b>
         <span class="study-item-text">${esc(((kind === 'mistake' ? i.question : i.q) || (i.img ? '🖼 ' + t('pcard.image') : '')).replace(/\s+/g, ' ').slice(0, 90))}</span></span>
       ${i.src ? `<a href="#" class="study-goto muted" data-path="${esc(i.src)}" data-page="${i.page || 0}">${esc(where(i.src, i.page))}</a>` : ''}
       ${kind === 'mistake' ? `<span class="muted">${esc(dueText(i.id))}${i.attempts?.length ? ' · ' + esc(t('mist.attempts', { n: i.attempts.length })) : ''}</span>` : ''}
@@ -347,7 +350,7 @@ function reviewPageExtras(page) {
     const view = bookView.lists[kind] ||= { query: '', expanded: false };
     const input = box.querySelector('input'), list = box.querySelector('.study-book-items'), toggle = box.querySelector('.study-book-all');
     input.value = view.query;
-    const indexed = entries.map(item => ({ item, text: normalizeSearch([item.no, item.question || item.q, item.src, item.note].filter(Boolean).join(' ')) }));
+    const indexed = entries.map(item => ({ item, text: normalizeSearch([item.no, item.question || item.q, item.src, item.note, item.deck].filter(Boolean).join(' ')) }));
     const draw = () => {
       const terms = normalizeSearch(view.query).trim().split(/\s+/).filter(Boolean);
       const hits = indexed.filter(entry => terms.every(term => entry.text.includes(term)));
@@ -364,6 +367,22 @@ function reviewPageExtras(page) {
   };
   addList('mistake', mistakes, 'mist.bookTitle', 'mist.empty');
   addList('card', cards, 'pcard.listTitle', 'pcard.empty');
+  // Decks: review one course's cards (all of them, due first), whatever their dates.
+  const deckNames = decks();
+  if (deckNames.length) {
+    const box = sec.querySelector('[data-study-list="card"] h2');
+    const bar = document.createElement('div');
+    bar.className = 'study-decks';
+    bar.innerHTML = deckNames.map(d => { const n = cards.filter(c => c.deck === d).length; return `<button class="mod-button" data-deck="${esc(d)}">${esc(t('deck.review', { deck: d, n }))}</button>`; }).join('');
+    box.after(bar);
+    bar.addEventListener('click', e => {
+      const b = e.target.closest('[data-deck]');
+      if (!b) return;
+      const ids = new Set(cards.filter(c => c.deck === b.dataset.deck).map(c => c.id));
+      const list = RV.itemCards().filter(c => ids.has(c.id)).sort((a, z) => (RV.dueOf(a.id) ?? 0) - (RV.dueOf(z.id) ?? 0));
+      RV.startSession(list, { title: b.dataset.deck, onClose: () => H.onReviewChange() });
+    });
+  }
   // Before "How it works".
   const how = page.querySelector('.review-how')?.previousElementSibling;
   if (how) how.before(sec); else page.append(sec);

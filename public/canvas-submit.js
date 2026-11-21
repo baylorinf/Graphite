@@ -62,6 +62,34 @@ export function verdict(baseline, v) {
 //  - the same accountKey comes back: the drafts are there again, still asking for a new preview;
 //  - another accountKey, or you disconnect: the previous account's drafts are deleted.
 // Nothing is ever sent without the confirmation button, and nothing is sent again by itself after an unclear result.
+// One-click submit: the vault file that most likely is this assignment's answer. Files in the course's homework
+// folder (or anywhere in the linked course folder) score by the numbers and words they share with the assignment's
+// title, then by how recently they changed. Nothing is sent: the student still sees the preview and confirms.
+export function suggestFile(index, item, folder = '') {
+  const words = s => String(s).toLowerCase().normalize('NFKC').match(/[a-z]+|\d+|[一-鿿]{2,}/g) || [];
+  const isNum = w => /^\d+$/.test(w);
+  const title = words(item.title), nums = title.filter(isNum).map(Number);
+  const allowed = (item.allowedExtensions || []).map(x => String(x).replace(/^\./, '').toLowerCase());
+  const week = Date.now() - 21 * 86400000;
+  let best = null;
+  for (const f of index) {
+    const p = f.path.toLowerCase();
+    if (folder && !f.path.startsWith(folder + '/')) continue;
+    if (allowed.length && !allowed.some(x => p.endsWith('.' + x))) continue;
+    if (/\.(md|canvas)$/.test(p) && !allowed.includes('md')) continue;
+    const homework = /作业|homework|(^|[^a-z])hw|assignment|习题/.test(p);
+    if (!homework && !folder) continue;
+    const own = words(f.name);
+    let score = (homework ? 2 : 0) + title.filter(w => !isNum(w) && own.includes(w)).length;
+    const ownNums = own.filter(isNum).map(Number);
+    if (nums.length && nums.some(n => ownNums.includes(n))) score += 5;
+    else if (nums.length && ownNums.length) score -= 3;
+    if ((f.mtime || 0) > week) score += 1;
+    if (score > 2 && (!best || score > best.score || (score === best.score && (f.mtime || 0) > (best.f.mtime || 0)))) best = { f, score };
+  }
+  return best?.f || null;
+}
+const indexOf = result => result.files.map(f => ({path:f.path,name:f.path.split('/').pop(),size:f.size,mtime:f.mtime})).sort((a,b) => a.path.localeCompare(b.path,getLang()));
 export function createSubmissionDialog({esc, formatTime, getState, listFiles, authorize, openOfficial, onAccepted, verify}) {
   const drafts = new Map();      // `${accountKey}/${courseId}/${assignmentId}` → draft
   let dialog = null, active = null;
@@ -163,7 +191,7 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     if (d.phase === 'not-received') return `<p data-submit-not-received role="status">${esc(t('notReceived'))}</p>`;
     if (d.phase === 'preview' || d.sending) {
       let content = '';
-      if (d.type === 'online_upload') content = attachmentList(d.sending ? d.prepared : chosen(d));
+      if (d.type === 'online_upload') content = (d.suggested && d.vault.has(d.suggested) ? `<p class="cv-feedback" data-submit-suggested>${esc(t('suggested'))}</p>` : '') + attachmentList(d.sending ? d.prepared : chosen(d));
       else content = `<div class="cv-answer">${esc(d.type === 'online_url' ? d.url : d.text)}</div>`;
       return `<h3>${esc(t(d.type))}</h3>${content}`;
     }
@@ -275,7 +303,7 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
     } catch (error) { if (mine === epoch) d.error = error.message || t('error'); }
     finally { d.verifying = false; if (d === active) draw(); }
   }
-  function open(course, item) {
+  function open(course, item, opts = {}) {
     dismiss();
     // While the identity is briefly unknown (signing in again), the drafts of the last account are shown, paused.
     const owner = keyOf(getState()) || lastKey;
@@ -341,7 +369,7 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
         try {
           const result = await listFiles();
           if (mine !== epoch) return;
-          d.index = result.files.map(f => ({path:f.path,name:f.path.split('/').pop(),size:f.size})).sort((a,b) => a.path.localeCompare(b.path,getLang()));
+          d.index = indexOf(result).sort((a,b) => a.path.localeCompare(b.path,getLang()));
         } catch (error) { if (mine === epoch) d.error = error.message || t('error'); }
         finally { d.loading = false; if (active === d) { draw(); dialog?.querySelector('#cv-file-filter')?.focus(); } }
         return;
@@ -361,6 +389,21 @@ export function createSubmissionDialog({esc, formatTime, getState, listFiles, au
       if (active === d) draw();
     });
     draw(); dialog.showModal();
+    if (opts.quick && d.phase === 'edit' && d.type === 'online_upload' && !d.vault.size && !d.files.length && !d.paused) quickPick(d, opts.folder || '');
+  }
+  async function quickPick(d, folder) {
+    const mine = epoch;
+    d.loading = true; draw();
+    try {
+      const result = await listFiles();
+      if (mine !== epoch || active !== d) return;
+      d.index = indexOf(result);
+      const pick = suggestFile(d.index, d.item, folder);
+      d.loading = false;
+      if (pick) { d.vault.set(pick.path, pick); d.suggested = pick.path; return void preview(d); }
+      d.showVault = true; d.filter = folder;
+    } catch { /* the student picks by hand */ }
+    finally { d.loading = false; if (active === d) draw(); }
   }
   // The session or identity changed (see the top of this function).
   function sessionChanged(previous, next) {

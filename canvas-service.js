@@ -4,6 +4,9 @@ const { createSubmissionClient, WRITE_SCOPES } = require('./canvas-submission');
 const { createCanvasApi, SCOPES } = require('./canvas-api');
 const { feedUrl, getCalendar } = require('./canvas-calendar');
 const { pullMaterials } = require('./canvas-pull');
+const { mirrorToCourses, guessLinks } = require('./canvas-mirror');
+const { courseContent } = require('./canvas-course-content');
+const fsSync = require('node:fs');
 
 const SITE = 'https://oc.sjtu.edu.cn';
 const OOB = 'urn:ietf:wg:oauth:2.0:oob';
@@ -11,7 +14,7 @@ const error = (status, message) => Object.assign(new Error(message), { status })
 
 // The desktop owns encrypted storage and the isolated school window. The browser
 // preview can use a calendar for this server session without persisting a private URL.
-function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetchImpl = fetch,
+function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf, autoPullMs = desktop ? 3 * 3600000 : 0, fetch: fetchImpl = fetch,
     clientId = process.env.GRAPHITE_CANVAS_CLIENT_ID, clientSecret = process.env.GRAPHITE_CANVAS_CLIENT_SECRET }) {
   let data, pending, tail = Promise.resolve(), authError = '', refreshing, webSyncing = false, readingSchool = false, pullProgress = null, activePull = null;
   const configured = !!(clientId && clientSecret && desktop?.openAuth);
@@ -26,6 +29,18 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
   async function save(next) {
     if (storage) await storage.save(next);
     data = next;
+  }
+  // Top-level vault folders a Canvas course can be linked to (its new files are copied there).
+  function vaultFolders() {
+    try {
+      const base = typeof vault === 'function' ? vault() : vault;
+      return fsSync.readdirSync(base, { withFileTypes: true }).filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'Canvas').map(e => e.name).sort();
+    } catch { return []; }
+  }
+  // Explicit choices win over the guess; '' means "keep this course in Canvas/ only".
+  function courseLinks() {
+    const courses = data?.snapshot?.courses || [];
+    return { ...guessLinks(courses, vaultFolders()), ...(data?.courseLinks || {}) };
   }
   // The school window can stay open past the UI polling deadline.
   const waitingForWebLogin = () => !!pending?.web;
@@ -44,7 +59,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
       lastPull: visible.lastPull || null, pullProgress: hidden ? null : pullProgress,
       authMode: web ? 'web' : (visible.auth || configured ? 'oauth' : null), authPending: !!pending && pending.until > Date.now(),
       authError, syncedAt: visible.syncedAt || null, snapshot: visible.snapshot || { courses: [], warnings: [] },
-      calendar: visible.calendar || null, portalOpened: !!visible.portalOpened, lastDownload: hidden ? null : desktop?.lastDownload?.() || null };
+      calendar: visible.calendar || null, courseLinks: hidden ? {} : courseLinks(), vaultFolders: vaultFolders(), autoMirror: data.autoMirror !== false, autoPull: !!autoPullMs, portalOpened: !!visible.portalOpened, lastDownload: hidden ? null : desktop?.lastDownload?.() || null };
   }
   async function tokenRequest(parameters) {
     let res;
@@ -203,8 +218,11 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
 
   async function handle(method, action, body = {}) {
     if(method==='GET' && action==='status' && data)return view();
-    if (method==='POST' && action==='pull') {
-      const courseId = body.courseId == null ? null : String(body.courseId);
+    if (method==='POST' && action==='pull') return runPull(body.courseId == null ? null : String(body.courseId));
+    return exclusive(() => handleOther(method, action, body));
+  }
+  async function runPull(courseId, auto = false) {
+    {
       if (activePull) {
         if (activePull.courseId===courseId) return activePull.task;
         throw error(409,'正在拉取课程资料，请等本次完成。');
@@ -216,7 +234,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
         const warnings = [];
         let usingSnapshot = false;
         try {
-          if (data.portalSyncEnabled) await syncWeb(false,true);
+          if (data.portalSyncEnabled) await syncWeb(auto,true);
           else {
             const snapshot = await api.sync(data.snapshot || undefined);
             await save({...data,snapshot,syncedAt:new Date().toISOString()});
@@ -239,13 +257,24 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
           previous:cached.files,previousNotes:cached.notes,
           onProgress:progress=>{pullProgress=progress;}});
         result.finishedAt=new Date().toISOString();
-        await save({...data,lastPull:result,pullSessionId:sessionId,pullCache:{owner,files:cache,notes:noteCache}});
+        if (auto) result.auto = true;
+        // New files go on into the course folders the student linked (slides, homework, exams; PDFs of Office files).
+        let mirrored = cached.mirrored || {};
+        if (data.autoMirror !== false) {
+          try {
+            const m = await mirrorToCourses({vault: typeof vault === 'function' ? vault() : vault, courses, cache, links: courseLinks(), mirrored, officeToPdf, writer: noteWriter});
+            mirrored = m.mirrored; result.mirror = m.report;
+          } catch (e) { result.warnings.push(e.message); }
+        }
+        await save({...data,lastPull:result,pullSessionId:sessionId,pullCache:{owner,files:cache,notes:noteCache,mirrored}});
         return result;
       });
       activePull={courseId,task};
       try {return await task;} finally {activePull=null;pullProgress=null;}
     }
-    return exclusive(async () => {
+  }
+  async function handleOther(method, action, body) {
+    {
       await ready();
       if (method === 'GET' && action === 'status') return view();
       if (method !== 'POST') throw error(405, 'Method not allowed');
@@ -253,9 +282,24 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
         const allowed=waitingForWebLogin() ? ['portal','web-connect','disconnect'] : ['portal','web-connect','disconnect','connect','sync'];
         if (!allowed.includes(action)) throw error(401,'请先完成学校登录并核对账户。');
       }
+      if (action === 'read') {
+        if (!view().connected) throw error(401, '请先连接交大 Canvas。');
+        if (data.portalSyncEnabled) {
+          if (!desktop?.readWeb) throw error(409, '这个页面暂时不能在 Graphite 里显示。');
+          let u; try { u = new URL(String(body.url || ''), SITE); } catch { throw error(400, '无效的 Canvas 地址。'); }
+          if (u.origin !== SITE) throw error(400, '无效的 Canvas 地址。');
+          const page = await desktop.readWeb(u.href);
+          const cid = u.pathname.match(/^\/courses\/(\d+)/)?.[1] || '';
+          const content = courseContent(page?.html || '', cid);
+          return { url: u.href, courseId: cid, title: page?.title || '', text: content.text, attachments: content.attachments };
+        }
+        return api.read(String(body.url || ''));
+      }
       if (action === 'portal') {
         let target;
-        if(body.courseId || body.assignmentId) {
+        // Any page on the school site opens in Graphite's own Canvas window (never an outside browser).
+        if (body.url) { let u; try { u = new URL(String(body.url), SITE); } catch {} if (u?.origin === SITE && !u.username && !u.password) target = u.href; }
+        if(!target && (body.courseId || body.assignmentId)) {
           if(!/^\d+$/.test(body.courseId) || !/^\d+$/.test(body.assignmentId))throw error(400,'无效的课程或作业。');
           target=SITE+'/courses/'+body.courseId+'/assignments/'+body.assignmentId;
         }
@@ -354,6 +398,13 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
         return {courseId,assignmentId,accountKey:current.accountKey,...record};
       }
       if(action==='submit') return submit(body);
+      if (action === 'link') {
+        const id = String(body.courseId || ''), folder = String(body.folder ?? '');
+        if (!/^\d+$/.test(id) || (folder && !vaultFolders().includes(folder))) throw error(400, '无效的课程或文件夹。');
+        await save({ ...data, courseLinks: { ...(data.courseLinks || {}), [id]: folder } });
+        return view();
+      }
+      if (action === 'auto-mirror') { await save({ ...data, autoMirror: body.enabled !== false }); return view(); }
       if (action === 'download-course') {
         if (!view().connected) throw error(401, '请先连接交大 Canvas。');
         const course = data.snapshot?.courses.find(c => String(c.id) === String(body.courseId));
@@ -390,7 +441,21 @@ function createCanvasService({ vault, storage, desktop, noteWriter, fetch: fetch
         return view();
       }
       throw error(404, 'Unknown Canvas action');
-    });
+    }
+  }
+  // Automatic pull: shortly after the app starts, then every few hours while connected. Files already pulled are
+  // not downloaded again; new ones are copied into the linked course folders (see canvas-mirror.js).
+  if (autoPullMs) {
+    const autoPull = async () => {
+      try {
+        await exclusive(ready);
+        if (activePull || data.autoMirror === false || !view().connected || waitingForWebLogin()) return;
+        if (data.portalSyncEnabled && !desktop?.syncWeb) return;
+        await runPull(null, true);
+      } catch { /* shown on the next manual pull */ }
+    };
+    const first = setTimeout(autoPull, 45000); first.unref?.();
+    const every = setInterval(autoPull, autoPullMs); every.unref?.();
   }
   if(desktop?.syncWeb) {
     const tick=setInterval(async()=>{

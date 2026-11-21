@@ -67,3 +67,53 @@
 .cv-details { margin-inline-start: 1.1em; }
 .cv-details h3 { font-size: .95em; }
 .cv-remove { color: var(--text-muted); padding: .12em .4em; }
+
+/* ---------- 1.1.50 layout: cards, two columns, deadline badges, in-app reader ---------- */
+.cv-inner { width: min(100%, 1180px); padding: clamp(18px, 3vw, 36px) clamp(16px, 3.5vw, 44px) 48px; }
+.cv-head { margin-bottom: 18px; padding-bottom: 14px; border-bottom: 1px solid var(--border); }
+.cv-head-title h1 { font-size: 1.55em; }
+.cv-context { border: 0; padding: 14px 18px; border-radius: 12px; background: var(--bg-2); display: flex; flex-direction: column; gap: 6px; }
+.cv-context:empty { display: none; }
+.cv-context > p { margin: 0; }
+.cv-sync { margin: 14px 0 4px; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border); }
+.cv-auto { display: inline-flex; align-items: center; gap: .45em; font-size: .9em; color: var(--text-muted); cursor: pointer; margin-inline-end: auto; }
+.cv-auto input { margin: 0; }
+.cv-sync > .cv-meta { order: 2; }
+.cv-sync .cv-actions { order: 3; }
+.cv-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 18px; margin-top: 18px; }
+@media (min-width: 980px) { .cv-grid { grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.5fr); align-items: start; } }
+.cv-col { display: flex; flex-direction: column; gap: 18px; min-width: 0; }
+.cv-col:empty { display: none; }
+.cv-block { padding: 16px 18px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg); box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+.cv-block:last-child { border-bottom: 1px solid var(--border); }
+.cv-inner h2 { font-size: 1.02em; margin: 0 0 .7em; display: flex; align-items: baseline; gap: .5em; }
+.cv-inner h2 small { font-weight: 400; font-size: .82em; color: var(--text-muted); }
+.cv-list { margin: 0 -8px 6px; }
+.cv-row { padding: 8px 8px; gap: 6px 12px; border-bottom: 0; border-radius: 8px; flex-wrap: nowrap; }
+.cv-row + .cv-row { border-top: 1px solid var(--border-soft, var(--border)); border-radius: 0; }
+.cv-row:hover { background: var(--bg-hover); border-radius: 8px; }
+.cv-row-text { flex: 1 1 auto; }
+.cv-row .mod-button { flex: none; font-size: .86em; padding: .3em .7em; }
+.cv-title a { color: var(--text); font-weight: 520; }
+.cv-title a:hover { color: var(--link); }
+.cv-due { flex: none; min-width: 4.6em; text-align: center; font-size: .78em; font-weight: 600; padding: .28em .5em; border-radius: 999px; background: var(--bg-2); color: var(--text-muted); }
+.cv-due-near { background: color-mix(in srgb, #f59e0b 18%, transparent); color: #b45309; }
+.cv-due-soon { background: color-mix(in srgb, #ef4444 16%, transparent); color: #dc2626; }
+.cv-new { border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 5%, var(--bg)); }
+.cv-link { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 10px 0 2px; font-size: .9em; color: var(--text-muted); }
+.cv-link select, #cv-course { border: 1px solid var(--border); border-radius: 8px; padding: .42em .6em; background: var(--bg); color: var(--text); font: inherit; }
+.cv-link select { max-width: 100%; }
+.cv-groups { gap: 4px; padding: 4px; border-radius: 10px; background: var(--bg-2); width: fit-content; max-width: 100%; }
+.cv-groups button { border: 0; background: transparent; padding: .35em .75em; border-radius: 7px; font-size: .9em; }
+.cv-groups button[aria-pressed="true"] { background: var(--bg); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+.cv-reader-bar { display: flex; justify-content: space-between; gap: 8px; margin-bottom: 10px; }
+.cv-reader h2 { font-size: 1.25em; margin-bottom: .2em; }
+.cv-reader-text { white-space: pre-wrap; line-height: 1.7; margin: 14px 0; max-height: none; }
+.cv-reader h3 { font-size: .95em; margin: 16px 0 6px; }
+.cv-reader-actions { display: flex; justify-content: flex-end; padding-top: 12px; border-top: 1px solid var(--border); }
+#cv-submit-dialog { border-radius: 14px; }
+.cv-agenda .cv-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; column-gap: 12px; row-gap: 6px; }
+.cv-agenda .cv-quick { grid-column: 2; justify-self: start; }
+.cv-new .cv-row { flex-wrap: wrap; }
+.cv-inner h2 { flex-wrap: wrap; }
+@media (min-width: 980px) { .cv-grid { grid-template-columns: minmax(320px, 1fr) minmax(0, 1.35fr); } }

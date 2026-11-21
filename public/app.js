@@ -7,6 +7,7 @@ import { hash, merge3, isConflictCopy } from '/sync.js';
 import { applyAppearance } from '/appearance.js';
 import * as RV from '/review.js';
 import * as STUDY from '/study.js'; // mistake book, cards from PDFs, plan days
+import * as SNIP from '/snip.js'; // snip a region, the capture panel, note sections, Not familiar / Interesting
 import { PLUG, fillVars } from '/i18n-plugins.js';
 import * as CK from '/check.js';
 import * as AI from '/ai.js';
@@ -20,6 +21,7 @@ import { initSettings, openSettings, closeSettings, settingsOpen, refreshSetting
 import { mountPdf } from '/pdfview.js';
 import { createReferencePane } from '/reference.js';
 import { createCanvasView } from '/canvas-view.js';
+import { canvasText } from '/canvas-strings.js';
 import { createCodeWorkbench, workbenchAvailable, newCodeFileDialog } from '/code-workbench.js';
 import { createCodeEditor, sourceFormat } from '/code-editor.js';
 // The bundled plugins write English and ask the app for the text in your language.
@@ -1726,6 +1728,7 @@ const COMMANDS = [
   { id: 'forward', name: 'Navigate forward', kbd: 'Alt+→', run: () => navigate(1) },
   { id: 'help', name: 'Open help', kbd: 'F1', run: () => (S.view === 'help' && S.helpPage === 'guide' ? showNoteView() : showHelp('guide')) },
   { id: 'markdown-cheatsheet', name: 'Open Markdown cheatsheet', run: () => (S.view === 'help' && S.helpPage === 'markdown' ? showNoteView() : showHelp('markdown')) },
+  { id: 'snip-region', name: 'Snip a region of the screen', kbd: 'Alt+S', run: () => SNIP.startSnip() },
   { id: 'review', name: 'Open review', kbd: 'Alt+R', run: () => showReview() }, // always opens Review (going back is the tab or Back)
   { id: 'start-review', name: 'Start today’s review', run: () => RV.startDailyReview() },
   { id: 'check-note', name: 'Check this note for mistakes', kbd: 'Ctrl+Shift+E', available: () => !!S.current, run: async () => { if (S.dirty) await saveNow(); CK.checkNote(S.current); } },
@@ -1839,7 +1842,7 @@ function isAppShortcut(e) {
     if (!e.shiftKey) return /^[1-9]$/.test(e.key) || ['t', 'w', 'o', 'p', 'n', 'g', ','].includes(k);
     return ['t', 'f', 'k', 'e', 'y'].includes(k);
   }
-  if (e.altKey && !mod) return ['r', 'd', 'n'].includes(k) || e.key === 'ArrowLeft' || e.key === 'ArrowRight';
+  if (e.altKey && !mod) return ['r', 'd', 'n', 's'].includes(k) || e.key === 'ArrowLeft' || e.key === 'ArrowRight';
   return false;
 }
 function bridgeFrameKeys(frame) {
@@ -1882,6 +1885,7 @@ document.addEventListener('keydown', e => {
   else if (e.altKey && !mod && k === 'n') { e.preventDefault(); newNote(); }
   else if (e.altKey && !mod && k === 'd') { e.preventDefault(); openDaily(); }
   else if (e.altKey && !mod && k === 'r') { e.preventDefault(); runCommand('review'); }
+  else if (e.altKey && !mod && k === 's') { e.preventDefault(); runCommand('snip-region'); }
   else if (mod && e.shiftKey && k === 'k') { e.preventDefault(); runCommand('quiz-note'); }
   else if (mod && e.shiftKey && k === 'e') { e.preventDefault(); runCommand('check-note'); }
   else if (mod && e.shiftKey && k === 'y') { e.preventDefault(); runCommand('tidy-format'); }
@@ -2451,7 +2455,7 @@ function pdfControls() {
     <span class="pdf-sep"></span>
     <input class="pdf-find" type="search" placeholder="${esc(t('pdf.findPh'))}" title="${esc(t('pdf.find'))} (Ctrl+F)"><span class="pdf-hits"></span>
     <span class="pdf-sep"></span>
-    <button class="fv-btn pdf-ib pdf-study" data-pdf="clip" title="${esc(t('clip.title'))}">${selSvg('scissors')}</button>
+    <button class="fv-btn pdf-ib pdf-study" data-pdf="clip" title="${esc(t('sel.snipTitle'))}">${selSvg('scissors')}</button>
     <button class="fv-btn pdf-ib pdf-study" data-pdf="mistake" title="${esc(t('mist.addFromPage'))}">${selSvg('mistake')}</button>
     <button class="fv-btn pdf-summary" data-cmd="summarize-pdf" title="${esc(t('sum.title'))}">${esc(t('sum.short'))}</button>
   </span>`;
@@ -2498,13 +2502,7 @@ async function openPdf(box, body, path, src, page) {
   pageIn.addEventListener('focus', () => pageIn.select());
   box.querySelector('[data-pdf="in"]').onclick = () => ctl.zoomIn();
   // Clip a box of the page (as a card or a mistake), or add this page's problem to the mistake book.
-  box.querySelector('[data-pdf="clip"]').onclick = e => {
-    const r = e.currentTarget.getBoundingClientRect();
-    showMenu(r.left, r.bottom + 4, [
-      { label: t('clip.asCard'), run: () => STUDY.startClip(host, path, 'card') },
-      { label: t('clip.asMistake'), run: () => STUDY.startClip(host, path, 'mistake') },
-    ]);
-  };
+  box.querySelector('[data-pdf="clip"]').onclick = () => SNIP.startSnip({ src: path });
   box.querySelector('[data-pdf="mistake"]').onclick = () => STUDY.mistakeForm({ src: path, page: ctl.page });
   box.querySelector('[data-pdf="out"]').onclick = () => ctl.zoomOut();
   // The % button switches between "fit the width" (follows the pane size) and "whole page".
@@ -2540,15 +2538,9 @@ function buildSelBar() {
   selBar.addEventListener('click', e => {
     const b = e.target.closest('[data-sel]');
     if (!b || !selCtx) return;
-    const ctx = selCtx; hideSelBar();
-    selAction(b.dataset.sel, ctx).catch(err => toast(err.message || String(err)));
+    const ctx = selCtx, at = b.getBoundingClientRect(); hideSelBar();
+    selAction(b.dataset.sel, ctx, at).catch(err => toast(err.message || String(err)));
   });
-}
-// Where "Add to note" puts things: the note you had open before this file, or a "<file> notes" note beside it.
-function selTargetNote(path) {
-  if (S.current && S.files.has(S.current)) return { path: S.current, isNew: false };
-  const base = fileName(path).replace(/\.[^.]+$/, '');
-  return { path: joinPath(dirName(path), `${base} ${t('sel.notesSuffix')}.md`), isNew: !S.files.has(joinPath(dirName(path), `${base} ${t('sel.notesSuffix')}.md`)) };
 }
 function showSelBar(e) {
   if (S.view !== 'file' || !S.filePath) return hideSelBar();
@@ -2562,15 +2554,15 @@ function showSelBar(e) {
   const page = isPdf && S.pdf?.ctl ? S.pdf.ctl.pageOf(sel.anchorNode) : 0;
   selCtx = { text, path, page };
   if (!selBar) buildSelBar();
-  const target = selTargetNote(path);
   const plugins = window.app?.plugins;
   const chat = plugins?.getPlugin?.('claude-chat'), cap = plugins?.getPlugin?.('claude-capture');
   const btn = (id, ic, label, title, cls = '') => `<button type="button" class="${cls}" data-sel="${id}" title="${esc(title)}">${selSvg(ic)}<span>${esc(label)}</span></button>`;
   selBar.innerHTML = [
-    btn('note', 'note', t('sel.addNote'), t(target.isNew ? 'sel.addNoteNew' : 'sel.addNoteTitle', { note: baseName(target.path) }), 'primary'),
+    btn('note', 'note', t('sel.addNote'), t('sel.addNoteTitle'), 'primary'),
     chat ? btn('ask', 'spark', t('sel.ask'), t('sel.askTitle')) : '',
-    cap ? '<span class="sep"></span>' + btn('unfamiliar', 'help', t('sel.unfamiliar'), t('sel.unfamiliarTitle')) + btn('interesting', 'bulb', t('sel.interesting'), t('sel.interestingTitle')) : '',
+    '<span class="sep"></span>' + btn('unfamiliar', 'help', t('sel.unfamiliar'), t('sel.unfamiliarTitle')) + btn('interesting', 'bulb', t('sel.interesting'), t('sel.interestingTitle')),
     '<span class="sep"></span>' + btn('card', 'cards', t('sel.card'), t('sel.cardTitle')),
+    btn('snip', 'scissors', t('sel.snip'), t('sel.snipTitle')),
     btn('copy', 'copy', t('sel.copy'), t('sel.copyTitle')),
   ].join('');
   selBar.hidden = false;
@@ -2587,41 +2579,15 @@ function selSourceLink({ path, page }) {
   const short = fileName(path).replace(/\.[^.]+$/, '');
   return page ? `[[${linkNameFor(path)}#page=${page}|${short} p.${page}]]` : `[[${linkNameFor(path)}|${short}]]`;
 }
-async function selAction(kind, ctx) {
+// Copy and Snip here; the rest (note sections, Graphie, Not familiar, Interesting, cards) in snip.js.
+async function selAction(kind, ctx, anchor) {
   const { text, path, page } = ctx;
   if (kind === 'copy') {
     try { await navigator.clipboard.writeText(text); } catch { await window.myobsidianDesktop?.copyText?.(text); }
     return toast(t('sel.copied'));
   }
-  if (kind === 'card') return STUDY.cardForm({ src: path, page, a: text });
-  if (kind === 'note') {
-    const target = selTargetNote(path);
-    const quote = text.split('\n').map(l => '> ' + l).join('\n') + '\n> — ' + selSourceLink(ctx) + '\n';
-    if (target.path === S.current && S.dirty) await saveNow();
-    const cur = S.files.has(target.path) ? await readFileContent(target.path) : '';
-    await writeNote(target.path, cur ? cur.replace(/\s*$/, '') + '\n\n' + quote : quote);
-    refreshSidePanels();
-    return toast(t('sel.added', { note: baseName(target.path) }));
-  }
-  const plugins = window.app?.plugins;
-  if (kind === 'ask') {
-    const cap = plugins?.getPlugin?.('claude-capture'), chat = plugins?.getPlugin?.('claude-chat');
-    const where = fileName(path) + (page ? ` p.${page}` : '');
-    // The chat picks up the latest selection from Claude Capture, for the file that is open. Let the chat see
-    // which file is open first: it ignores selections made before the file in front changed.
-    try { chat?.context?.(); } catch { /* older chat plugin */ }
-    if (cap) cap.lastSel = { text: `${text}\n— ${where}`, heading: page ? `page=${page}` : '', at: Date.now() + 1, path };
-    else if (chat) chat.extSel = { text: `${text}\n— ${where}`, page, at: Date.now() + 1, path }; // without Claude Capture
-    chat?.show?.();
-    chat?.renderChips?.();
-    setTimeout(() => chat?.input?.focus(), 50);
-    return;
-  }
-  if (kind === 'unfamiliar' || kind === 'interesting') {
-    const cap = plugins?.getPlugin?.('claude-capture');
-    const file = window.app?.vault?.getAbstractFileByPath?.(path) || null;
-    await cap?.saveCapture({ kind, text, thought: '', file, heading: page ? `page=${page}` : '' });
-  }
+  if (kind === 'snip') { getSelection()?.removeAllRanges(); return SNIP.startSnip({ src: path, page }); }
+  return SNIP.run(kind, { text, src: path, page }, anchor);
 }
 document.addEventListener('mouseup', e => { if (!selBar?.contains(e.target)) setTimeout(() => showSelBar(e), 0); });
 document.addEventListener('keyup', e => { if (e.shiftKey || e.key.startsWith('Arrow')) setTimeout(() => showSelBar(null), 0); });
@@ -2796,6 +2762,31 @@ const canvasWorkspace = createCanvasView($('#canvas-view'), {
   openFile: async path => { await sync(); await openInTab(path, {where:'new', keep:true}); },
 });
 TABS.providers.set(canvasWorkspace.id, canvasWorkspace);
+// The ribbon's Canvas button: a badge (and one toast) when the automatic pull filed new slides into course folders.
+// Opening the Canvas tab shows the list and clears the badge.
+let canvasNew = null;
+function canvasBadge(n) {
+  const btn = $('#canvas-btn');
+  if (!btn) return;
+  let badge = btn.querySelector('.badge') || btn.appendChild(Object.assign(document.createElement('span'), { className: 'badge' }));
+  badge.textContent = n > 99 ? '99+' : n || '';
+  badge.classList.toggle('hidden', !n);
+  btn.title = t('cmd.sjtu-canvas') + (n ? ' · ' + canvasText(getLang(), 'newBadge').replace('{n}', n) : '');
+}
+async function checkCanvasNew() {
+  try {
+    const st = await canvasWorkspace.status();
+    const pull = st?.lastPull, n = pull?.mirror?.added?.length || 0;
+    if (pull?.finishedAt && !$('#canvas-view').hidden) store.set('canvasSeen', pull.finishedAt); // on screen already
+    if (!pull?.finishedAt || !n || store.get('canvasSeen') === pull.finishedAt) return canvasBadge(0);
+    canvasNew = pull.finishedAt;
+    canvasBadge(n);
+    if (store.get('canvasToast') !== pull.finishedAt) { store.set('canvasToast', pull.finishedAt); toast(canvasText(getLang(), 'newBadge').replace('{n}', n)); }
+  } catch { /* not connected */ }
+}
+canvasWorkspace.onSeen = () => { if (canvasNew) store.set('canvasSeen', canvasNew); canvasBadge(0); };
+setTimeout(checkCanvasNew, 4000);
+setInterval(checkCanvasNew, 10 * 60_000);
 // The code workbench: a project folder (this vault or any folder), its tree, several files, C++ build/run/debug.
 const codeWorkbench = createCodeWorkbench($('#code-workbench'), {
   toast, askText: (ph, v, hint) => askText(ph, v, hint), vaultRoot: () => S.vault || '',
@@ -3357,6 +3348,7 @@ async function boot() {
   SUM.initSummary(host);
   FJ.initFileJobs(host);
   STUDY.initStudy(host);
+  SNIP.initSnip(host);
   setLang(store.get('lang', null) || detectLang());
   applyI18n();
   for (const el of $$('[data-icon]')) el.innerHTML = icon(el.dataset.icon);

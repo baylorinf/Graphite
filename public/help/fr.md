@@ -6,9 +6,24 @@ Graphite est une application de prise de notes reliées entre elles. Chaque note
 
 ## Fichiers et échéances de Canvas SJTU
 
-Dans un nouvel onglet ou dans les réglages généraux, ouvrez **Canvas SJTU → Se connecter avec jAccount**. Choisissez **Récupérer les supports de tous les cours** pour enregistrer dans le coffre les supports, les consignes des devoirs et les pièces jointes disponibles. Chaque cours permet de consulter le programme, les exigences et les échéances.
+Ouvrez Canvas avec le **bouton université** (un bâtiment) du ruban en bas à gauche (ou un nouvel onglet, ou **Paramètres → Général**) et choisissez **Se connecter avec jAccount**. Tout reste dans Graphite : devoirs, annonces, pages et discussions s’ouvrent dans le lecteur de Graphite, et les fichiers s’ouvrent dans Graphite une fois enregistrés dans votre coffre. **Ouvrir dans la fenêtre Canvas de Graphite** sert pour ce que le lecteur ne montre pas (passer un quiz, répondre à une discussion).
 
-Dans **Devoirs**, choisissez le devoir puis un ou plusieurs fichiers du coffre ou de l’ordinateur. Vérifiez les noms avant de confirmer. Pour les dépôts de fichiers pris en charge, Graphite affiche le reçu de Canvas. Les outils externes et les étapes supplémentaires restent accessibles sur la page officielle du devoir. Le lien du calendrier personnel peut être ajouté dans **Abonnement au calendrier**.
+**Les diapositives arrivent seules.** Avec **Synchroniser les diapositives automatiquement**, Graphite récupère les nouveaux fichiers au démarrage puis toutes les 3 heures tant que vous êtes connecté. Choisissez pour chaque cours où vont ses fichiers (**Nouveaux fichiers dans** : Graphite devine le dossier, p. ex. 线性代数 → *Linear Algebra*). Diapositives dans `<Cours>/课件 Slides/`, devoirs dans `作业 Homework/`, examens et corrigés dans `复习资料/` ; les PowerPoint et Word reçoivent une copie PDF. Un fichier déjà présent est ignoré, rien n’est jamais écrasé (un autre fichier du même nom devient « nom (2) »), un fichier supprimé ne revient pas, et la note d’index du cours reçoit une ligne de liens. Un badge sur le bouton Canvas et la carte **Nouveau dans vos dossiers de cours** montrent ce qui a été ajouté.
+
+**Échéances et remise en un clic.** **À venir (30 jours)** indique les jours restants. **Remettre le devoir** à côté d’une échéance choisit le fichier correspondant dans le dossier de devoirs du cours et affiche l’aperçu ; vérifiez puis **Confirmer et remettre**. Rien n’est envoyé avant votre confirmation. Dans **Devoirs**, vous pouvez aussi choisir vous-même des fichiers. Ajoutez votre calendrier Canvas sous **Abonnement au calendrier**.
+
+## Capturer, classer et réviser ce que vous lisez
+
+Copier le texte d’un PDF ou d’une page d’étude casse les maths et la mise en forme. Utilisez plutôt **Capturer** (`Alt+S`, les ciseaux de la barre d’un PDF, ou **Capturer** dans la barre de sélection) : tracez un cadre autour d’une formule, d’une figure ou d’un tableau. Le panneau de capture propose :
+
+- **Demander à Graphie** : le chat s’ouvre avec la capture jointe.
+- **En Markdown** : l’IA choisie pour *Capture en Markdown* (**Paramètres → IA**) la retranscrit en Markdown avec des maths `$…$`, modifiable avant usage.
+- **Ajouter à la note** : choisissez la note et la **section** ; un lien vers la page est ajouté. Sans Markdown, l’image elle-même est intégrée (dans `attachments/`).
+- **Pas familier** : Graphie l’explique aussitôt dans le chat, il est gardé dans Claude Inbox, et une carte revient dans la révision de demain.
+- **Intéressant** : classé en encadré `[!tip]` sous la section choisie (ou laissé à Graphie).
+- **Carte** / **Carnet d’erreurs** : une carte dans le **paquet** du cours (révision espacée), ou un exercice à refaire.
+
+Les mêmes actions figurent dans la barre de sélection. Sur la page **Révision**, chaque paquet a son bouton pour ne réviser que ce cours.
 
 ## Votre coffre
 - Le **coffre** est le dossier qui contient vos notes. Son emplacement figure dans **Paramètres → Général**.
@@ -120,6 +135,7 @@ $$
 | Gras / italique / lien | `Ctrl+B` / `Ctrl+I` / `Ctrl+K` |
 | Indenter / désindenter | `Tab` / `Maj+Tab` |
 | Paramètres | `Ctrl+,` |
+| Capturer une zone | `Alt+S` |
 | Ce guide | `F1` |
 
 ## Révision et mémoire

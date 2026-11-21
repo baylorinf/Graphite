@@ -58,6 +58,7 @@ export function handbookWords(language) {
 // [student task, entry point, prerequisite, English description, Simplified Chinese description, search terms]
 export const COMMAND_HELP = {
   'sjtu-canvas': ['reading','tabs','','Sign in with jAccount, pull materials from all courses, read the requirements, and choose vault files to submit to an assignment.', '在新标签页打开交大 Canvas，用 jAccount 登录，一键拉取各门课的课件和作业，阅读课程要求，从笔记库选文件提交。', '上海交通大学 课件 下载 拉取 教学平台 大纲 要求 作业 提交 截止时间 日历 交大 Canvas jAccount deadline calendar subscription assignments syllabus materials upload course sync'],
+  'snip-region': ['reading','pdf','','Drag a box around a formula, figure or table anywhere in the window, then ask Graphie with the image, turn it into Markdown with $maths$, file it under a section of a note, mark it Not familiar or Interesting, or make a card.', '框选窗口里任意区域（公式、图、表格），然后带图问 Graphie、转成带 $公式$ 的 Markdown、放进笔记的某个小节、标记不熟悉或有意思，或者制卡。', 'screenshot snip capture region OCR formula maths LaTeX copy broken 截图 框选 截屏 公式 识别 转文字 复制乱码 制卡 不熟悉 有意思'],
   'new-code-file': ['coding','tree','','Create a source file in the vault using an extension such as .cpp or .py.', '在笔记库选定的目录里新建 .cpp、.py 等源文件。', 'C++ Python VS Code VSCode programming IDE 编程 源码 作业'],
   'study-reference': ['reading','topbar','pdfNote','Keep a PDF at its current page beside an editable note.', '固定讲义页码，在旁边的笔记里写题解。', 'split side by side lecture reference 分屏 分栏 并排 讲义 对照'],
   'new-note': ['writing','tree','','Create an editable Markdown file in your vault.', '在笔记库中新建可编辑的 Markdown 文件。', 'create markdown 新建文档'],

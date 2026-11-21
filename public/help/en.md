@@ -6,9 +6,24 @@ Graphite is a note-taking app for linked thinking. Every note is a plain Markdow
 
 ## SJTU Canvas course files and deadlines
 
-Select **SJTU Canvas → Sign in with jAccount** on a new tab or in **Settings → General**. Choose **Pull all course materials** to save handouts, assignment instructions and available attachments to your vault. Open a course to read its syllabus and requirements or check a deadline.
+Open Canvas from the **university button** (a building) in the bottom-left ribbon (or a new tab, or **Settings → General**) and choose **Sign in with jAccount**. Everything stays inside Graphite: assignments, announcements, pages and discussions open in Graphite's own reader, and files open in Graphite after they are saved to your vault. **Open in Graphite's Canvas window** is there for anything the reader cannot show (taking a quiz, replying to a discussion).
 
-Under **Assignments**, choose the assignment, select one or more files from your vault or computer, review them and confirm. Supported Canvas file-upload assignments return a receipt in Graphite. For external tools and assignments with extra steps, open the linked university page. You can also add your personal Canvas calendar feed under **Calendar subscription**.
+**Slides arrive by themselves.** With **Sync new slides automatically** on, Graphite pulls new course files when it starts and every 3 hours while you are signed in. Choose under each course where its files go (**New files go to**: Graphite guesses the matching vault folder, e.g. 线性代数 → *Linear Algebra*). New files are filed like the import skill does: slides in `<Course>/课件 Slides/`, homework in `作业 Homework/`, exams and solutions in `复习资料/`; PowerPoint and Word files get a PDF copy. A file already in the course folder is skipped, nothing is ever overwritten (a different file with the same name becomes "name (2)"), a file you delete does not come back, and the course's index note gets a line of links. A badge on the Canvas button and the **New in your course folders** card tell you what was added.
+
+**Deadlines and one-click submit.** **Upcoming (30 days)** shows how many days are left. **Submit assignment** next to a deadline picks the matching file from the course's homework folder (by the assignment's number and words, then the newest) and shows the preview; check it and press **Confirm and submit**. Nothing is ever sent before you confirm. In a course's **Assignments** you can also choose files yourself from the vault or the computer. You can add your personal Canvas calendar feed under **Calendar subscription**.
+
+## Snip, file and review what you read
+
+Copying text from a PDF or a study page breaks maths and formatting. Use **Snip** instead (`Alt+S`, the scissors in a PDF's toolbar, or **Snip** on the selection bar): drag a box around a formula, a figure or a table. The capture panel offers:
+
+- **Ask Graphie**: the chat opens with the screenshot attached.
+- **To Markdown**: the AI chosen for *Screenshot to Markdown* (**Settings → AI**) writes it out as Markdown with `$…$` maths; you can edit it before using it.
+- **Add to note**: pick the note (the one you had open, or "<file> notes") and the **section** it goes under; a link back to the page is added. Without Markdown, the image itself is embedded (saved in `attachments/`).
+- **Not familiar**: Graphie explains it right away in the chat, it is kept in Claude Inbox for your study record, and a card for it comes back in tomorrow's review.
+- **Interesting**: filed as a `[!tip]` callout under the section you pick (or left for Graphie to file).
+- **Card** / **Mistake book**: a flashcard in the course's **deck** (spaced review), or a problem to redo.
+
+The same actions are on the selection bar when you select text. On the **Review** page, each deck has its own button to review just that course.
 
 ## Your vault
 - The **vault** is the folder that holds your notes. Its location is shown under **Settings → General**.
@@ -122,6 +137,7 @@ $$
 | Settings | `Ctrl+,` |
 | Save a code file | `Ctrl+S` |
 | Find in a code file | `Ctrl+F` |
+| Snip a region (screenshot) | `Alt+S` |
 | This guide and the feature manual | `F1` |
 
 ## Review and memory

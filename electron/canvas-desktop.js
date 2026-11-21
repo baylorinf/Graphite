@@ -230,6 +230,12 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
         w.webContents.downloadURL(url.href);
       });}finally{clearTimeout(t);webTransfers.delete(w.webContents);}
     }),
+    // The readable part of one school page (in a hidden window with the student's session): for the in-app reader.
+    readWeb:url=>withWorker(async w=>{
+      const page=await loadPage(w,url);
+      if(page.login || !page.logged)throw Object.assign(new Error('学校登录已过期，请重新登录。'),{status:401});
+      return isolated(w,`(()=>{const c=document.querySelector('#content .user_content, .show-content .user_content, #assignment_show .description, .discussion-section .message, #course_syllabus, .user_content')||document.querySelector('#content');const h=document.querySelector('#content h1, #content h2, .discussion-title, .page-title');return {title:(h&&h.innerText||document.title||'').trim(),html:c?c.innerHTML:''};})()`);
+    }),
     submitWeb:(body,{beforePost})=>withWorker(w=>submitThroughSchool(w,body,{beforePost,loadPage,isolated})),
     openAuth(url, callback) { if (auth && !auth.isDestroyed()) auth.close(); auth = makeWindow(url, callback); },
     async clearSession() {

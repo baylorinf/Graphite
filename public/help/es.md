@@ -6,9 +6,24 @@ Graphite es una aplicación para tomar notas conectadas entre sí. Cada nota es 
 
 ## Archivos y fechas de Canvas SJTU
 
-Abre **Canvas SJTU → Acceder con jAccount** desde una pestaña nueva o los ajustes generales. Pulsa **Descargar los materiales de todos los cursos** para guardar apuntes, instrucciones y adjuntos disponibles en tu bóveda. En cada curso puedes consultar el programa, los requisitos y las fechas de entrega.
+Abre Canvas con el **botón de la universidad** (un edificio) de la cinta inferior izquierda (o una pestaña nueva, o **Ajustes → General**) y elige **Acceder con jAccount**. Todo se queda en Graphite: tareas, anuncios, páginas y debates se abren en el lector de Graphite, y los archivos se abren en Graphite tras guardarse en tu bóveda. **Abrir en la ventana Canvas de Graphite** sirve para lo que el lector no muestra (hacer un cuestionario, responder en un debate).
 
-En **Tareas**, elige la tarea, selecciona uno o varios archivos de la bóveda o del equipo y confirma tras revisar los nombres. Graphite muestra el justificante de Canvas en las tareas compatibles con la entrega de archivos. Para herramientas externas o pasos adicionales, abre la página oficial de la tarea. Puedes añadir tu enlace personal de calendario en **Suscripción al calendario**.
+**Las diapositivas llegan solas.** Con **Sincronizar diapositivas automáticamente**, Graphite trae archivos nuevos al iniciar y cada 3 horas mientras tengas la sesión abierta. Elige en cada curso dónde van sus archivos (**Archivos nuevos en**: Graphite adivina la carpeta, p. ej. 线性代数 → *Linear Algebra*). Diapositivas en `<Curso>/课件 Slides/`, tareas en `作业 Homework/`, exámenes y soluciones en `复习资料/`; PowerPoint y Word reciben una copia PDF. Lo que ya está se omite, nunca se sobrescribe nada (otro archivo con el mismo nombre pasa a «nombre (2)»), lo que borres no vuelve, y la nota índice del curso recibe una línea de enlaces. Una insignia en el botón de Canvas y la tarjeta **Nuevo en tus carpetas de curso** muestran lo añadido.
+
+**Fechas y entrega en un clic.** **Próximos 30 días** muestra los días que faltan. **Entregar tarea** junto a una fecha elige el archivo correspondiente de la carpeta de tareas del curso y muestra la vista previa; revísala y pulsa **Confirmar y entregar**. Nada se envía antes de confirmar. En **Tareas** también puedes elegir archivos tú mismo. Añade tu calendario de Canvas en **Suscripción de calendario**.
+
+## Recortar, archivar y repasar lo que lees
+
+Copiar texto de un PDF o de una página de estudio rompe las fórmulas y el formato. Usa **Recortar** (`Alt+S`, las tijeras de la barra del PDF o **Recortar** en la barra de selección): dibuja un recuadro sobre una fórmula, figura o tabla. El panel de captura ofrece:
+
+- **Preguntar a Graphie**: se abre el chat con la captura adjunta.
+- **A Markdown**: la IA elegida para *Captura a Markdown* (**Ajustes → IA**) la transcribe en Markdown con fórmulas `$…$`, editable antes de usarla.
+- **Añadir a la nota**: elige la nota y la **sección**; se añade un enlace a la página. Sin Markdown, se incrusta la imagen (en `attachments/`).
+- **No me suena**: Graphie lo explica enseguida en el chat, queda en Claude Inbox y una tarjeta vuelve en el repaso de mañana.
+- **Interesante**: se archiva como bloque `[!tip]` en la sección elegida (o se deja a Graphie).
+- **Tarjeta** / **Errores**: una tarjeta en el **mazo** del curso (repaso espaciado) o un problema para rehacer.
+
+Las mismas acciones están en la barra de selección. En la página **Repaso**, cada mazo tiene su botón para repasar solo ese curso.
 
 ## Tu bóveda
 - La **bóveda** es la carpeta que contiene tus notas. Su ubicación aparece en **Ajustes → General**.
@@ -120,6 +135,7 @@ $$
 | Negrita / cursiva / enlace | `Ctrl+B` / `Ctrl+I` / `Ctrl+K` |
 | Sangrar / quitar sangría | `Tab` / `Mayús+Tab` |
 | Ajustes | `Ctrl+,` |
+| Recortar una zona | `Alt+S` |
 | Esta guía | `F1` |
 
 ## Repaso y memoria
