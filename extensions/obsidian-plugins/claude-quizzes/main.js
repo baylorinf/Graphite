@@ -151,9 +151,9 @@ module.exports = class ClaudeQuizzesPlugin extends Plugin {
   // The 🎓 ribbon button: open the study page you used last (or switch back from it).
   ribbon() {
     if (this.active) return window.moTabs?.cycle(-1);
-    const first = (this.data.lastPage && pageById(this.data.lastPage) ? this.data.lastPage : PAGES[0]?.id)
+    const first = (this.data?.lastPage && pageById(this.data.lastPage) ? this.data.lastPage : PAGES[0]?.id) // (also before its settings have loaded)
       || (this.app.vault.getFiles().find(f => /\.html?$/i.test(f.path)) ? 'file:' + this.app.vault.getFiles().find(f => /\.html?$/i.test(f.path)).path : null);
-    if (!first) { new Notice(T('No study pages yet: put an .html study page in your vault and it opens here.')); return; }
+    if (!first) { new Notice(T('No study pages yet. To open your first one, add an .html study page to your vault (drag it into the file list, or put it in a course folder such as “Study Pages”), then click 🎓 again or click the file in the list.')); return; }
     this.openTab(first);
   }
 
