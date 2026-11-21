@@ -1,7 +1,7 @@
 {
   "id": "claude-chat",
   "name": "Graphite Study Assistant",
-  "version": "1.2.1",
+  "version": "1.2.2",
   "minAppVersion": "1.0.0",
   "description": "A study chat in the right sidebar that sees your open note and selection. It is answered by the AI you choose (Claude Code, a local framework or an API model), shown next to it as \"Run by\".",
   "author": "Graphite",

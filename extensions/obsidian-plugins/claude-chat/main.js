@@ -157,17 +157,37 @@ module.exports = class ClaudeChatPlugin extends Plugin {
     try { return await this.app.vault.adapter.read(`${this.dir}/replies/${id}.md`); } catch { return null; }
   }
 
-  async loadChat() {
-    // A job started while the history was loading keeps its live state.
-    this.msgs = (await this.readOutbox()).map(m => this.running?.get(m.id) || m);
-    for (const m of this.msgs) {
-      if (this.running?.has(m.id)) continue;
-      m.reply = await this.readReply(m.id);
-      // An agent job runs in this window only: one left without an answer was stopped by a reload.
-      if (m.reply == null && m.agent) m.reply = '_' + T('Stopped before it finished. Nothing more was copied or written; start it again.') + '_';
-    }
-    this.renderAll();
+  // The chat history: read completely (messages and their answers) before it is shown, then merged with what
+  // happened meanwhile. A request sent, or an answer that arrived, while the history was still loading stays; a
+  // past answer that is still being read never makes a finished job look unfinished. Buttons that must not start
+  // a job twice wait for this (whenLoaded).
+  loadChat() {
+    const seq = this.loadSeq = (this.loadSeq || 0) + 1;
+    const run = (async () => {
+      const list = await this.readOutbox();
+      for (const m of list) {
+        if (this.running?.has(m.id)) continue;
+        m.reply = await this.readReply(m.id);
+        // An agent job runs in this window only: one left without an answer was stopped by a reload.
+        if (m.reply == null && m.agent) m.reply = '_' + T('Stopped before it finished. Nothing more was copied or written; start it again.') + '_';
+      }
+      if (seq !== this.loadSeq) return;
+      if (this.cleared > (this.loadStarted || 0)) return; // "New chat" while loading: the old history stays cleared
+      const live = new Map(this.msgs.map(x => [x.id, x]));
+      const merged = list.map(m => {
+        const cur = this.running?.get(m.id) || live.get(m.id);
+        return cur && (this.running?.has(m.id) || cur.reply != null) ? cur : m;
+      });
+      const ids = new Set(merged.map(m => m.id));
+      for (const x of this.msgs) if (!ids.has(x.id)) merged.push(x); // sent while loading
+      this.msgs = merged;
+      this.renderAll();
+    })();
+    this.loadStarted = Date.now();
+    this.loading = run.finally(() => { if (this.loadSeq === seq) this.loading = null; });
+    return this.loading;
   }
+  whenLoaded() { return this.loading ? this.loading.catch(() => {}) : Promise.resolve(); }
 
   /* ---------- polling ---------- */
 
@@ -535,10 +555,18 @@ module.exports = class ClaudeChatPlugin extends Plugin {
   }
 
   // The "Find new course files" button: a message with task "import" that the Claude window carries out.
+  // One search at a time: a second click while one is being started or is running only says so. The check waits
+  // for the chat history, so a finished search whose answer is still loading doesn't block a new one.
   async findFiles() {
     if (!this.pane) return;
-    const pending = this.msgs.find(m => m.task === 'import' && m.reply == null);
     this.show();
+    if (this.findBusy) { new Notice(T('Graphie is already looking for new files.')); return; }
+    this.findBusy = true;
+    try { await this.startFind(); } finally { this.findBusy = false; }
+  }
+  async startFind() {
+    await this.whenLoaded();
+    const pending = this.msgs.find(m => m.task === 'import' && m.reply == null);
     if (pending) { new Notice(T('Graphie is already looking for new files.')); return; }
     // With an API model chosen for this job (Settings → AI), Graphite's own agent does it, asking before copying.
     if (this.agentVia('import')) return this.runAgent('import', 'import', T('Find new course files on this computer and add them to Graphite.'));
@@ -822,7 +850,7 @@ module.exports = class ClaudeChatPlugin extends Plugin {
   async newChat() {
     if (!this.msgs.length) return;
     await this.appendOutbox({ type: 'new', at: moment().format('YYYY-MM-DD HH:mm') });
-    this.msgs = [];
+    this.msgs = []; this.cleared = Date.now();
     this.renderAll();
     new Notice(T('New chat.'));
   }
