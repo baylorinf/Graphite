@@ -94,6 +94,15 @@ const FRAMEWORKS = {
     onLine(line, st) {
       let ev; try { ev = JSON.parse(line); } catch { return null; }
       const it = ev.item || {};
+      if (ev.type === 'item.completed' && it.type === 'command_execution') {
+        if (it.status === 'failed' && it.exit_code === -1 &&
+            /^Failed to create unified exec process: registered Core process has no package identity\.?$/i.test(String(it.aggregated_output || '').trim())) {
+          st.windowsFileToolUnavailable = true;
+        } else if (it.status === 'completed' && it.exit_code === 0) {
+          st.windowsFileToolUnavailable = false;
+        }
+      }
+      if (ev.type === 'item.completed' && it.type === 'file_change' && it.status === 'completed') st.windowsFileToolUnavailable = false;
       if (ev.type === 'item.started' && it.type === 'command_execution') return { step: 'tool', tool: 'command', path: String(it.command || '').slice(0, 160), command: String(it.command || '') };
       if (ev.type === 'item.started' && (it.type === 'file_change' || it.type === 'patch')) return { step: 'write', tool: 'patch', path: (it.changes || []).map(c => c.path).join(', '), paths: (it.changes || []).map(c => String(c.path)) };
       if (ev.type === 'item.completed' && it.type === 'agent_message' && it.text) st.text += it.text + '\n';
@@ -230,6 +239,10 @@ module.exports = function createFrameworks({ HttpError }) {
       access: {source:'graphite',operation,path:outside,driveRoot:path.parse(outside).root === outside} });
     if (aborted) throw Object.assign(new HttpError(499, 'Stopped'), { code: 'stopped', framework: id });
     if (timedOut) throw Object.assign(new HttpError(504, `${F.name}: timeout`), { code: 'timeout', framework: id });
+    if (st.windowsFileToolUnavailable && mode !== 'answer') {
+      const detail = 'Windows could not start the Codex CLI file tool (registered Core process has no package identity)';
+      throw Object.assign(new HttpError(424, detail), { code: 'failed', framework: id, detail });
+    }
     const text = last || st.final || st.text;
     const tail = (st.failure || err).trim().split('\n').slice(-3).join(' ').slice(0, 400);
     // Done only when the program exited with 0 and its own final event says the task completed. A failure is a

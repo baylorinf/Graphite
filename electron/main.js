@@ -403,7 +403,10 @@ async function main() {
   const canvasOptions = require('./canvas-desktop').createCanvasDesktop({
     app, BrowserWindow, session, safeStorage: require('electron').safeStorage, vault,
   });
-  const port = await start({ vault, port: 0, token, canvasOptions });
+  // Use the operating system's network settings for Gemini. Its requests have a separate, in-memory cookie jar.
+  const geminiSession = session.fromPartition('graphite-gemini-api');
+  const geminiFetch = (url, init) => geminiSession.fetch(url, { ...init, credentials: 'omit', redirect: 'error' });
+  const port = await start({ vault, port: 0, token, canvasOptions, geminiFetch });
   const url = `http://127.0.0.1:${port}/`;
   const {createCodeProjects} = require(path.join(ROOT, 'code-projects.js'));
   const projects = createCodeProjects({

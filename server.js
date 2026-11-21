@@ -15,6 +15,7 @@ const { createFile } = require('./new-file');
 let VAULT = '', CONFIG_DIR = '', PLUGIN_DIR = '';
 let TOKEN = null; // desktop app: every request must carry this secret, so other programs can't use the server
 let canvas;
+let fetchGemini = fetch;
 const VERSION = require('./package.json').version;
 const PUBLIC = path.join(__dirname, 'public');
 const NM = path.join(__dirname, 'node_modules');
@@ -248,11 +249,12 @@ function compatCaller(provider, key, body) {
   }
   if (process.env.GRAPHITE_TEST_AI_BASE) base = process.env.GRAPHITE_TEST_AI_BASE;
   const name = P.name;
+  const send = provider === 'gemini' ? fetchGemini : fetch;
   const call = async (pathname, init = {}) => {
     let r;
     try {
       const limit = AbortSignal.timeout(240000);
-      r = await fetch(base + pathname, { ...init, headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), 'Content-Type': 'application/json' }, signal: init.signal ? AbortSignal.any([init.signal, limit]) : limit });
+      r = await send(base + pathname, { ...init, headers: { ...(key ? { Authorization: `Bearer ${key}` } : {}), 'Content-Type': 'application/json' }, signal: init.signal ? AbortSignal.any([init.signal, limit]) : limit });
     } catch (e) {
       if (init.signal?.aborted) throw new HttpError(499, 'Stopped');
       if (e.name === 'TimeoutError') throw new HttpError(504, `${name} took longer than 4 minutes to answer; try again, or pick a faster model`);
@@ -261,7 +263,10 @@ function compatCaller(provider, key, body) {
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {
       const detail = (data.error && data.error.message) || data.message || r.statusText;
-      const err = r.status === 401 || r.status === 403 ? new HttpError(401, `The ${name} API key was not accepted`)
+      const regionUnavailable = provider === 'gemini' && [400, 403].includes(r.status) &&
+        /user location is not supported for the api use/i.test(detail);
+      const err = regionUnavailable ? new HttpError(403, 'Google Gemini does not offer API access from the current location.')
+        : r.status === 401 || r.status === 403 ? new HttpError(401, `The ${name} API key was not accepted`)
         : r.status === 402 ? new HttpError(402, `Your ${name} balance is empty${P.topUp ? `; top it up at ${P.topUp}` : ''}`)
         : r.status === 404 ? new HttpError(404, `${name} doesn't know that model (${body.model || '?'}); press Test the key in Settings → AI to see the available models`)
         : r.status === 429 ? new HttpError(429, `Too many requests to ${name}, or no credit left; try again later`)
@@ -1324,8 +1329,9 @@ async function installClaudeKit(input) {
   return { ...done, config };
 }
 
-async function start({ vault, port = 0, token = null, retry = 0, canvasOptions = {} } = {}) {
+async function start({ vault, port = 0, token = null, retry = 0, canvasOptions = {}, geminiFetch = fetch } = {}) {
   VAULT = path.resolve(vault);
+  fetchGemini = geminiFetch;
   canvas = require('./canvas-service').createCanvasService({ officeToPdf, ...canvasOptions, vault: VAULT, noteWriter: {withFileLock, atomicWrite} });
   CONFIG_DIR = path.join(VAULT, '.obsidian');
   PLUGIN_DIR = path.join(CONFIG_DIR, 'plugins');
