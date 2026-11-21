@@ -200,6 +200,13 @@ async function runElectron() {
     assert.deepEqual(await fs.promises.readFile(path.join(vault,downloaded.path)),incoming);
     assert.equal((await status()).lastDownload,downloaded.path);
     console.log('PASS native desktop download, vault copy and exact bytes');
+    // Graphite's own reader (1.1.51): an assignment and the syllabus read through the school window, no browser.
+    const page=await act('read',{url:'https://oc.sjtu.edu.cn/courses/110/assignments/310'});
+    assert.match(page.text,/提交解答和图表。/);
+    assert.deepEqual(page.attachments.map(a=>a.id),['511']);
+    const syllabus=await act('read',{url:'https://oc.sjtu.edu.cn/courses/110/assignments/syllabus'});
+    assert.match(syllabus.text,/每周完成习题/);
+    console.log('PASS in-app reader: assignment and syllabus text with their files, through the school session');
     denyFiles=true;
     const partial=await act('sync');
     assert(partial.snapshot.courses[0].warnings.some(w=>w.includes('学校未开放')));

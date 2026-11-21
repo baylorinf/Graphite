@@ -145,7 +145,8 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
     if (data.portalSyncEnabled) {
       if (!data.webVerified) throw error(401,'请重新登录学校网站。');
       const course=data.snapshot?.courses.find(c=>String(c.id)===String(courseId));
-      const file=course?.files.find(f=>String(f.id)===String(fileId));
+      // A file linked from a page or an assignment (read in Graphite) may not be in the course's file list yet.
+      const file=course?.files?.find(f=>String(f.id)===String(fileId)) || (course && /^\d+$/.test(String(fileId)) ? {id:String(fileId),name:''} : null);
       if (!file || !/^\d+$/.test(String(file.id))) throw error(404,'请先同步此课件。');
       return desktop.downloadWeb(course,file);
     }
@@ -219,7 +220,25 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
   async function handle(method, action, body = {}) {
     if(method==='GET' && action==='status' && data)return view();
     if (method==='POST' && action==='pull') return runPull(body.courseId == null ? null : String(body.courseId));
+    // Reading one page can take several seconds on the school site: outside the lock, like a pull.
+    if (method==='POST' && action==='read') return readPage(body);
     return exclusive(() => handleOther(method, action, body));
+  }
+  // One Canvas page for Graphite's reader (assignment, announcement, page, discussion, syllabus).
+  async function readPage(body) {
+    await exclusive(ready);
+    if (waitingForWebLogin() || data.webReconnect) throw error(401, '请先完成学校登录并核对账户。');
+    if (!view().connected) throw error(401, '请先连接交大 Canvas。');
+    if (data.portalSyncEnabled) {
+      if (!desktop?.readWeb) throw error(409, '这个页面暂时不能在 Graphite 里显示。');
+      let u; try { u = new URL(String(body.url || ''), SITE); } catch { throw error(400, '无效的 Canvas 地址。'); }
+      if (u.origin !== SITE) throw error(400, '无效的 Canvas 地址。');
+      const page = await desktop.readWeb(u.href);
+      const cid = u.pathname.match(/^\/courses\/(\d+)/)?.[1] || '';
+      const content = courseContent(page?.html || '', cid);
+      return { url: u.href, courseId: cid, title: page?.title || '', text: content.text, attachments: content.attachments };
+    }
+    return api.read(String(body.url || ''));
   }
   async function runPull(courseId, auto = false) {
     {
@@ -227,8 +246,10 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         if (activePull.courseId===courseId) return activePull.task;
         throw error(409,'正在拉取课程资料，请等本次完成。');
       }
-      const task = exclusive(async () => {
-        await ready();
+      // Only the short steps that read or write the saved state hold the lock. Reading the school site and
+      // downloading every file can take minutes; signing in, syncing and the other actions must not wait for it.
+      const task = (async () => {
+        await exclusive(ready);
         if (!view().connected) throw error(401,'请先连接交大 Canvas。');
         pullProgress = {done:0,total:0,name:''};
         const warnings = [];
@@ -237,7 +258,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
           if (data.portalSyncEnabled) await syncWeb(auto,true);
           else {
             const snapshot = await api.sync(data.snapshot || undefined);
-            await save({...data,snapshot,syncedAt:new Date().toISOString()});
+            await exclusive(() => save({...data,snapshot,syncedAt:new Date().toISOString()}));
           }
         } catch (e) {
           if (e.status===401 || e.status===403 || !data.snapshot?.courses?.length) throw e;
@@ -266,9 +287,14 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
             mirrored = m.mirrored; result.mirror = m.report;
           } catch (e) { result.warnings.push(e.message); }
         }
-        await save({...data,lastPull:result,pullSessionId:sessionId,pullCache:{owner,files:cache,notes:noteCache,mirrored}});
+        await exclusive(async () => {
+          // Signed out or another account meanwhile: this pull's record belongs to nobody now.
+          const now=data.portalSyncEnabled?'web:'+(data.snapshot?.webIdentity||sessionId):'api:'+data.accountId;
+          if (!view().connected || now!==owner) return;
+          await save({...data,lastPull:result,pullSessionId:sessionId,pullCache:{owner,files:cache,notes:noteCache,mirrored}});
+        });
         return result;
-      });
+      })();
       activePull={courseId,task};
       try {return await task;} finally {activePull=null;pullProgress=null;}
     }
@@ -281,19 +307,6 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
       if (waitingForWebLogin() || data.webReconnect) {
         const allowed=waitingForWebLogin() ? ['portal','web-connect','disconnect'] : ['portal','web-connect','disconnect','connect','sync'];
         if (!allowed.includes(action)) throw error(401,'请先完成学校登录并核对账户。');
-      }
-      if (action === 'read') {
-        if (!view().connected) throw error(401, '请先连接交大 Canvas。');
-        if (data.portalSyncEnabled) {
-          if (!desktop?.readWeb) throw error(409, '这个页面暂时不能在 Graphite 里显示。');
-          let u; try { u = new URL(String(body.url || ''), SITE); } catch { throw error(400, '无效的 Canvas 地址。'); }
-          if (u.origin !== SITE) throw error(400, '无效的 Canvas 地址。');
-          const page = await desktop.readWeb(u.href);
-          const cid = u.pathname.match(/^\/courses\/(\d+)/)?.[1] || '';
-          const content = courseContent(page?.html || '', cid);
-          return { url: u.href, courseId: cid, title: page?.title || '', text: content.text, attachments: content.attachments };
-        }
-        return api.read(String(body.url || ''));
       }
       if (action === 'portal') {
         let target;
@@ -454,7 +467,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         await runPull(null, true);
       } catch { /* shown on the next manual pull */ }
     };
-    const first = setTimeout(autoPull, 45000); first.unref?.();
+    const first = setTimeout(autoPull, 120000); first.unref?.();
     const every = setInterval(autoPull, autoPullMs); every.unref?.();
   }
   if(desktop?.syncWeb) {

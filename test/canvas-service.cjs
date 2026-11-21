@@ -288,3 +288,33 @@ test('desktop portal uses a separate session and only the school callback comple
     assert.equal(cb,ev.url);
   } finally { await fs.rm(vault,{recursive:true,force:true}); }
 });
+
+// 1.1.51: the automatic (or a manual) full pull reads the school site and downloads for minutes. Signing in,
+// syncing, linking a folder and the status must not wait for it.
+test('a long pull does not block signing in, syncing or linking a folder', async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), 'graphite-canvas-long-'));
+  await fs.mkdir(path.join(vault, 'Linear Algebra'));
+  let state = { portalSyncEnabled: true, webVerified: true, user: '同学', snapshot: { webIdentity: '9', courses: [{ id: '5', name: '线性代数', files: [] }] } };
+  let release;
+  const slow = new Promise(r => { release = r; });
+  const snapshot = () => ({ user: '同学', snapshot: { webIdentity: '9', courses: [{ id: '5', name: '线性代数', files: [] }], warnings: [] }, syncedAt: new Date().toISOString() });
+  const svc = createCanvasService({ vault, storage: { load: async () => structuredClone(state), save: async v => { state = v; } },
+    desktop: { openWebLogin: () => {}, syncWeb: async options => { if (options.fullMaterials) await slow; return snapshot(); },
+      readWeb: async url => ({ title: 'HW 1', html: '<p>Prove it.</p><a href="/courses/5/files/77/download">sheet.pdf</a>' }),
+      downloadWeb: async (course, file) => ({ path: 'Canvas/x/' + file.id + '.pdf', unchanged: false }) } });
+  const pull = svc.handle('POST', 'pull', {});
+  await new Promise(r => setTimeout(r, 20));
+  const quick = (p, what) => Promise.race([p, new Promise((_, no) => setTimeout(() => no(new Error(what + ' waited for the pull')), 1500))]);
+  assert.equal((await quick(svc.handle('GET', 'status'), 'status')).connected, true);
+  assert.equal((await quick(svc.handle('POST', 'sync'), 'sync')).connected, true);
+  assert.equal((await quick(svc.handle('POST', 'link', { courseId: '5', folder: 'Linear Algebra' }), 'link')).courseLinks['5'], 'Linear Algebra');
+  const page = await quick(svc.handle('POST', 'read', { url: 'https://oc.sjtu.edu.cn/courses/5/assignments/3' }), 'read');
+  assert.match(page.text, /^Prove it\.\s*sheet\.pdf$/);
+  assert.deepEqual(page.attachments.map(a => a.id), ['77']);
+  // A file linked from the page, not in the course list yet: still saved through the school window.
+  assert.equal((await quick(svc.handle('POST', 'download', { courseId: '5', fileId: '77' }), 'download')).path, 'Canvas/x/77.pdf');
+  assert.deepEqual(await quick(svc.handle('POST', 'web-connect'), 'web-connect'), { opened: true });
+  release();
+  const result = await pull;
+  assert.equal(result.courses, 1);
+});
