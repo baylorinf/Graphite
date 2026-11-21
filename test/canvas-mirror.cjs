@@ -65,11 +65,11 @@ test('mirrors new files once, skips duplicates, never overwrites, updates the in
   assert.equal(again.report.added.length, 0);
 });
 
-test('an unlinked course stays in Canvas/ and is reported', async () => {
+test('a course without a chosen folder gets one named after it (never a Canvas folder)', async () => {
   const { vault, files, cache } = await setup();
   const { report } = await mirrorToCourses({ vault, courses: [{ id: 11, name: '线性代数', files }], cache, links: { 11: '' } });
-  assert.deepEqual(report.unlinked, ['线性代数']);
-  assert.equal(report.added.length, 0);
+  assert.ok(report.added.length > 0);
+  assert.ok(report.added.every(a => a.path.startsWith('线性代数/')), JSON.stringify(report.added));
 });
 
 test('a course folder without an index note gets one', async () => {

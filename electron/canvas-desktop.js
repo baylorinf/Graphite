@@ -26,9 +26,12 @@ function studyFilename(raw) {
   return name.slice(0, -ext.length).slice(0, 150) + ext;
 }
 
+// A course file from a sync goes to the hidden store (.obsidian/graphite/canvas/<Course (id)>/: Graphite files it
+// into the course folder); a file the student downloads in the Canvas window goes to Downloads/ in the vault.
+const partsFor = folder => folder === 'Downloads' ? ['Downloads'] : ['.obsidian', 'graphite', 'canvas', folder];
 function downloadDir(vault, folder = 'Downloads') {
   let p = fs.realpathSync(vault);
-  for (const part of ['Canvas', folder]) {
+  for (const part of partsFor(folder)) {
     p = path.join(p, part);
     try { fs.mkdirSync(p); } catch (e) { if (e.code !== 'EEXIST') throw e; }
     if (fs.lstatSync(p).isSymbolicLink() || !fs.statSync(p).isDirectory()) throw new Error('Canvas 下载目录不可用。');
@@ -42,17 +45,17 @@ async function publishDownload(vault, tmp, name, folder = 'Downloads') {
     const candidate = i ? base + ' (' + (i + 1) + ')' + ext : name;
     try {
       await fsp.link(tmp, path.join(dir, candidate));
-      return 'Canvas/' + folder + '/' + candidate;
+      return partsFor(folder).join('/') + '/' + candidate;
     } catch (e) {
       if (['ENOTSUP','EPERM','EOPNOTSUPP','EXDEV','ENOSYS'].includes(e.code)) {
-        try { await fsp.copyFile(tmp,path.join(dir,candidate),fs.constants.COPYFILE_EXCL); return 'Canvas/' + folder + '/' + candidate; }
+        try { await fsp.copyFile(tmp,path.join(dir,candidate),fs.constants.COPYFILE_EXCL); return partsFor(folder).join('/') + '/' + candidate; }
         catch (copy) { if (copy.code !== 'EEXIST') throw copy; }
       } else if (e.code !== 'EEXIST') throw e;
       if (folder !== 'Downloads') {
         const target = path.join(dir,candidate), st = await fsp.lstat(target);
         if (st.isFile() && st.size === (await fsp.stat(tmp)).size) {
           async function digest(p) { const h=createHash('sha256'); for await (const chunk of fs.createReadStream(p)) h.update(chunk); return h.digest('hex'); }
-          if (await digest(target) === await digest(tmp)) return { path:'Canvas/'+folder+'/'+candidate, unchanged:true };
+          if (await digest(target) === await digest(tmp)) return { path:partsFor(folder).join('/')+'/'+candidate, unchanged:true };
         }
       }
     }
@@ -101,7 +104,7 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
     }
     let tmp;
     try { tmp = path.join(downloadDir(vault,transfer?.folder), '.' + randomUUID() + '.part'); item.setSavePath(tmp); }
-    catch { e.preventDefault(); transfer?.reject(new Error('无法创建课程文件夹。')); portal?.setTitle('Graphite · 无法写入 Canvas/Downloads'); return; }
+    catch { e.preventDefault(); transfer?.reject(new Error('无法创建课程文件夹。')); portal?.setTitle('Graphite · 无法写入 Downloads'); return; }
     if(transfer)transfer.item=item;
     downloads.add(item);
     if (transfer) {

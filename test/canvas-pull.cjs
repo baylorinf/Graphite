@@ -54,10 +54,15 @@ test('one action pulls all courses and reuses verified local files across restar
   assert.deepEqual(first,again);
   assert.equal(first.courses,2); assert.deepEqual(first.notes,{saved:3,unchanged:0});
   assert.deepEqual(first.files,{saved:2,unchanged:0}); assert.deepEqual(first.failed,[]);
-  const course=path.join(f.vault,'Canvas','Algorithms (7)'), note=path.join(course,'作业','Sheet (33).md');
+  // 1.1.53: no Canvas/ folder. Notes in the course folder (named after the course here), files as downloaded in the
+  // hidden store, and the copies the student sees filed into the course folder (the notes link to those).
+  const course=path.join(f.vault,'.obsidian','graphite','canvas','Algorithms (7)'), shown=path.join(f.vault,'Algorithms');
+  const note=path.join(shown,'作业 Homework','Sheet (33).md');
+  assert.equal(require('node:fs').existsSync(path.join(f.vault,'Canvas')),false);
   const text=await fs.readFile(note,'utf8');
-  assert.match(text,/Show the proof/);assert.match(text,/2026-12-01/);assert.match(text,/\.\.\/Set%20A.pdf/);
-  assert.match(await fs.readFile(path.join(course,'课程要求.md'),'utf8'),/Exam 70%/);
+  assert.match(text,/Show the proof/);assert.match(text,/2026-12-01/);assert.match(decodeURIComponent(text),/\(\.\.\/课件 Slides\/Slides\.pdf\)/);
+  assert.ok(require('node:fs').existsSync(path.join(shown,'课件 Slides','Slides.pdf')));
+  assert.match(await fs.readFile(path.join(shown,'课程要求.md'),'utf8'),/Exam 70%/);
   const restarted=f.service();
   assert.deepEqual((await restarted.handle('GET','status')).lastPull,first);
   const second=await restarted.handle('POST','pull');
@@ -82,7 +87,7 @@ test('a restricted attachment is reported while other courses and the assignment
   const f=await apiFixture(t), svc=f.service(); f.answers.fileError=true;
   const first=await svc.handle('POST','pull');
   assert.equal(first.failed[0].id,'52');assert.equal(first.notes.saved,3);assert.equal(first.files.saved,1);
-  const note=await fs.readFile(path.join(f.vault,'Canvas','Algorithms (7)','作业','Sheet (33).md'),'utf8');
+  const note=await fs.readFile(path.join(f.vault,'Algorithms','作业 Homework','Sheet (33).md'),'utf8');
   assert.match(note,/https:\/\/oc.sjtu.edu.cn\/courses\/7\/files\/52/);
   f.answers.fileError=false;
   assert.equal((await svc.handle('POST','pull')).files.saved,1);
@@ -96,7 +101,7 @@ test('keeps linked jAccount attachments on an offline upgrade and preserves the 
     dueLabel:'11月28日 23:59',description:'Work in pairs.',attachments:[file]}]};
   let state={portalSyncEnabled:true,webVerified:true}, offline=false, fileOffline=false,downloads=0;
   const storage={load:async()=>structuredClone(state),save:async next=>{state=structuredClone(next);}};
-  const folder='Canvas/Calculus (9)';
+  const folder='.obsidian/graphite/canvas/Calculus (9)';
   const desktop={
     syncWeb:async()=>{if(offline)throw Error('network unavailable'); return {user:'Test student',snapshot:{webIdentity:'42',courses:[course],warnings:[]}};},
     downloadWeb:async()=>{
@@ -110,18 +115,13 @@ test('keeps linked jAccount attachments on an offline upgrade and preserves the 
     },
   };
   const pull=()=>createCanvasService({vault,storage,desktop}).handle('POST','pull');
-  const note=path.join(vault,folder,'作业','Exercises (10).md');
+  const note=path.join(vault,'Calculus','作业 Homework','Exercises (10).md');
   assert.deepEqual((await pull()).failed,[]);
   const first=await fs.readFile(note,'utf8');
   assert.match(first,/截止时间：11月28日 23:59/);
-  assert.match(first, /\.\.\/%E7%BB%83%E4%B9%A0%20%231%20%282%29\.pdf/);
-  // Simulate upgrading a stock 1.1.44 vault, which only cached files with a remote timestamp.
-  state.pullCache.files={}; offline=true;
-  const migrated=await pull();
-  assert.equal(downloads,1); assert.equal(migrated.files.unchanged,1); assert.deepEqual(migrated.failed,[]);
-  assert(migrated.warnings.some(w=>w.includes('本地副本')));
-  assert.equal(await fs.readFile(note,'utf8'),first);
-  assert.equal(state.pullCache.files['9/27'].path,folder+'/练习 #1 (2).pdf');
+  // "练习" is homework: filed next to the note.
+  assert.match(first, /\(%E7%BB%83%E4%B9%A0%20%231%20%282%29\.pdf\)/);
+  // (1.1.53 dropped the 1.1.44 upgrade path: files moved to the hidden store with their records.)
   offline=false; fileOffline=true;
   const failedFile=await pull();
   assert.equal(downloads,2); assert.equal(failedFile.files.unchanged,1); assert.deepEqual(failedFile.failed,[]);

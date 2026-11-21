@@ -791,7 +791,8 @@ const STOP = new Set('the and for are but not you all any can had her was one ou
 const CJK_FUNC = new Set('的了是我们你他她它这那就也都而并或把被让给从到为以于之其个么吗呢吧啊着过得地很再又还即则所如若将已该此每各某在两'.split(''));
 // "一" only counts at the end of a word like 唯一 / 统一; otherwise it is glue (构成一组, 一个).
 const CJK_ONE_OK = new Set('唯一 统一 同一 第一 万一'.split(' '));
-const CJK_STOP = new Set('一个 一组 一些 一下 一样 一种 一点 一般 一定 可以 能够 可能 需要 应该 不难 不是 没有 只有 只是 然后 但是 不过 什么 怎么 怎样 进行 注意 发现 直接 还是 并且 因此 由于 例如 比如 然而 同样 一起 这些 那些 部分 东西 时候 问题 方法 情况 结果 来源 相同 不同 任意 任何 至少 本来 根据 表示 两边 证明 得出 得到 显然 容易 不妨 那么 首先 最后 其次 另外 下面 上面 前面 后面 出来 起来 下来'.split(' '));
+// Course admin words (assignment notices, deadlines) are never a shared topic either.
+const CJK_STOP = new Set('作业 提交 截止 止时 时间 要求 不少 少于 同学 大家 及时 老师 附件 查看 日期 字数 课程 上课 下课 线下 线上 一个 一组 一些 一下 一样 一种 一点 一般 一定 可以 能够 可能 需要 应该 不难 不是 没有 只有 只是 然后 但是 不过 什么 怎么 怎样 进行 注意 发现 直接 还是 并且 因此 由于 例如 比如 然而 同样 一起 这些 那些 部分 东西 时候 问题 方法 情况 结果 来源 相同 不同 任意 任何 至少 本来 根据 表示 两边 证明 得出 得到 显然 容易 不妨 那么 首先 最后 其次 另外 下面 上面 前面 后面 出来 起来 下来'.split(' '));
 const vecCache = new Map(); // path -> { key, tf }
 function terms(text) {
   const out = [];
@@ -834,16 +835,29 @@ function tf(path) {
   return m;
 }
 // Notes most similar to `path` that aren't already linked either way.
+// Notes that are records, not knowledge: Canvas assignment/requirement notes, index and brain pages (graph: hide),
+// the capture inbox. They share boilerplate (作业, 截止时间, 要求…) and are never "related" to anything.
+export function isRecordNote(f) {
+  const head = String(f?.content || '').slice(0, 600);
+  return /^---\r?\n[\s\S]*?\ngraph:\s*hide\b/.test(head) || /^Claude Inbox\.md$/i.test(String(f?.path || '').split('/').pop())
+    || /^\[在 Canvas 查看\]\(https:\/\/oc\.sjtu\.edu\.cn\//m.test(String(f?.content || ''));
+}
 export function relatedNotes(path, linked = new Set(), limit = 5) {
   if (!H) return [];
-  const notes = [...H.S.files.values()].filter(f => /\.md$/i.test(f.path) && f.content != null);
+  const self = H.S.files.get(path);
+  if (!self || isRecordNote(self)) return [];
+  const notes = [...H.S.files.values()].filter(f => /\.md$/i.test(f.path) && f.content != null && !isRecordNote(f));
   if (notes.length < 3) return [];
   const df = new Map();
   for (const f of notes) for (const w of tf(f.path).keys()) df.set(w, (df.get(w) || 0) + 1);
   const N = notes.length;
+  // A word in a large share of the notes (a course's boilerplate, the student's own filler) says nothing about a
+  // shared topic: it doesn't count, and a chip only shows a word that is specific to a few notes.
+  const common = w => N >= 10 && (df.get(w) || 0) > Math.max(3, N * 0.15);
+  const specific = w => (df.get(w) || 0) <= Math.max(2, N * 0.06);
   const vec = p => {
     const v = new Map(); let norm = 0;
-    for (const [w, n] of tf(p)) { const x = (1 + Math.log(n)) * Math.log(1 + N / (df.get(w) || 1)); v.set(w, x); norm += x * x; }
+    for (const [w, n] of tf(p)) { if (common(w)) continue; const x = (1 + Math.log(n)) * Math.log(1 + N / (df.get(w) || 1)); v.set(w, x); norm += x * x; }
     return { v, norm: Math.sqrt(norm) || 1 };
   };
   const me = vec(path);
@@ -854,7 +868,9 @@ export function relatedNotes(path, linked = new Set(), limit = 5) {
     let dot = 0; const shared = [];
     for (const [w, x] of me.v) { const y = o.v.get(w); if (y) { dot += x * y; shared.push([w, x * y]); } }
     const score = dot / (me.norm * o.norm);
-    if (score > 0.05) out.push({ path: f.path, score, words: sharedTerms(shared) });
+    const words = sharedTerms(shared.filter(([w]) => specific(w)));
+    // At least two specific shared words (one shared word is usually a coincidence).
+    if (score > 0.08 && shared.filter(([w]) => specific(w)).length >= 2 && words.length) out.push({ path: f.path, score, words });
   }
   return out.sort((a, b) => b.score - a.score).slice(0, limit);
 }

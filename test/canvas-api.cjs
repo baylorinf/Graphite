@@ -174,7 +174,9 @@ test('a redirected course directory cannot escape the vault', async t => {
   const { vault } = await fixture(t, handler);
   const trap = await fixture(t, handler);
   try {
-    await fsp.symlink(vault, path.join(trap.vault, 'Canvas'), process.platform === 'win32' ? 'junction' : 'dir');
+    // The download store (.obsidian/graphite/canvas) redirected elsewhere.
+    await fsp.mkdir(path.join(trap.vault, '.obsidian', 'graphite'), { recursive: true });
+    await fsp.symlink(vault, path.join(trap.vault, '.obsidian', 'graphite', 'canvas'), process.platform === 'win32' ? 'junction' : 'dir');
   } catch (e) {
     if (e.code === 'EPERM') return t.skip('This environment does not allow temporary directory links');
     throw e;

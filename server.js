@@ -1166,7 +1166,8 @@ const server = http.createServer(async (req, res) => {
     if (u.pathname.startsWith('/vault/')) {
       const abs = inVault(decoded.slice(7));
       const rel = path.relative(VAULT, abs).split(path.sep);
-      if (rel[0]?.toLowerCase() === 'canvas' && /\.(html?|xhtml|xml|svg|js|mjs)$/i.test(abs)) {
+      const fromCanvas = rel[0]?.toLowerCase() === 'canvas' || rel.slice(0, 3).join('/').toLowerCase() === '.obsidian/graphite/canvas';
+      if (fromCanvas && /\.(html?|xhtml|xml|svg|js|mjs)$/i.test(abs)) {
         // Downloaded course materials are third-party documents, served outside the app's execution context.
         res.setHeader('Content-Security-Policy', "sandbox; default-src 'none'; img-src data:; style-src 'unsafe-inline'");
         res.setHeader('X-Content-Type-Options', 'nosniff');

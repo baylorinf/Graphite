@@ -161,7 +161,7 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
       return [course?.name, f.name, f.error].filter(Boolean).join(' · ');
     })];
     const detail = lastPull.notes && lastPull.files ? [label('files') + ' ' + lastPull.files.saved, label('pullNotes') + ' ' + lastPull.notes.saved].join(' / ') : '';
-    return `<div class="cv-pull-result" role="status" data-pull-result><span class="cv-meta">${esc([lastPull.path || 'Canvas', ...counts].join(' · '))}${detail ? ` (${esc(detail)})` : ''}</span>${warnings(issues)}</div>`;
+    return `<div class="cv-pull-result" role="status" data-pull-result><span class="cv-meta">${esc([lastPull.path || label('title'), ...counts].join(' · '))}${detail ? ` (${esc(detail)})` : ''}</span>${warnings(issues)}</div>`;
   }
   function pullProgress(progress) {
     return [label('pulling'), progress?.total ? progress.done + '/' + progress.total : '', progress?.name].filter(Boolean).join(' · ');
@@ -230,10 +230,17 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
       ${assignment && canOpenSubmission(assignment) ? `<div class="cv-reader-actions">${button('quick-submit', label(assignment.submitted ? 'resubmit' : 'submitTask'), 'mod-cta', `data-course="${esc(r.assignment.courseId)}" data-assignment="${esc(assignment.id)}"`)}</div>` : ''}
     </section>`;
   }
-  // Where this course's new files go in the vault ('' = only Canvas/).
+  // The vault folder this course lives in (its notes, slides, homework). A new folder is made when none fits.
   function linkPicker(course) {
-    const folders = state.vaultFolders || [], cur = state.courseLinks?.[String(course.id)] || '';
-    return `<div class="cv-link"><label for="cv-link">${esc(label('linkFolder'))}</label><select id="cv-link" data-course="${esc(course.id)}"><option value="">${esc(label('canvasOnly'))}</option>${folders.map(f => `<option value="${esc(f)}"${f === cur ? ' selected' : ''}>${esc(f)}</option>`).join('')}</select></div>`;
+    const cur = state.courseLinks?.[String(course.id)] || '';
+    const folders = [...new Set([...(state.vaultFolders || []), cur].filter(Boolean))].sort((a, b) => a.localeCompare(b, getLang()));
+    return `<div class="cv-link"><label for="cv-link">${esc(label('linkFolder'))}</label><select id="cv-link" data-course="${esc(course.id)}">${folders.map(f => `<option value="${esc(f)}"${f === cur ? ' selected' : ''}>${esc(f)}${(state.vaultFolders || []).includes(f) ? '' : ' · ' + esc(label('newFolder'))}</option>`).join('')}</select></div>`;
+  }
+  // The one-time move of the old Canvas/ folder into the course folders.
+  function migrationNote() {
+    const m = state.migration;
+    if (!m || Date.now() - Date.parse(m.at) > 14 * 86400000) return '';
+    return `<p class="cv-feedback" data-cv-migration>${esc(label('migrated').replace('{n}', m.moved).replace('{folders}', (m.folders || []).join('、')))}${m.left ? ' ' + esc(label('migrateLeft')) : ''}</p>`;
   }
   function resource(item) {
     if (group === 'modules') {
@@ -304,7 +311,7 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
       ${pendingVerification ? `<div class="cv-bar"><span class="cv-meta">${esc(pendingVerification.title)}</span>${button('verify-submission',label('verify'))}</div>` : ''}
       ${state.lastDownload ? `<div class="cv-bar"><span class="cv-meta">${esc(label('latestFile'))} · ${esc(state.lastDownload)}</span>${button('open-latest', label('openFile'))}</div>` : ''}
       ${state.sessionOnly && (connected || state.calendar) ? `<p class="cv-meta">${esc(label('sessionOnly'))}</p>` : ''}
-      ${calendarForm()}</div>
+      ${migrationNote()}${calendarForm()}</div>
       ${hasData ? `<div class="cv-bar cv-sync"><label class="cv-auto" title="${esc(label('autoHelp'))}"><input type="checkbox" data-cv-auto${state.autoMirror !== false ? ' checked' : ''}> ${esc(label('auto'))}</label><span class="cv-meta">${esc([state.syncing ? label('syncRunning') : '', latest ? label('synced') + ' · ' + formatTime(latest) : ''].filter(Boolean).join('　'))}</span><div class="cv-actions">${(connected || state.calendar) && !state.syncing ? button('sync', label('sync')) : ''}${connected ? button('pull', label('pullAll'), 'mod-cta') : ''}</div></div>${pullReport()}${state.snapshot?.courses?.length && (!connected || state.syncing || state.authError) ? `<p class="cv-meta">${esc(label('cache'))}</p>` : ''}${warnings(state.snapshot?.warnings)}` : ''}
       <div class="cv-grid"><div class="cv-col">${hasData ? newFiles() + agenda() : ''}</div>
       <div class="cv-col cv-col-main">${reader ? readerPanel() : connected || state.snapshot?.courses?.length ? coursePanel() : ''}</div></div></div>`;

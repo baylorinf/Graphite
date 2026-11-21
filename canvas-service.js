@@ -1,10 +1,11 @@
 'use strict';
 const { randomBytes, createHash } = require('node:crypto');
 const { createSubmissionClient, WRITE_SCOPES } = require('./canvas-submission');
-const { createCanvasApi, SCOPES } = require('./canvas-api');
+const { createCanvasApi, SCOPES, defaultFolder, verifiedSubdirectory } = require('./canvas-api');
 const { feedUrl, getCalendar } = require('./canvas-calendar');
 const { pullMaterials } = require('./canvas-pull');
 const { mirrorToCourses, guessLinks } = require('./canvas-mirror');
+const { moveCanvasFolder, rewriteLinks } = require('./canvas-migrate');
 const { courseContent } = require('./canvas-course-content');
 const fsSync = require('node:fs');
 
@@ -14,9 +15,10 @@ const error = (status, message) => Object.assign(new Error(message), { status })
 
 // The desktop owns encrypted storage and the isolated school window. The browser
 // preview can use a calendar for this server session without persisting a private URL.
-function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf, autoPullMs = desktop ? 3 * 3600000 : 0, fetch: fetchImpl = fetch,
+function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf, autoPullMs = desktop ? 3 * 3600000 : 0, migrate = !!desktop, fetch: fetchImpl = fetch,
     clientId = process.env.GRAPHITE_CANVAS_CLIENT_ID, clientSecret = process.env.GRAPHITE_CANVAS_CLIENT_SECRET }) {
   let data, pending, tail = Promise.resolve(), authError = '', refreshing, webSyncing = false, readingSchool = false, pullProgress = null, activePull = null;
+  const shownPaths = new Map(); // a download as saved → the copy in the course folder (for "latest file")
   const configured = !!(clientId && clientSecret && desktop?.openAuth);
   function exclusive(fn) {
     const result = tail.then(fn, fn);
@@ -37,10 +39,34 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
       return fsSync.readdirSync(base, { withFileTypes: true }).filter(e => e.isDirectory() && !e.name.startsWith('.') && e.name !== 'Canvas').map(e => e.name).sort();
     } catch { return []; }
   }
-  // Explicit choices win over the guess; '' means "keep this course in Canvas/ only".
+  // Every course has a vault folder: the one the student chose, else a guess (线性代数 → Linear Algebra), else a
+  // new folder named after the course. Canvas never gets a folder of its own.
   function courseLinks() {
     const courses = data?.snapshot?.courses || [];
-    return { ...guessLinks(courses, vaultFolders()), ...(data?.courseLinks || {}) };
+    const guess = guessLinks(courses, vaultFolders()), chosen = data?.courseLinks || {};
+    return Object.fromEntries(courses.map(c => [String(c.id), chosen[String(c.id)] || guess[String(c.id)] || defaultFolder(c)]));
+  }
+  const vaultBase = () => (typeof vault === 'function' ? vault() : vault);
+  // The course folder (created if needed), for its notes.
+  async function courseDir(course) {
+    const base = await fsSync.promises.realpath(vaultBase());
+    let dir = base;
+    for (const part of courseLinks()[String(course.id)].split('/')) dir = await verifiedSubdirectory(dir, part);
+    return dir;
+  }
+  // File downloaded Canvas files into the course folders; returns id → the copy the student sees.
+  async function placeFiles(course, cache, ids, report) {
+    const pc = data.pullCache || {};
+    const m = await mirrorToCourses({ vault: vaultBase(), courses: [course], cache, links: courseLinks(), mirrored: pc.mirrored || {}, officeToPdf, writer: noteWriter });
+    data = { ...data, pullCache: { ...pc, mirrored: m.mirrored } };
+    if (report) { report.added.push(...m.report.added); report.duplicates += m.report.duplicates; report.failed.push(...m.report.failed);
+      for (const i of m.report.index || []) if (!report.index.includes(i)) report.index.push(i); }
+    const shown = new Map();
+    for (const id of ids) {
+      const p = m.mirrored[String(course.id) + '/' + id];
+      if (p && p !== 'duplicate' && fsSync.existsSync(require('node:path').join(vaultBase(), p))) shown.set(String(id), p);
+    }
+    return shown;
   }
   // The school window can stay open past the UI polling deadline.
   const waitingForWebLogin = () => !!pending?.web;
@@ -59,7 +85,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
       lastPull: visible.lastPull || null, pullProgress: hidden ? null : pullProgress,
       authMode: web ? 'web' : (visible.auth || configured ? 'oauth' : null), authPending: !!pending && pending.until > Date.now(),
       authError, syncedAt: visible.syncedAt || null, snapshot: visible.snapshot || { courses: [], warnings: [] },
-      calendar: visible.calendar || null, courseLinks: hidden ? {} : courseLinks(), vaultFolders: vaultFolders(), autoMirror: data.autoMirror !== false, autoPull: !!autoPullMs, portalOpened: !!visible.portalOpened, lastDownload: hidden ? null : desktop?.lastDownload?.() || null };
+      calendar: visible.calendar || null, migration: data.migration || null, courseLinks: hidden ? {} : courseLinks(), vaultFolders: vaultFolders(), autoMirror: data.autoMirror !== false, autoPull: !!autoPullMs, portalOpened: !!visible.portalOpened, lastDownload: hidden ? null : (raw => shownPaths.get(raw) || raw)(desktop?.lastDownload?.() || null) };
   }
   async function tokenRequest(parameters) {
     let res;
@@ -274,19 +300,17 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         const sessionId=data.portalSyncEnabled ? (data.pullSessionId || randomBytes(16).toString('hex')) : null;
         const owner=data.portalSyncEnabled?'web:'+(data.snapshot?.webIdentity||sessionId):'api:'+data.accountId;
         const cached=data.pullCache?.owner===owner ? data.pullCache : {};
+        // Files are filed into the course folders as each course finishes; its notes link to those copies.
+        const mirror = { added: [], duplicates: 0, failed: [], unlinked: [], index: [] };
+        if (cached.mirrored && data.pullCache?.owner === owner) data = { ...data, pullCache: { ...data.pullCache, mirrored: cached.mirrored } };
         const { result,cache,noteCache } = await pullMaterials({vault,courses,warnings,usingSnapshot,download:downloadOne,noteWriter,
           previous:cached.files,previousNotes:cached.notes,
+          noteDir: courseDir, place: (course, files, ids) => placeFiles(course, files, ids, mirror),
           onProgress:progress=>{pullProgress=progress;}});
+        result.mirror = mirror;
         result.finishedAt=new Date().toISOString();
         if (auto) result.auto = true;
-        // New files go on into the course folders the student linked (slides, homework, exams; PDFs of Office files).
-        let mirrored = cached.mirrored || {};
-        if (data.autoMirror !== false) {
-          try {
-            const m = await mirrorToCourses({vault: typeof vault === 'function' ? vault() : vault, courses, cache, links: courseLinks(), mirrored, officeToPdf, writer: noteWriter});
-            mirrored = m.mirrored; result.mirror = m.report;
-          } catch (e) { result.warnings.push(e.message); }
-        }
+        const mirrored = data.pullCache?.mirrored || {};
         await exclusive(async () => {
           // Signed out or another account meanwhile: this pull's record belongs to nobody now.
           const now=data.portalSyncEnabled?'web:'+(data.snapshot?.webIdentity||sessionId):'api:'+data.accountId;
@@ -298,6 +322,17 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
       activePull={courseId,task};
       try {return await task;} finally {activePull=null;pullProgress=null;}
     }
+  }
+  // One downloaded file, filed into its course folder: the path the student opens.
+  async function shownCopy(courseId, fileId, saved) {
+    const course = data.snapshot?.courses?.find(c => String(c.id) === String(courseId));
+    if (!course || !saved?.path) return saved?.path;
+    const known = course.files?.some(f => String(f.id) === String(fileId)) ? course : { ...course, files: [...(course.files || []), { id: String(fileId), name: '' }] };
+    const shown = await placeFiles(known, { [String(courseId) + '/' + fileId]: { path: saved.path } }, [String(fileId)]);
+    await save({ ...data });
+    const visible = shown.get(String(fileId)) || saved.path;
+    shownPaths.set(saved.path, visible);
+    return visible;
   }
   async function handleOther(method, action, body) {
     {
@@ -392,7 +427,8 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         return result;
       }
       if (action === 'download') {
-        return downloadOne(body.courseId,body.fileId);
+        const saved = await downloadOne(body.courseId,body.fileId);
+        return { ...saved, path: await shownCopy(body.courseId, body.fileId, saved) };
       }
       if (action === 'verify-submission') {
         const current=view(),courseId=String(body.courseId || ''),assignmentId=String(body.assignmentId || '');
@@ -413,7 +449,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
       if(action==='submit') return submit(body);
       if (action === 'link') {
         const id = String(body.courseId || ''), folder = String(body.folder ?? '');
-        if (!/^\d+$/.test(id) || (folder && !vaultFolders().includes(folder))) throw error(400, '无效的课程或文件夹。');
+        if (!/^\d+$/.test(id) || (folder && !vaultFolders().includes(folder) && folder !== courseLinks()[id])) throw error(400, '无效的课程或文件夹。');
         await save({ ...data, courseLinks: { ...(data.courseLinks || {}), [id]: folder } });
         return view();
       }
@@ -426,6 +462,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         for (const file of course.files) {
           try {
             const item = await downloadOne(course.id,file.id);
+            item.path = await shownCopy(course.id, file.id, item);
             result[item.unchanged ? 'unchanged' : 'saved']++;
             if (!result.path) result.path = item.path.split('/').slice(0, -1).join('/');
           } catch (e) {
@@ -456,6 +493,43 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
       throw error(404, 'Unknown Canvas action');
     }
   }
+  // 1.1.53: the old Canvas/ folder is split into the course folders, once (see canvas-migrate.js). Runs again on a
+  // later start if something was left (a file open in another program).
+  async function migrateLegacy() {
+    await ready();
+    const base = await fsSync.promises.realpath(vaultBase());
+    if (!fsSync.existsSync(require('node:path').join(base, 'Canvas'))) return null;
+    const courses = data.snapshot?.courses || [];
+    // Courses only known from their old folder name ("线性代数（荣誉） (98418)") are matched to a folder too.
+    const named = fsSync.readdirSync(require('node:path').join(base, 'Canvas')).map(n => ({ id: n.match(/\((\d+)\)$/)?.[1], name: n.replace(/\s*\(\d+\)$/, '') })).filter(c => c.id);
+    const links = { ...guessLinks(named, vaultFolders()), ...courseLinks() };
+    for (const c of named) links[c.id] ||= defaultFolder(c);
+    const { moved, notes, left } = await moveCanvasFolder({ vault: base, links, courses });
+    const map = p => (typeof p === 'string' && moved.get(p)) || p;
+    const pc = data.pullCache || {};
+    const files = Object.fromEntries(Object.entries(pc.files || {}).map(([k, v]) => [k, { ...v, path: map(v.path) }]));
+    const mirrored = Object.fromEntries(Object.entries(pc.mirrored || {}).map(([k, v]) => [k, map(v)]));
+    data = { ...data, courseLinks: { ...links, ...(data.courseLinks || {}) }, pullCache: { ...pc, files, mirrored } };
+    // The files as downloaded are now in the store: file the ones the course folders don't have yet.
+    const report = { added: [], duplicates: 0, failed: [], unlinked: [], index: [] }, shownOf = new Map();
+    for (const c of courses) {
+      const ids = (c.files || []).map(f => String(f.id)).filter(id => files[c.id + '/' + id]);
+      if (!ids.length) continue;
+      try { for (const [id, p] of await placeFiles(c, files, ids, report)) shownOf.set(files[c.id + '/' + id].path, p); }
+      catch (e) { report.failed.push({ course: c.name, name: '', error: e.message }); }
+    }
+    const digests = await rewriteLinks({ vault: base, notes, moved, shown: old => shownOf.get(map(old)) });
+    const noteCache = Object.fromEntries(Object.entries(pc.notes || {}).map(([k, v]) => {
+      const p = map(v.path), d = digests.get(p);
+      // Rewritten links keep a generated note Graphite's own; a note the student edited stays theirs.
+      return [k, { ...v, path: p, digest: d && d.before === v.digest ? d.after : v.digest }];
+    }));
+    const migration = { at: new Date().toISOString(), moved: moved.size, notes: notes.length, added: report.added.length, left,
+      folders: [...new Set([...moved.values()].map(p => p.split('/')[0]).filter(f => f !== '.obsidian'))] };
+    await save({ ...data, pullCache: { ...data.pullCache, files, notes: noteCache }, migration });
+    return migration;
+  }
+  if (migrate) { const t = setTimeout(() => exclusive(migrateLegacy).catch(e => { authError ||= e.message; }), 1500); t.unref?.(); }
   // Automatic pull: shortly after the app starts, then every few hours while connected. Files already pulled are
   // not downloaded again; new ones are copied into the linked course folders (see canvas-mirror.js).
   if (autoPullMs) {
@@ -478,6 +552,6 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
       catch{}finally{webSyncing=false;}
     },15*60000);tick.unref?.();
   }
-  return { handle };
+  return { handle, migrateLegacy: () => exclusive(migrateLegacy) };
 }
 module.exports = { createCanvasService };

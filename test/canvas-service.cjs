@@ -263,7 +263,7 @@ test('official window downloads keep same-name material and hide unfinished file
     assert.equal(studyFilename('CON.docx'),'_CON.docx');
     const dir=downloadDir(vault), temp=path.join(dir,'.tmp');
     await fs.writeFile(temp,'new'); await fs.writeFile(path.join(dir,'slides.pdf'),'old');
-    assert.equal(await publishDownload(vault,temp,'slides.pdf'),'Canvas/Downloads/slides (2).pdf');
+    assert.equal(await publishDownload(vault,temp,'slides.pdf'),'Downloads/slides (2).pdf');
     assert.equal(await fs.readFile(path.join(dir,'slides.pdf'),'utf8'),'old');
   } finally { await fs.rm(vault,{recursive:true,force:true}); }
 });

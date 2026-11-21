@@ -2094,11 +2094,14 @@ function refreshRightPanel() {
   }).join('') : `<div class="empty-hint">${esc(t('right.noBacklinks'))}</div>`;
 
   // Unlinked mentions
-  const name = md ? baseName(p) : fileName(p).replace(/.[^.]+$/, ''), linked = new Set(back.map(b => b.f.path));
-  const re = name.length >= 3 ? new RegExp(`(^|[^\\p{L}\\p{N}])${reEsc(name)}(?![\\p{L}\\p{N}])`, 'iu') : null;
+  const name = md ? baseName(p) : fileName(p).replace(/\.[^.]+$/, ''), linked = new Set(back.map(b => b.f.path));
+  // Records (Canvas assignment notes, index and brain pages) neither have nor make "unlinked mentions": their names
+  // (课程要求, 作业1) and boilerplate would match everywhere.
+  const record = md && RV.isRecordNote(f);
+  const re = !record && name.length >= 3 ? new RegExp(`(^|[^\\p{L}\\p{N}])${reEsc(name)}(?![\\p{L}\\p{N}])`, 'iu') : null;
   const unl = [];
   if (re) for (const o of S.files.values()) {
-    if (o.path === p || linked.has(o.path) || !isMd(o.path) || !o.content) continue;
+    if (o.path === p || linked.has(o.path) || !isMd(o.path) || !o.content || RV.isRecordNote(o)) continue;
     const line = o.content.split('\n').find(l => re.test(l) && !l.toLowerCase().includes('[[' + name.toLowerCase()));
     if (line) unl.push({ o, line });
     if (unl.length >= 30) break;

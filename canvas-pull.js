@@ -2,11 +2,11 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
-const { safeName, courseFolder, verifiedSubdirectory, publish } = require('./canvas-api');
+const { safeName, courseFolder, verifiedSubdirectory, publish, storeDir, defaultFolder } = require('./canvas-api');
 const fsp = fs.promises;
 
 async function fingerprint(base, relative) {
-  if (typeof relative !== 'string' || !relative.startsWith('Canvas/')) return null;
+  if (typeof relative !== 'string' || !relative || relative.startsWith('/') || relative.split('/').includes('..')) return null;
   const file = path.resolve(base,relative);
   try {
     const remainder=path.relative(base,file);
@@ -36,43 +36,22 @@ function deadline({dueAt, dueLabel}) {
       year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', timeZoneName:'shortOffset',
     }).format(date);
   }
-  return dueLabel || '';
+  return cleanLabel(dueLabel);
 }
-
-// 1.1.44 recorded note hashes but omitted downloaded files without a school revision.
-// Recover links from the exact last generated note on upgrade; never guess by filename.
-async function previousAttachmentLinks(base, folder, courseId, notes, previousNotes) {
-  const result = new Map();
-  for (const {item,assignment} of notes) {
-    if (!item.attachments?.length) continue;
-    const old = previousNotes[courseId+'/'+(assignment ? item.id : 'syllabus')];
-    const dir = assignment ? path.join(folder,'作业') : folder;
-    if (!old?.path || path.dirname(path.resolve(base,old.path)) !== dir || path.extname(old.path) !== '.md') continue;
-    const absolute = path.resolve(base,old.path);
-    let bytes;
-    try {
-      if ((await fsp.realpath(absolute)) !== absolute || !(await fsp.lstat(absolute)).isFile()) continue;
-      bytes = await fsp.readFile(absolute);
-    } catch (e) { if (e.code === 'ENOENT' || e.code === 'ENOTDIR') continue; throw e; }
-    if (createHash('sha256').update(bytes).digest('hex') !== old.digest) continue;
-    const rows = bytes.toString('utf8').split('\n## 附件\n\n')[1]?.trimEnd().split('\n\n')[0].split('\n') || [];
-    if (rows.length !== item.attachments.length) continue;
-    item.attachments.forEach((attachment,i)=>{
-      const prefix = '- ['+escapeText(attachment.name)+'](';
-      if (!rows[i].startsWith(prefix) || !rows[i].endsWith(')')) return;
-      const dest = rows[i].slice(prefix.length,-1);
-      let relative;
-      try { relative = decodeURIComponent(dest); } catch { return; }
-      const target = path.resolve(dir,relative);
-      if (path.dirname(target) !== folder || href(path.relative(dir,target).split(path.sep).join('/')) !== dest) return;
-      result.set(String(attachment.id),path.relative(base,target).split(path.sep).join('/'));
-    });
+// The school page's label can repeat its own heading and the date ("截止时间 12月13日 23:59 12月13日 23:59").
+function cleanLabel(label) {
+  let s = String(label || '').replace(/\s+/g, ' ').trim().replace(/^(?:截止时间|截止日期|截止|Due(?: date)?)\s*[:：]?\s*/i, '');
+  const words = s.split(' ');
+  if (words.length % 2 === 0 && words.length) {
+    const half = words.length / 2;
+    if (words.slice(0, half).join(' ') === words.slice(half).join(' ')) s = words.slice(0, half).join(' ');
   }
-  return result;
+  return s;
 }
 
 async function saveNote(base, folder, name, item, text, locals, due, previous, writer) {
-  const lines = ['# ' + escapeText(item.title), ''];
+  // A record of the school's page, not a knowledge note: kept off the graph and out of "related notes".
+  const lines = ['---', 'graph: hide', '---', '# ' + escapeText(item.title), ''];
   if (due) lines.push('截止时间：' + escapeText(due), '');
   if (text) lines.push(escapeText(text), '');
   const attachments = item.attachments || [];
@@ -113,10 +92,14 @@ async function saveNote(base, folder, name, item, text, locals, due, previous, w
   } finally { await fsp.unlink(tmp).catch(()=>{}); }
 }
 
-async function pullMaterials({ vault, courses, download, previous={}, previousNotes={}, noteWriter, warnings=[], usingSnapshot=false, onProgress }) {
+// Files as downloaded go to the hidden store (.obsidian/graphite/canvas/<Course (id)>/); `place` files them into
+// the course folder the student sees and says where each one is, so the notes link to those copies. Notes (course
+// requirements, assignments) go to the course folder from `noteDir` (assignments in "作业 Homework").
+async function pullMaterials({ vault, courses, download, previous={}, previousNotes={}, noteWriter, warnings=[], usingSnapshot=false, onProgress,
+    noteDir = null, place = null }) {
   const base = await fsp.realpath(vault);
-  const root = await verifiedSubdirectory(base,'Canvas'), cache = {...previous}, noteCache={...previousNotes};
-  const result = { courses:courses.length, path:'Canvas', saved:0, unchanged:0, skipped:0, failed:[],
+  const root = await storeDir(base), cache = {...previous}, noteCache={...previousNotes};
+  const result = { courses:courses.length, path:'', saved:0, unchanged:0, skipped:0, failed:[],
     notes:{saved:0,unchanged:0}, files:{saved:0,unchanged:0}, warnings:[...warnings] };
   let done = 0, unauthorized = false;
   const plan = courses.map(course => {
@@ -137,8 +120,13 @@ async function pullMaterials({ vault, courses, download, previous={}, previousNo
   const count = (kind,unchanged) => { const label=unchanged?'unchanged':'saved'; result[label]++; result[kind][label]++; };
   for (const {course,notes,files} of plan) {
     const cid = String(course.id);
-    let folder;
-    try {folder = await verifiedSubdirectory(root,courseFolder(course));}
+    let folder, notesHere;
+    try {
+      folder = await verifiedSubdirectory(root,courseFolder(course));
+      notesHere = noteDir ? await noteDir(course) : await verifiedSubdirectory(base,defaultFolder(course));
+      const shown = path.relative(base,notesHere).split(path.sep).join('/');
+      result.path = result.path ? result.path + '、' + shown : shown;
+    }
     catch (e) {
       result.failed.push({courseId:cid,id:cid,name:course.name,error:e.message});
       result.skipped+=files.length+notes.length;
@@ -146,7 +134,7 @@ async function pullMaterials({ vault, courses, download, previous={}, previousNo
       continue;
     }
     const locals = new Map();
-    let legacyLinks, usedLocal = 0;
+    let usedLocal = 0;
     for (const file of files) {
       const id=String(file.id), key=cid+'/'+id;
       const revision = file.updatedAt ? JSON.stringify([file.updatedAt,file.size,file.name]) : null;
@@ -154,11 +142,7 @@ async function pullMaterials({ vault, courses, download, previous={}, previousNo
       let localPath;
       try {
         const old = cache[key];
-        let candidate = old?.path;
-        if (!candidate) {
-          legacyLinks ??= await previousAttachmentLinks(base,folder,cid,notes,previousNotes);
-          candidate = legacyLinks.get(id);
-        }
+        const candidate = old?.path;
         const knownDigest = candidate && path.dirname(path.resolve(base,candidate)) === folder ? await fingerprint(base,candidate) : null;
         if (knownDigest) {
           localPath = candidate;
@@ -191,10 +175,15 @@ async function pullMaterials({ vault, courses, download, previous={}, previousNo
       done++;
     }
     if (usedLocal) result.warnings.push(course.name+' · '+usedLocal+' 份附件已保留本地副本，暂时无法确认校方最新版。');
+    // Into the course folder: links in the notes point to the copies there.
+    if (place && locals.size) {
+      try { const shown = await place(course, cache, [...locals.keys()]); for (const [id, p] of shown) if (p) locals.set(id, p); }
+      catch (e) { result.warnings.push(course.name+' · '+e.message); }
+    }
     for (const n of notes) {
       onProgress({done,total,name:course.name+' · '+n.name});
       try {
-        const dir = n.assignment ? await verifiedSubdirectory(folder,'作业') : folder;
+        const dir = n.assignment ? await verifiedSubdirectory(notesHere,'作业 Homework') : notesHere;
         const key=cid+'/'+(n.assignment?n.item.id:'syllabus');
         const saved = await saveNote(base,dir,n.name,n.item,n.text,locals,deadline(n.item),noteCache[key],noteWriter);
         noteCache[key]={path:saved.path,digest:saved.digest,owned:saved.owned};

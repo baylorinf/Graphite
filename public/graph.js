@@ -76,6 +76,7 @@ export function buildGraph() {
     if (!f) return false;
     const g = f.fm?.graph;
     if (g === false || /^(hide|hidden|false|no|off)$/i.test(String(g ?? ''))) return true;
+    if (f.content != null && RV.isRecordNote(f)) return true; // Canvas assignment notes from before 1.1.53
     return hideFolders.some(d => f.path === d || f.path.startsWith(d + '/'));
   };
   for (const f of S.files.values()) if (isMd(f.path) && !hidden(f)) add(f.path, 'note', baseName(f.path));

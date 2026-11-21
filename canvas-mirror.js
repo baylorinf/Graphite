@@ -11,9 +11,10 @@ const fs = require('node:fs');
 const fsp = fs.promises;
 const path = require('node:path');
 const { createHash, randomUUID } = require('node:crypto');
-const { publish } = require('./canvas-api');
+const { publish, defaultFolder } = require('./canvas-api');
 
 const OFFICE = /\.(pptx?|docx?)$/i;
+const ACTIVE = /\.(html?|xhtml|xml|svg|js|mjs)$/i;
 const SKIP_TOP = new Set(['canvas', 'claude brain', 'daily notes', 'ideas', 'templates', '我的大脑知识库', 'my brain', 'attachments']);
 // SJTU course names often come in Chinese only; the vault's folders are often English.
 const KNOWN = [
@@ -43,7 +44,8 @@ function guessLinks(courses, folders, codes = {}) {
 // Which folder inside the course a file goes to.
 function subfolderFor(name) {
   const n = String(name).toLowerCase();
-  if (/(^|[^a-z])(hw|homework|assignment|pset|problem ?set|exercise)s?([^a-z]|$)|作业|习题|练习/.test(n)) return '作业 Homework';
+  // "HW3", "HWOct10", "hw_2", "homework 1", "assignment3", "作业"…
+  if (/(^|[^a-z])hw|(^|[^a-z])(homework|assignment|pset|problem ?set|exercise)s?([^a-z]|\d|$)|作业|习题|练习/.test(n)) return '作业 Homework';
   if (/exam|midterm|final|mock|solution|answer|review|quiz|考试|期中|期末|真题|答案|复习|测验/.test(n)) return '复习资料';
   return '课件 Slides';
 }
@@ -106,21 +108,22 @@ async function mirrorToCourses({ vault, courses, cache = {}, links = {}, mirrore
   const done = { ...mirrored };
   for (const course of courses) {
     const cid = String(course.id);
-    const folder = links[cid];
-    const fresh = (course.files || []).filter(f => cache[cid + '/' + f.id]?.path && !done[cid + '/' + f.id]);
-    if (!folder) { if (fresh.length) report.unlinked.push(course.name); continue; }
+    // No folder chosen: one named after the course (Canvas never gets a folder of its own).
+    const folder = links[cid] || defaultFolder(course);
+    // A file is filed once; an older record without a place ('duplicate', 1.1.50) is looked at again.
+    const fresh = (course.files || []).filter(f => cache[cid + '/' + f.id]?.path && (!done[cid + '/' + f.id] || done[cid + '/' + f.id] === 'duplicate'));
     if (folder.includes('..') || path.isAbsolute(folder)) continue;
     const courseDir = path.join(base, folder);
     if (path.relative(base, courseDir).startsWith('..')) continue;
     if (!fresh.length) continue;
     const existing = await listFiles(courseDir);
-    const stems = new Set(existing.filter(f => /\.pdf$/i.test(f.name)).map(f => stemOf(f.name)));
+    const stems = new Map(existing.filter(f => /\.pdf$/i.test(f.name)).map(f => [stemOf(f.name), f.full]));
     const hashes = new Map(); // full path → hash, filled lazily
     const sameBytes = async (src, size) => {
       const digest = await sha(src);
       for (const f of existing) if (f.size === size) {
         if (!hashes.has(f.full)) hashes.set(f.full, await sha(f.full).catch(() => ''));
-        if (hashes.get(f.full) === digest) return { digest, dup: true };
+        if (hashes.get(f.full) === digest) return { digest, dup: true, match: f.full };
       }
       return { digest, dup: false };
     };
@@ -131,9 +134,12 @@ async function mirrorToCourses({ vault, courses, cache = {}, links = {}, mirrore
       try {
         const st = await fsp.stat(src);
         const name = path.basename(src), office = OFFICE.test(name);
+        // Web pages and scripts from the school stay in the store (served sandboxed), never among the notes.
+        if (ACTIVE.test(name)) { done[key] = cache[key].path; continue; }
         const sub = subfolderFor(name);
-        const { digest, dup } = await sameBytes(src, st.size);
-        if (dup || (office && stems.has(stemOf(name)))) { done[key] = 'duplicate'; report.duplicates++; continue; }
+        const { digest, dup, match } = await sameBytes(src, st.size);
+        // Already in the course folder: remember that copy, so notes link to it.
+        if (dup || (office && stems.has(stemOf(name)))) { done[key] = rel(base, match || stems.get(stemOf(name))); report.duplicates++; continue; }
         const dir = path.join(courseDir, sub);
         await fsp.mkdir(dir, { recursive: true });
         let target;
@@ -146,7 +152,7 @@ async function mirrorToCourses({ vault, courses, cache = {}, links = {}, mirrore
           try { await fsp.copyFile(src, tmp, fs.constants.COPYFILE_EXCL); target = (await publish(tmp, dir, name, digest, st.size)).target; }
           finally { await fsp.unlink(tmp).catch(() => {}); }
         }
-        stems.add(stemOf(path.basename(target)));
+        stems.set(stemOf(path.basename(target)), target);
         existing.push({ full: target, name: path.basename(target), size: (await fsp.stat(target)).size });
         done[key] = rel(base, target);
         report.added.push({ courseId: cid, course: course.name, folder, path: rel(base, target) });

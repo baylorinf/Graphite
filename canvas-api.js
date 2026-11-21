@@ -117,6 +117,20 @@ async function verifiedSubdirectory(parent, name) {
   return real;
 }
 
+// Downloaded Canvas files are kept as they came, out of sight, in .obsidian/graphite/canvas/<Course (id)>/: the
+// vault shows them in the course folders instead (canvas-mirror.js files them, with PDF copies of Office files).
+const STORE = ['.obsidian', 'graphite', 'canvas'];
+const STORE_PATH = STORE.join('/');
+async function storeDir(base) {
+  let dir = base;
+  for (const part of STORE) dir = await verifiedSubdirectory(dir, part);
+  return dir;
+}
+// The vault folder a course gets when the student hasn't chosen one: its name, without the Canvas id.
+function defaultFolder(course) {
+  return safeName(String(course?.name || '').replace(/\s*\(\d+\)\s*$/, ''), 'Course ' + (course?.id ?? ''));
+}
+
 function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vault, getAccountId }) {
   let refreshing = null;
   async function request(url, options = {}) {
@@ -310,7 +324,7 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
     let base, folder;
     try {
       base = await fsp.realpath(typeof vault === 'function' ? vault() : vault);
-      folder = await verifiedSubdirectory(await verifiedSubdirectory(base, 'Canvas'), courseFolder(course));
+      folder = await verifiedSubdirectory(await storeDir(base), courseFolder(course));
     } catch (e) { await discard(response); throw e; }
     const temp = path.join(folder, '.canvas-part-' + randomUUID());
     let size = 0;
@@ -357,4 +371,4 @@ function createCanvasApi({ fetch: fetchImpl = globalThis.fetch, accessToken, vau
   return { sync, download, read };
 }
 
-module.exports = { createCanvasApi, SCOPES, safeName, courseFolder, verifiedSubdirectory, publish };
+module.exports = { createCanvasApi, SCOPES, safeName, courseFolder, verifiedSubdirectory, publish, STORE, STORE_PATH, storeDir, defaultFolder };
