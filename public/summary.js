@@ -133,6 +133,87 @@ export async function summaryDialog(path) {
   };
 }
 
+/* ---------- long PDFs: what is sent, in batches ----------
+   Nothing is cut off: the chosen pages' text is split into batches of at most BATCH_CHARS characters, page by
+   page in order; a page longer than that is split into parts ("--- page 7 (part 2/3) ---"), so the last page
+   always gets there too. Each batch is one request, and the note's page links may only point to pages that
+   batch really sent (for Claude Code and local agents, also the scanned pages of its range, which they open
+   from the PDF themselves). */
+export const BATCH_CHARS = 90000;
+// pages: [{ n, text }] in order. Returns [{ pages: [n…] (pages whose text — or part of it — is in this batch),
+// open: [n…] (pages without text in this batch's range, for agents that can open the PDF), text }].
+export function planBatches(pages, { budget = BATCH_CHARS, agent = false } = {}) {
+  const pieces = [];
+  for (const p of pages) {
+    const text = String(p.text || '');
+    if (!text) { pieces.push({ n: p.n, empty: true }); continue; }
+    const head = `--- page ${p.n} ---\n`;
+    if (head.length + text.length + 1 <= budget) { pieces.push({ n: p.n, chunk: head + text + '\n' }); continue; }
+    // Split at a line break or space near the end of the room, never inside a word (a hard cut only for a
+    // "word" longer than half a batch).
+    const room = budget - 64; // leaves space for the "(part i/m)" marker
+    const cuts = [];
+    for (let at = 0; at < text.length;) {
+      let end = Math.min(text.length, at + room);
+      if (end < text.length) {
+        const nl = text.lastIndexOf('\n', end - 1), sp = Math.max(text.lastIndexOf(' ', end - 1), text.lastIndexOf('\t', end - 1));
+        const best = nl > at + room / 2 ? nl + 1 : sp > at + room / 2 ? sp + 1 : end;
+        end = best;
+      }
+      cuts.push(text.slice(at, end)); at = end;
+    }
+    cuts.forEach((c, i) => pieces.push({ n: p.n, chunk: `--- page ${p.n} (part ${i + 1}/${cuts.length}) ---\n${c}\n` }));
+  }
+  const batches = [];
+  let cur = null, waiting = []; // pages without text before the first text: they go with the next batch
+  for (const x of pieces) {
+    if (x.empty) { if (cur) cur.open.push(x.n); else waiting.push(x.n); continue; }
+    if (!cur || (cur.text && cur.text.length + x.chunk.length > budget)) { cur = { pages: [], open: waiting, text: '' }; waiting = []; batches.push(cur); }
+    cur.text += x.chunk;
+    if (!cur.pages.includes(x.n)) cur.pages.push(x.n);
+  }
+  // Without any text (all scanned), agents still get the page range to open themselves.
+  if (!batches.length && agent && waiting.length) batches.push({ pages: [], open: waiting, text: '' });
+  return batches;
+}
+// The pages one batch's answer may cite.
+export const citable = (b, agent) => new Set([...b.pages, ...(agent ? b.open : [])]);
+// Keep a batch's answer to the pages it was given: any other page number becomes 0 (shown without a link).
+// Links the AI wrote into its own text are not trusted either: every link (wiki [[…]] or Markdown [..](..))
+// and raw URL in the text becomes plain words, so the only links in the note are the page links Graphite adds.
+export function plainText(s) {
+  return String(s ?? '')
+    .replace(/!?\[\[([^\]|]*)(?:\|([^\]]*))?\]\]/g, (_, target, label) => label || String(target).replace(/#page=(\d+)/i, ' p. $1'))
+    .replace(/!?\[([^\]]*)\]\(([^)]*)\)/g, (_, label) => label)
+    .replace(/<a\b[^>]*>([\s\S]*?)<\/a>/gi, '$1')
+    .replace(/\b(?:https?|file|obsidian):\/\/\S+/gi, m => m.replace(/:\/\//, ':​//'))
+    .replace(/(^|[\s(])#page=(\d+)/gi, '$1p. $2');
+}
+export function checkCitations(r, ok) {
+  const fix = n => (ok.has(n) ? n : 0), clean = plainText;
+  return {
+    title: clean(r.title), overview: clean(r.overview),
+    sections: (r.sections || []).map(s => ({ ...s, heading: clean(s.heading), page: fix(s.page), points: (s.points || []).map(p => ({ ...p, text: clean(p.text), page: fix(p.page) })) })),
+    concepts: (r.concepts || []).map(c => ({ ...c, term: clean(c.term), meaning: clean(c.meaning), page: fix(c.page) })),
+    formulas: (r.formulas || []).map(f => ({ ...f, meaning: clean(f.meaning), page: fix(f.page) })),
+  };
+}
+// One answer from several batches, in page order; the same concept or formula is kept once. Concepts compare
+// without case ("Eigenvalue" = "eigenvalue"); formulas only ignore spacing, since case matters in maths
+// (f(x)=x and F(x)=x are different).
+export function mergeResults(parts) {
+  const seenC = new Set(), seenF = new Set();
+  const key = s => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const fkey = s => String(s || '').replace(/\s+/g, '');
+  return {
+    title: parts.find(r => r.title)?.title || '',
+    overview: parts.map(r => r.overview && r.overview.trim()).filter(Boolean).join('\n\n'),
+    sections: parts.flatMap(r => r.sections),
+    concepts: parts.flatMap(r => r.concepts).filter(c => !seenC.has(key(c.term)) && seenC.add(key(c.term))),
+    formulas: parts.flatMap(r => r.formulas).filter(f => !seenF.has(fkey(f.latex)) && seenF.add(fkey(f.latex))),
+  };
+}
+
 async function generate({ path, only, total, dest, engine, profile, body, actions }) {
   const pages = only || Array.from({ length: total }, (_, i) => i + 1);
   const src = '/vault/' + path.split('/').map(encodeURIComponent).join('/');
@@ -150,22 +231,53 @@ async function generate({ path, only, total, dest, engine, profile, body, action
     try { read = await pdfText(src, { only: pages, onProgress: (i, n) => { const el = win?.querySelector('.sum-busy'); if (el) el.textContent = t('exam.readingN', { i, n }); } }); }
     catch (e) { if (e.code === 'range') return failed(t('exam.pagesRange', { part: pageRanges(pages), n: total })); throw e; }
     if (stop.signal.aborted) return failed(t('sum.stopped'));
-    const withText = read.pages.filter(p => p.text);
-    const isApi = engine !== AI.CC && !AI.isLocal(engine);
-    if (!withText.length && isApi) return failed(t('sum.scanned', { pages: pageRanges(pages) }));
-    busy(engine === AI.CC ? t('ai.workingCC') : t('ai.working', { model: AI.label(engine, 'summary') }));
-    const text = withText.map(p => `--- page ${p.n} ---\n${p.text}`).join('\n').slice(0, 300000);
-    const local = AI.isLocal(engine) || engine === AI.CC
-      ? `<pdf_file>${path}</pdf_file>\n<pages_to_summarize>${pageRanges(pages)} of ${total}</pages_to_summarize>\n` + (read.empty.length ? `<pages_without_text>${pageRanges(read.empty)} — scanned: open these pages from the PDF yourself.</pages_without_text>\n` : '')
-      : (read.empty.length ? `<pages_without_text>${pageRanges(read.empty)}</pages_without_text>\n` : '');
-    const content = `${local}<pdf file="${path}">\n${text}\n</pdf>\n<pages_included>${pageRanges(pages)} of ${total}</pages_included>`;
-    const r = await AI.request('summary', 'summary', { title: stem(path), content, path, job: { pages: pageRanges(pages), total, pdf: path } }, { signal: stop.signal, provider: engine });
-    if (!win || stop.signal.aborted) return;
-    const md = buildNote(path, r, { pages, empty: read.empty, engine, profile });
-    preview({ path, md, dest, title: r.title, body, actions });
+    const agent = AI.isLocal(engine) || engine === AI.CC; // can open the PDF itself (scanned pages too)
+    const batches = planBatches(read.pages, { agent });
+    if (!batches.length) return failed(t('sum.scanned', { pages: pageRanges(pages) }));
+    clearInterval(tick);
+    await runBatches({ path, total, dest, engine, profile, body, actions, batches, agent, empty: agent ? [] : read.empty, results: [] });
   } catch (e) {
     if (stop.signal.aborted || e.name === 'AbortError') return failed(t('sum.stopped'));
     failed(t('ai.failedJob', { msg: e.name === 'TimeoutError' ? t('check.timeout') : AI.errorText(e, engine) }));
+  } finally { clearInterval(tick); if (pending === stop) pending = null; }
+}
+
+// Send the batches one after another. Answers already received are kept: after a failure, Retry carries on from
+// the batch that failed. Stop (or closing the window) ends it with nothing written.
+async function runBatches(job) {
+  const { path, total, dest, engine, profile, body, actions, batches, agent, empty, results } = job;
+  const stop = new AbortController(); pending = stop;
+  const t0 = Date.now();
+  const tick = setInterval(() => { const el = win?.querySelector('.check-elapsed'); if (!el) return clearInterval(tick); el.textContent = Math.round((Date.now() - t0) / 1000) + ' s'; }, 1000);
+  const n = batches.length;
+  try {
+    for (let i = results.length; i < n; i++) {
+      const b = batches[i], range = [...b.pages, ...b.open].sort((x, y) => x - y);
+      const who = engine === AI.CC ? t('ai.workingCC') : t('ai.working', { model: AI.label(engine, 'summary') });
+      body.innerHTML = `<div class="check-busy"><span class="spinner"></span><span class="sum-busy">${esc(who)}</span><span class="check-elapsed muted"></span></div>
+        <p class="muted sum-batch" data-batch="${i + 1}" data-batches="${n}">${esc(n > 1 ? t('sum.batch', { i: i + 1, n, pages: pageRanges(range) }) : t('sum.pagesLine', { pages: pageRanges(range) }))}</p>`;
+      actions.innerHTML = `<button class="mod-button" data-a="stop">${esc(t('ai.stop'))}</button>`;
+      actions.querySelector('[data-a=stop]').onclick = () => stop.abort();
+      const hint = (agent ? `<pdf_file>${path}</pdf_file>\n<pages_to_summarize>${pageRanges(range)} of ${total}</pages_to_summarize>\n` : '')
+        + (b.open.length ? `<pages_without_text>${pageRanges(b.open)}${agent ? ' — scanned: open these pages from the PDF yourself.' : ''}</pages_without_text>\n` : '')
+        + (n > 1 ? `<part>${i + 1} of ${n}: summarize only these pages; the other parts are summarized separately.</part>\n` : '');
+      const content = `${hint}<pdf file="${path}">\n${b.text}</pdf>\n<pages_included>${pageRanges(agent ? range : b.pages)} of ${total}</pages_included>`;
+      const r = await AI.request('summary', 'summary', { title: stem(path), content, path, job: { pages: pageRanges(range), total, pdf: path, part: i + 1, parts: n } }, { signal: stop.signal, provider: engine });
+      if (!win || stop.signal.aborted) return;
+      results.push(checkCitations(r, citable(b, agent)));
+    }
+    const covered = [...new Set(batches.flatMap(b => [...b.pages, ...(agent ? b.open : [])]))].sort((x, y) => x - y);
+    const md = buildNote(path, mergeResults(results), { pages: covered, empty, engine, profile });
+    preview({ path, md, dest, body, actions });
+  } catch (e) {
+    if (!win) return;
+    const stopped = stop.signal.aborted || e.name === 'AbortError';
+    const msg = stopped ? t('sum.stopped') : t('ai.failedJob', { msg: e.name === 'TimeoutError' ? t('check.timeout') : AI.errorText(e, engine) });
+    body.innerHTML = `<p class="mod-error sum-error">${esc(msg)}</p><p class="muted">${esc(t('sum.nothingWritten'))}</p>`
+      + (results.length ? `<p class="muted sum-kept">${esc(t('sum.keptParts', { done: results.length, n }))}</p>` : '');
+    actions.innerHTML = `${stopped ? '' : `<button class="mod-button mod-cta" data-a="retry">${esc(t('sum.retry'))}</button>`}<button class="mod-button" data-a="close">${esc(t('review.close'))}</button>`;
+    actions.querySelector('[data-a=close]').onclick = close;
+    actions.querySelector('[data-a=retry]')?.addEventListener('click', () => runBatches(job));
   } finally { clearInterval(tick); if (pending === stop) pending = null; }
 }
 
