@@ -17,7 +17,7 @@ const listeners = new Set();
 export function initAI(host) {
   H = host;
   // For plugins (the chat panel): window.myobsidianAI
-  window.myobsidianAI = { FEATURES, options, choice, setChoice, label, parts, request, ccListening, openSettings: () => H.openSettings('ai'), onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
+  window.myobsidianAI = { FEATURES, options, choice, setChoice, label, parts, modelFor, request, ccListening, openSettings: () => H.openSettings('ai'), onChange: fn => { listeners.add(fn); return () => listeners.delete(fn); } };
   Object.assign(window.myobsidianAI, { AGENT_FEATURES, agent, isApi: v => !!PROVIDERS[v], isLocal: v => !!LOCAL[v], isAgent: v => !!PROVIDERS[v] || !!LOCAL[v], frameworks: () => fwState, refreshFrameworks, errorText, readOnlyFolderOf: p => readOnlyFolderOf(p) });
   Object.assign(window.myobsidianAI, { studySettings, executor, executorName });
   refreshFrameworks().catch(() => {});
@@ -26,9 +26,10 @@ export function initAI(host) {
 // Who does a job, in words for the UI ("Claude Code", "DeepSeek Harness", "DeepSeek · Flash"). The job itself always
 // has Graphite's own name (Graphite study assistant…); this is only the "done by" label next to it.
 export const executor = f => choice(f);
-export function executorName(v) {
+// With a job given, an API provider's name shows that job's own model (if it has one).
+export function executorName(v, f) {
   if (v === 'off') return t('ai.off');
-  const p = parts(v);
+  const p = parts(v, f);
   return p.model && !LOCAL[v] ? `${p.name} · ${p.model}` : p.name;
 }
 
@@ -122,7 +123,7 @@ function raw() {
     const rev = H?.store.get('review', {}) || {};
     use = { check: def, quiz: rev.aiQuestions === false ? 'off' : def, chat: CC, plan: def, exam: def, format: def };
   }
-  return { keys, models, lists: { ...(s.lists || {}) }, baseUrl: s.baseUrl || '', use, agent: { ...(s.agent || {}) }, fwPaths: { ...(s.fwPaths || {}) } };
+  return { keys, models, jobModels: { ...(s.jobModels || {}) }, lists: { ...(s.lists || {}) }, baseUrl: s.baseUrl || '', use, agent: { ...(s.agent || {}) }, fwPaths: { ...(s.fwPaths || {}) } };
 }
 function save(patch) {
   const next = { ...raw(), ...patch };
@@ -146,6 +147,16 @@ export const listOf = p => listState(p).models;
 export const baseUrl = () => raw().baseUrl;
 export const setKey = (p, v) => { const r = raw(); save({ keys: { ...r.keys, [p]: v.trim() } }); };
 export const setModel = (p, v) => { const r = raw(); save({ models: { ...r.models, [p]: v.trim() } }); };
+// A job may use its own model from a provider (Haiku for quizzes, Opus for exam analysis). Kept per job and per
+// provider, so switching a job to another company and back keeps its model. Without one, the job uses the
+// provider's model from its API key box.
+export const jobModelOf = (f, p) => (f && raw().jobModels[f]?.[p]) || '';
+export const modelFor = (f, p) => jobModelOf(f, p) || modelOf(p);
+export const setJobModel = (f, p, v) => {
+  const r = raw(), mine = { ...(r.jobModels[f] || {}) };
+  if (String(v || '').trim()) mine[p] = String(v).trim(); else delete mine[p];
+  save({ jobModels: { ...r.jobModels, [f]: mine } });
+};
 export const setBaseUrl = v => save({ baseUrl: v.trim() });
 // Jobs added later default to what Check uses.
 // The code assistant uses the chat's AI until one is chosen for it.
@@ -172,27 +183,29 @@ function prettyModel(p, m) {
   s = s.replace(/[-_]+/g, ' ').replace(/\b([a-z])/g, c => c.toUpperCase()).replace(/\bGpt\b/g, 'GPT').replace(/\bGlm\b/g, 'GLM').replace(/\bQwen(\d)/g, 'Qwen $1');
   return s.trim();
 }
-export function parts(v) {
+export function parts(v, f) {
   if (v === CC) return { name: 'Claude Code', model: '' };
   if (LOCAL[v]) return { name: LOCAL[v].label, model: fwState[v]?.found ? fwState[v].version || '' : '' };
   if (!PROVIDERS[v]) return { name: v, model: '' };
-  return { name: SHORT[v], model: prettyModel(v, modelOf(v)) };
+  return { name: SHORT[v], model: prettyModel(v, modelFor(f, v)) };
 }
 
-export function label(v) {
+// f (optional): the job, so its own model is shown.
+export function label(v, f) {
   if (v === CC) return t('ai.cc');
   if (v === 'off') return t('ai.off');
   if (LOCAL[v]) return LOCAL[v].label;
   const P = PROVIDERS[v];
   if (!P) return v;
-  return modelOf(v) ? `${P.label} · ${modelOf(v)}` : P.label;
+  const m = modelFor(f, v);
+  return m ? `${P.label} · ${m}` : P.label;
 }
 // Choices for one job: Claude Code, each provider (greyed out until it has a key), and "off" for jobs that can do without AI.
 export function options(f) {
   const out = [{ value: CC, label: t('ai.cc'), ready: true }];
   // Local frameworks are always offered; one that isn't installed shows why (and fails clearly if chosen).
   for (const id of Object.keys(LOCAL)) out.push({ value: id, label: LOCAL[id].label, ready: fwState[id] ? !!fwState[id].found : true, local: true });
-  for (const p of Object.keys(PROVIDERS)) out.push({ value: p, label: label(p) + (hasProvider(p) ? '' : ' ' + t('ai.needsKey')), ready: hasProvider(p) });
+  for (const p of Object.keys(PROVIDERS)) out.push({ value: p, label: label(p, f) + (hasProvider(p) ? '' : ' ' + t('ai.needsKey')), ready: hasProvider(p) });
   if (f === 'check') out.push({ value: 'off', label: t('ai.offCheck'), ready: true });
   if (f === 'quiz') out.push({ value: 'off', label: t('ai.offQuiz'), ready: true });
   return out;
@@ -257,7 +270,7 @@ export async function request(feature, task, payload, { signal, provider } = {})
     signal: signal ? AbortSignal.any([signal, limit]) : limit,
     method: 'POST',
     headers: { 'X-Vault': '1', 'Content-Type': 'application/json', 'X-AI-Key': keyOf(v) },
-    body: JSON.stringify({ task, provider: v, model: modelOf(v), baseUrl: v === 'custom' ? baseUrl() : undefined, lang: getLang(), ...payload, job: undefined }),
+    body: JSON.stringify({ task, provider: v, model: modelFor(feature, v), baseUrl: v === 'custom' ? baseUrl() : undefined, lang: getLang(), ...payload, job: undefined }),
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.error || res.statusText);
@@ -344,7 +357,7 @@ export async function agent(feature, job, payload = {}, { onProgress, signal, pr
   if (!graphite && !PROVIDERS[v] && !LOCAL[v]) throw new Error(t('agent.needsApi'));
   if (!graphite && PROVIDERS[v] && !hasProvider(v)) throw new Error(t('ai.noKeyFor', { provider: PROVIDERS[v].label }));
   const key = graphite ? '' : LOCAL[v] ? (v === 'dsh' ? keyOf('deepseek') : '') : keyOf(v);
-  const who = graphite ? { provider: 'graphite' } : LOCAL[v] ? { framework: v, frameworkPaths: raw().fwPaths || {} } : { provider: v, model: modelOf(v), baseUrl: v === 'custom' ? baseUrl() : undefined };
+  const who = graphite ? { provider: 'graphite' } : LOCAL[v] ? { framework: v, frameworkPaths: raw().fwPaths || {} } : { provider: v, model: modelFor(feature, v), baseUrl: v === 'custom' ? baseUrl() : undefined };
   const res = await fetch('/api/agent', {
     signal, method: 'POST',
     headers: { 'X-Vault': '1', 'Content-Type': 'application/json', ...(key ? { 'X-AI-Key': key } : {}) },

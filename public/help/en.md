@@ -156,7 +156,7 @@ Graphite's study features carry Graphite's own names: the **Graphite study assis
 
 - **Claude Code**: the Claude Code window on this computer. No key; works while that window is connected (say "connect to Graphite" in it). Its skills and hooks are installed in **Settings → Claude Code**.
 - **Local frameworks**: **DeepSeek Harness**, **Codex CLI** and others, started by Graphite on this computer; they read the files themselves (read-only). Whether each is installed, its version and a custom path are under **Settings → AI → Local frameworks**. DeepSeek Harness uses your DeepSeek key.
-- **API models**: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek, Qwen, Kimi, GLM, or any OpenAI-compatible service. Paste a key under **API keys** and press **Test the key**. Only the note or PDF text of a job is sent, to that provider only.
+- **API models**: Anthropic (Claude), OpenAI, Google Gemini, DeepSeek, Qwen, Kimi, GLM, or any OpenAI-compatible service. Paste a key under **API keys** and press **Test the key**. Only the note or PDF text of a job is sent, to that provider only. Each job also has **Model for this job**: keep **Default** (the model in the key box) or pick another of that company's models, e.g. Haiku for quizzes and Opus for exam analysis.
 
 The study assistant shows "Run by …" in its header and under every answer; switching the executor never renames the feature.
 

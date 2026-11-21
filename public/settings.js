@@ -278,12 +278,14 @@ function renderAI() {
   // 1. Which AI does each job
   content.createEl('h3', { cls: 'settings-sub', text: t('ai.jobs') });
   for (const f of AI.FEATURES) {
-    new PM.Setting(content).setName(t('ai.job.' + f)).setDesc(t('ai.job.' + f + 'Desc')).addDropdown(d => {
+    const s = new PM.Setting(content).setName(t('ai.job.' + f)).setDesc(t('ai.job.' + f + 'Desc'));
+    const jm = jobModelRow(s, f);
+    s.addDropdown(d => {
       for (const o of AI.options(f)) {
         d.addOption(o.value, o.label);
         if (!o.ready) d.selectEl.lastElementChild.disabled = true;
       }
-      d.setValue(AI.choice(f)).onChange(v => AI.setChoice(f, v));
+      d.setValue(AI.choice(f)).onChange(v => { AI.setChoice(f, v); jm(); });
       enhanceAISelect(d.selectEl, f);
     });
   }
@@ -296,14 +298,15 @@ function renderAI() {
   content.createEl('h3', { cls: 'settings-sub', text: t('agent.jobs') });
   content.createEl('p', { cls: 'setting-note', text: t('agent.jobsDesc') });
   for (const f of AI.AGENT_FEATURES) {
+    let jm = () => {};
     new PM.Setting(content).setName(t('ai.job.' + f)).setDesc(t('ai.job.' + f + 'Desc')).addButton(b => { b.setButtonText(t('fj.run')).onClick(() => { closeSettings?.(); H.runCommand(f === 'import' ? 'find-course-files' : 'file-inbox'); }); b.buttonEl.dataset.fjRun = f; }).then(st => { if (f === 'import') st.addButton(b2 => { b2.setButtonText(t('fj.manualScan')).onClick(() => { closeSettings?.(); H.runCommand('find-course-files-manual'); }); b2.buttonEl.dataset.fjManual = '1'; }); }).addDropdown(d => {
       for (const o of AI.options(f)) {
         d.addOption(o.value, o.label);
         if (!o.ready) d.selectEl.lastElementChild.disabled = true;
       }
-      d.setValue(AI.choice(f)).onChange(v => AI.setChoice(f, v));
+      d.setValue(AI.choice(f)).onChange(v => { AI.setChoice(f, v); jm(); });
       enhanceAISelect(d.selectEl, f);
-    });
+    }).then(s => { jm = jobModelRow(s, f); });
   }
   // The folders these jobs may read (and everything else about you) are in Study settings, shared by every AI.
   new PM.Setting(content).setName(t('study.title')).setDesc(t('study.usedBy'))
@@ -340,6 +343,26 @@ function renderAI() {
   content.createEl('p', { cls: 'setting-note', text: t('ai.keysDesc') });
   for (const [p, P] of Object.entries(AI.PROVIDERS)) renderProvider(p, P);
   content.createEl('p', { cls: 'setting-note', text: t('ai.privacy2') });
+}
+
+// Under a job: which of the chosen company's models it uses. Shown only when an API company is chosen; the
+// default is the model in that company's API key box. Returns a function that redraws it after the choice changes.
+function jobModelRow(setting, f) {
+  const box = setting.descEl.createDiv({ cls: 'job-model' });
+  box.dataset.jobModel = f;
+  const draw = () => {
+    box.empty();
+    const p = AI.choice(f), P = AI.PROVIDERS[p];
+    box.hidden = !P;
+    if (!P) return;
+    box.createSpan({ cls: 'job-model-k', text: t('ai.jobModel') });
+    const mp = modelPicker(box, p, P, { get: () => AI.jobModelOf(f, p), set: v => AI.setJobModel(f, p, v), inherit: () => AI.modelOf(p),
+      onPick: () => setting.controlEl.querySelector('select')?.dispatchEvent(new Event('aip-refresh')) });
+    // Not the key box's picker: marked by job, so the two are never confused.
+    const b = mp.el.querySelector('.model-picker-btn');
+    b.removeAttribute('data-model-picker'); b.dataset.jobModelPicker = f;  };
+  draw();
+  return draw;
 }
 
 function renderProvider(p, P) {

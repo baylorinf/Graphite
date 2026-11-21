@@ -60,7 +60,7 @@ export function createAssistant(host, { getContext, toast, onRendered }) {
     else text = c.selection ? (c.selection.length > LIMIT ? t('wa.tooLongSel') : t('wa.will.selection', { file: c.path, n: lines(c.selection) })) : t('wa.will.noSelection', { file: c.path });
     $('.wa-will').textContent = text;
     const choice = AI.choice('code');
-    $('.wa-engine').textContent = t('wa.by', { name: AI.label(choice) });
+    $('.wa-engine').textContent = t('wa.by', { name: AI.label(choice, 'code') });
   }
   function render() {
     const msgs = key ? conv(key) : [];
@@ -82,7 +82,7 @@ export function createAssistant(host, { getContext, toast, onRendered }) {
     else if (ctxMode === 'file') selection = c.fileText;
     const history = conv(c.projectKey).filter(m => !m.error && !m.pending && !m.consent && ['user', 'assistant'].includes(m.role)).slice(-8).map(m => ({ role: m.role, content: m.content }));
     return {
-      provider, ...(AI.PROVIDERS[provider] ? { model: AI.modelOf(provider) } : {}), ...(provider === 'custom' ? { baseUrl: AI.baseUrl() } : {}),
+      provider, ...(AI.PROVIDERS[provider] ? { model: AI.modelFor('code', provider) } : {}), ...(provider === 'custom' ? { baseUrl: AI.baseUrl() } : {}),
       ...(local && Object.keys(fwPaths).length ? { frameworkPaths: fwPaths } : {}), lang: getLang(), action,
       filename: (selection || diagnostics) && c.path ? c.path : '', selection, diagnostics, question, history,
     };

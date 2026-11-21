@@ -109,10 +109,10 @@ export async function summaryDialog(path) {
   const sel = body.querySelector('[data-f=engine]'), avail = body.querySelector('.sum-avail');
   const showAvail = async () => {
     const v = sel.value;
-    let text = t('sum.availApi', { name: AI.executorName(v) });
+    let text = t('sum.availApi', { name: AI.executorName(v, 'summary') });
     if (v === AI.CC) text = (await AI.ccListening()) ? t('fw.ccOn') : t('fw.ccOff');
     else if (AI.isLocal(v)) text = AI.fwStatus(v).text;
-    if (win && sel.value === v) avail.textContent = `${t('sum.runBy')}: ${AI.executorName(v)} · ${text}`;
+    if (win && sel.value === v) avail.textContent = `${t('sum.runBy')}: ${AI.executorName(v, 'summary')} · ${text}`;
   };
   sel.addEventListener('change', showAvail); showAvail();
   try { (await import('/aipicker.js')).enhanceAISelect(sel, 'summary'); } catch { /* plain select */ }
@@ -153,7 +153,7 @@ async function generate({ path, only, total, dest, engine, profile, body, action
     const withText = read.pages.filter(p => p.text);
     const isApi = engine !== AI.CC && !AI.isLocal(engine);
     if (!withText.length && isApi) return failed(t('sum.scanned', { pages: pageRanges(pages) }));
-    busy(engine === AI.CC ? t('ai.workingCC') : t('ai.working', { model: AI.label(engine) }));
+    busy(engine === AI.CC ? t('ai.workingCC') : t('ai.working', { model: AI.label(engine, 'summary') }));
     const text = withText.map(p => `--- page ${p.n} ---\n${p.text}`).join('\n').slice(0, 300000);
     const local = AI.isLocal(engine) || engine === AI.CC
       ? `<pdf_file>${path}</pdf_file>\n<pages_to_summarize>${pageRanges(pages)} of ${total}</pages_to_summarize>\n` + (read.empty.length ? `<pages_without_text>${pageRanges(read.empty)} — scanned: open these pages from the PDF yourself.</pages_without_text>\n` : '')
@@ -195,7 +195,7 @@ export function buildNote(path, r, { pages, empty = [], engine, profile = {} }) 
   }
   const bodyText = L.join('\n').trim() + '\n';
   const fm = ['---', 'tags: [PDF summary]', `created: ${today()}`, `source: "[[${link}]]"`, `summary-of: "${path.replace(/"/g, "'")}"`, `pages: "${pageRanges(pages)}"`,
-    `generated-by: "${AI.executorName(engine).replace(/"/g, "'")}"`, `generated-hash: ${fingerprint(bodyText)}`, '---', ''];
+    `generated-by: "${AI.executorName(engine, 'summary').replace(/"/g, "'")}"`, `generated-hash: ${fingerprint(bodyText)}`, '---', ''];
   void profile;
   return fm.join('\n') + `# ${(r.title || stem(path) + ' ' + t('sum.suffix')).replace(/\n/g, ' ')}\n\n` + bodyText;
 }

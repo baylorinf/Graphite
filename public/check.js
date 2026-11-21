@@ -146,7 +146,7 @@ export async function checkNote(path) {
     const tick = setInterval(() => {
       if (!win) return clearInterval(tick);
       const s = Math.round((Date.now() - t0) / 1000);
-      win.querySelector('.check-elapsed').textContent = `${s} s` + (s >= 20 ? ' · ' + t(use === AI.CC ? 'check.slowCC' : 'check.slow', { model: AI.label(use) }) : '');
+      win.querySelector('.check-elapsed').textContent = `${s} s` + (s >= 20 ? ' · ' + t(use === AI.CC ? 'check.slowCC' : 'check.slow', { model: AI.label(use, 'check') }) : '');
     }, 1000);
     win.querySelector('.check-actions').innerHTML = `<button class="mod-button" data-act="stop">${esc(t('check.stop'))}</button>`;
     win.querySelector('[data-act=stop]').onclick = () => stop.abort();

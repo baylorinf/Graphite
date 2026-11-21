@@ -14,11 +14,11 @@ addEventListener('pointerdown', e => { if (openPop && !openPop.contains(e.target
 addEventListener('keydown', e => { if (e.key === 'Escape' && openPop) { e.stopPropagation(); closePop(); } }, true);
 addEventListener('resize', closePop);
 
-function describe(v) {
+function describe(v, f) {
   if (v === AI.CC) return { name: 'Claude Code', sub: t('aip.ccSub'), group: 'local' };
   if (AI.isLocal(v)) { const st = AI.fwStatus(v); return { name: AI.LOCAL[v].label, sub: st.text, group: 'local', ok: st.ok }; }
   if (v === 'off') return { name: t('ai.off'), sub: '', group: 'off' };
-  const p = AI.parts(v);
+  const p = AI.parts(v, f);
   return { name: p.name, sub: p.model || '', group: 'api' };
 }
 
@@ -35,7 +35,7 @@ export function enhanceAISelect(select, feature) {
   select.after(btn);
   let cc = null;
   const draw = () => {
-    const v = select.value, d = describe(v);
+    const v = select.value, d = describe(v, feature);
     const opt = [...select.options].find(o => o.value === v);
     const offLabel = v === 'off' ? opt?.textContent || d.name : d.name;
     const local = AI.isLocal(v);
@@ -46,6 +46,7 @@ export function enhanceAISelect(select, feature) {
   AI.ccListening().then(on => { cc = on; draw(); });
   AI.refreshFrameworks().then(draw).catch(() => {});
   select.addEventListener('change', draw);
+  select.addEventListener('aip-refresh', draw); // the job's own model changed
   btn.addEventListener('click', () => {
     if (openPop?.dataset.for === feature + '|' + (select.id || '')) { closePop(); return; }
     closePop();
@@ -54,7 +55,7 @@ export function enhanceAISelect(select, feature) {
     pop.className = 'aip-pop';
     pop.dataset.for = feature + '|' + (select.id || '');
     const row = o => {
-      const d = describe(o.value);
+      const d = describe(o.value, feature);
       const name = o.value === 'off' ? o.label : d.name;
       const sub = o.value === AI.CC ? (cc ? t('aip.ccOn') : t('aip.ccOff')) : AI.isLocal(o.value) ? d.sub : o.ready ? d.sub : t('aip.noKey');
       return `<button type="button" class="aip-opt${o.value === select.value ? ' is-on' : ''}${o.ready ? '' : ' is-locked'}" data-v="${esc(o.value)}">
@@ -64,7 +65,7 @@ export function enhanceAISelect(select, feature) {
     };
     const groups = [['local', t('aip.localFw')], ['api', t('aip.api')], ['off', '']];
     pop.innerHTML = groups.map(([g, title]) => {
-      const list = opts.filter(o => describe(o.value).group === g);
+      const list = opts.filter(o => describe(o.value, feature).group === g);
       if (!list.length) return '';
       // Ready API models first, then the ones still needing a key.
       if (g === 'api') list.sort((a, b) => b.ready - a.ready);
@@ -96,8 +97,10 @@ export function enhanceAISelect(select, feature) {
 // that isn't listed. The list is placed inside the provider's own box, under its button, so it stays with that
 // provider when the settings scroll, the window is narrow or zoomed. Models come from the last check with the
 // current key and address (AI.listState); before any check, the provider's suggestions.
+// get/set: where the choice is kept (the provider's own model by default). inherit: for a job's own model, a
+// function giving the provider's model; the list then starts with "Same as the API key box" (no model of its own).
 let pickerIds = 0;
-export function modelPicker(host, p, P, { onPick } = {}) {
+export function modelPicker(host, p, P, { onPick, get = () => AI.modelOf(p), set = v => AI.setModel(p, v), inherit = null } = {}) {
   const id = 'mp-' + (++pickerIds);
   const wrap = host.createDiv({ cls: 'model-picker' });
   const btn = wrap.createEl('button', { cls: 'model-picker-btn', attr: { type: 'button', 'aria-haspopup': 'listbox', 'aria-expanded': 'false', 'data-model-picker': p } });
@@ -107,19 +110,20 @@ export function modelPicker(host, p, P, { onPick } = {}) {
   const custom = wrap.createEl('input', { cls: 'model-custom', attr: { type: 'text', hidden: '', spellcheck: 'false' } });
   let items = [], active = 0;
   const label = () => {
-    btn.innerHTML = `<span class="model-picker-value">${esc(AI.modelOf(p) || t('ai.modelPick'))}</span>${CHEV}`;
+    btn.innerHTML = `<span class="model-picker-value">${esc(get() || (inherit ? t('ai.jobModelSame', { model: inherit() || '?' }) : t('ai.modelPick')))}</span>${CHEV}`;
     search.placeholder = t('ai.modelSearch'); search.setAttribute('aria-label', t('ai.modelSearch'));
     list.setAttribute('aria-label', t('ai.model')); custom.placeholder = t('ai.modelPh'); custom.setAttribute('aria-label', t('ai.customModel'));
   };
   const models = () => { const st = AI.listState(p); return st.fetched ? st.models : P.suggest || []; };
   const render = () => {
-    const q = search.value.trim().toLowerCase(), cur = AI.modelOf(p);
-    items = [...models().filter(m => !q || m.toLowerCase().includes(q)), { custom: true }];
+    const q = search.value.trim().toLowerCase(), cur = get();
+    items = [...(inherit && !q ? [{ inherit: true }] : []), ...models().filter(m => !q || m.toLowerCase().includes(q)), { custom: true }];
     active = Math.max(0, Math.min(active, items.length - 1));
     list.innerHTML = items.map((m, i) => m.custom
       ? `<li role="option" id="${id}-o${i}" class="model-opt model-opt-custom${i === active ? ' is-active' : ''}" data-i="${i}" aria-selected="false">${esc(t('ai.customModel'))}</li>`
+      : m.inherit ? `<li role="option" id="${id}-o${i}" class="model-opt model-opt-inherit${i === active ? ' is-active' : ''}${!cur ? ' is-current' : ''}" data-i="${i}" aria-selected="${!cur}">${esc(t('ai.jobModelSame', { model: inherit() || '?' }))}${!cur ? CHECK : ''}</li>`
       : `<li role="option" id="${id}-o${i}" class="model-opt${i === active ? ' is-active' : ''}${m === cur ? ' is-current' : ''}" data-i="${i}" aria-selected="${m === cur}">${esc(m)}${m === cur ? CHECK : ''}</li>`).join('');
-    const empty = items.length === 1;
+    const empty = !items.some(m => typeof m === 'string');
     list.toggleClass('is-empty', empty);
     if (empty) list.insertAdjacentHTML('afterbegin', `<li class="model-none" role="presentation">${esc(t(q ? 'ai.modelsNoMatch' : 'ai.modelsNone'))}</li>`);
     search.setAttribute('aria-activedescendant', id + '-o' + active);
@@ -129,7 +133,7 @@ export function modelPicker(host, p, P, { onPick } = {}) {
   const open = () => {
     if (isOpen()) return;
     search.value = ''; custom.hidden = true;
-    const cur = AI.modelOf(p); active = Math.max(0, models().indexOf(cur));
+    const cur = get(); const at = models().indexOf(cur); active = cur && at >= 0 ? at + (inherit ? 1 : 0) : 0;
     pop.removeAttribute('hidden'); btn.setAttribute('aria-expanded', 'true'); wrap.addClass('is-open');
     render(); search.focus();
   };
@@ -143,10 +147,11 @@ export function modelPicker(host, p, P, { onPick } = {}) {
     if (!m) return;
     if (m.custom) {
       close(false);
-      custom.hidden = false; custom.value = AI.modelOf(p); custom.focus(); custom.select();
+      custom.hidden = false; custom.value = get(); custom.focus(); custom.select();
       return;
     }
-    AI.setModel(p, m); label(); close(); onPick?.(m);
+    const v = m.inherit ? '' : m;
+    set(v); label(); close(); onPick?.(v);
   };
   btn.addEventListener('click', () => (isOpen() ? close() : open()));
   btn.addEventListener('keydown', e => { if (['ArrowDown', 'ArrowUp'].includes(e.key)) { e.preventDefault(); open(); } });
@@ -164,7 +169,7 @@ export function modelPicker(host, p, P, { onPick } = {}) {
   // (leaving the box saves nothing either).
   const useBtn = wrap.createEl('button', { cls: 'model-custom-use', attr: { type: 'button', hidden: '' } });
   const endCustom = () => { custom.hidden = true; custom.value = ''; btn.focus(); };
-  const saveCustom = () => { const v = custom.value.trim(); if (v) { AI.setModel(p, v); label(); onPick?.(v); } endCustom(); };
+  const saveCustom = () => { const v = custom.value.trim(); if (v) { set(v); label(); onPick?.(v); } endCustom(); };
   useBtn.addEventListener('click', saveCustom);
   custom.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); saveCustom(); } else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); endCustom(); } });
   new MutationObserver(() => { useBtn.hidden = custom.hidden; useBtn.textContent = t('ai.useCustom'); }).observe(custom, { attributes: true, attributeFilter: ['hidden'] });

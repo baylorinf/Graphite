@@ -156,7 +156,7 @@ Graphite 的学习功能都叫 Graphite 自己的名字：**Graphite 学习助�
 
 - **Claude Code**：使用本机的 Claude Code 窗口，不需要密钥，窗口连接时可用（在窗口里说“connect to Graphite”）。安装技能和钩子在 **设置 → Claude Code**。
 - **本地框架**：**DeepSeek Harness**、**Codex CLI** 等，由 Graphite 在本机启动，自己读取文件（只读）。是否已安装、版本和自定义路径都显示在 **设置 → AI → 本地框架**。DeepSeek Harness 使用 DeepSeek 的密钥。
-- **API 模型**：Anthropic（Claude）、OpenAI、Google Gemini、DeepSeek、通义千问、Kimi、智谱 GLM，或任何兼容 OpenAI 的服务。在 **API 密钥** 里粘贴密钥并点 **测试密钥**。只有对应的笔记或 PDF 文字会发给你选的服务商。
+- **API 模型**：Anthropic（Claude）、OpenAI、Google Gemini、DeepSeek、通义千问、Kimi、智谱 GLM，或任何兼容 OpenAI 的服务。在 **API 密钥** 里粘贴密钥并点 **测试密钥**。只有对应的笔记或 PDF 文字会发给你选的服务商。每项工作还有 **此任务的模型**：保持 **默认**（密钥框里的模型），或选同一服务商的其他模型，例如测验用 Haiku、试卷分析用 Opus。
 
 学习助手顶部显示“执行者：…”，每条回答下也标出是谁回答的；切换执行者后功能名称不变。
 

@@ -125,7 +125,7 @@ module.exports = class ClaudeChatPlugin extends Plugin {
 
   engine() { return AIAPI()?.choice('chat') || CC; }
   engineLabel(v = this.engine()) { const p = this.engineParts(v); return p.model ? `${p.name} ${p.model}` : p.name; }
-  engineParts(v = this.engine()) { return AIAPI()?.parts?.(v) || { name: v === CC ? 'Claude Code' : v, model: '' }; }
+  engineParts(v = this.engine()) { return AIAPI()?.parts?.(v, 'chat') || { name: v === CC ? 'Claude Code' : v, model: '' }; }
 
   /* ---------- files ---------- */
 

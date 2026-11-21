@@ -46,7 +46,7 @@ async function runJob(job, task, payload, { body, actions }) {
   if (engine !== AI.choice(job)) AI.setChoice(job, engine);
   const stop = new AbortController(), t0 = Date.now();
   pending = stop;
-  body.innerHTML = `<div class="check-busy"><span class="spinner"></span><span>${esc(t(engine === AI.CC ? 'ai.workingCC' : 'ai.working', { model: AI.label(engine) }))}</span><span class="check-elapsed muted"></span></div>`;
+  body.innerHTML = `<div class="check-busy"><span class="spinner"></span><span>${esc(t(engine === AI.CC ? 'ai.workingCC' : 'ai.working', { model: AI.label(engine, job) }))}</span><span class="check-elapsed muted"></span></div>`;
   actions.innerHTML = `<button class="mod-button" data-a="stop">${esc(t('ai.stop'))}</button>`;
   actions.querySelector('[data-a=stop]').onclick = () => stop.abort();
   const tick = setInterval(() => { const el = win?.querySelector('.check-elapsed'); if (!el) return clearInterval(tick); el.textContent = Math.round((Date.now() - t0) / 1000) + ' s'; }, 1000);

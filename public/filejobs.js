@@ -16,10 +16,10 @@ function close() { win?.ctl?.abort(); win?.el.remove(); win = null; document.rem
 const onKey = e => { if (e.key === 'Escape' && win && !win.busy) { e.preventDefault(); e.stopPropagation(); close(); } };
 
 // Who does it, in words, with the framework's status: "DeepSeek Harness · found · version 0.2.2-rc.1".
-function whoLine(v) {
+function whoLine(v, f) {
   if (AI.isLocal(v)) { const st = AI.fwStatus(v); return { text: `${AI.LOCAL[v].label} · ${st.text}`, ok: st.ok }; }
   if (v === AI.CC) return { text: 'Claude Code', ok: null };
-  return { text: AI.label(v), ok: true };
+  return { text: AI.label(v, f), ok: true };
 }
 
 // opts.manual: "Scan with Graphite only": no AI at all, whatever is chosen in Settings → AI.
@@ -131,7 +131,7 @@ async function ccJob(job) {
 function header(extra = '') {
   // Graphite's own scan says so, instead of naming an AI that did nothing.
   if (win.manualRun) return `<div class="fj-who is-ok fj-manual-who"><span class="fj-who-k">${esc(t('fj.by'))}</span> ${esc(t('fj.byGraphite'))}</div>${extra}`;
-  const w = whoLine(win.v);
+  const w = whoLine(win.v, win.feature);
   return `<div class="fj-who${w.ok === false ? ' is-bad' : w.ok ? ' is-ok' : ''}"><span class="fj-who-k">${esc(t('fj.by'))}</span> ${esc(w.text)}</div>${extra}`;
 }
 // Switch from the AI's planning to Graphite's own scan: the AI's request is stopped, and its late answer (or
@@ -453,7 +453,7 @@ async function accessProblem(e, me = win) {
   if (!me || win !== me) return;
   me.busy = false; me.accessError = e;
   const body = me.el.querySelector('.fj-body'), actions = me.el.querySelector('.fj-actions');
-  const a = e.access || {}, kind = accessKind(e), name = AI.LOCAL[e.framework || me.v]?.label || AI.label(me.v);
+  const a = e.access || {}, kind = accessKind(e), name = AI.LOCAL[e.framework || me.v]?.label || AI.label(me.v, me.feature);
   const desk = window.myobsidianDesktop?.agentFolders;
   body.innerHTML = header(`<div class="fj-access" data-kind="${kind}">
     <h3>${esc(t('fj.acc.title'))}</h3>

@@ -158,7 +158,7 @@ Graphite 的學習功能都叫 Graphite 自己的名字：**Graphite 學習助�
 
 - **Claude Code**：使用本機的 Claude Code 視窗，不需要金鑰，視窗連線時可用（在視窗裡說「connect to Graphite」）。技能和鉤子在 **設定 → Claude Code** 安裝。
 - **本機框架**：**DeepSeek Harness**、**Codex CLI** 等，由 Graphite 在本機啟動，自己讀取檔案（唯讀）。是否已安裝、版本和自訂路徑顯示在 **設定 → AI → 本機框架**。DeepSeek Harness 使用 DeepSeek 的金鑰。
-- **API 模型**：Anthropic（Claude）、OpenAI、Google Gemini、DeepSeek、通義千問、Kimi、智譜 GLM，或任何相容 OpenAI 的服務。在 **API 金鑰** 裡貼上金鑰並按 **測試金鑰**。只有對應的筆記或 PDF 文字會傳給你選的服務商。
+- **API 模型**：Anthropic（Claude）、OpenAI、Google Gemini、DeepSeek、通義千問、Kimi、智譜 GLM，或任何相容 OpenAI 的服務。在 **API 金鑰** 裡貼上金鑰並按 **測試金鑰**。只有對應的筆記或 PDF 文字會傳給你選的服務商。每項工作還有 **此任務的模型**：保持 **預設**（金鑰框裡的模型），或選同一服務商的其他模型，例如測驗用 Haiku、試卷分析用 Opus。
 
 學習助手頂端顯示「執行者：…」，每則回答下也標出是誰回答的；切換執行者後功能名稱不變。
 
