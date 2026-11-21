@@ -189,17 +189,37 @@ export const citable = (b, agent) => new Set([...b.pages, ...(agent ? b.open : [
 // a jump, rebuilt by Graphite (pageLink); any other page stays as readable text "p. N" with no jump. Covered:
 // [[wiki]] / ![[embeds]], [inline](url), [reference][ref] / [ref][] / [ref] with their "[ref]: url" lines (the
 // lines are removed), <autolinks>, <a href> and bare URLs.
-export function plainText(s, ok = new Set(), pageLink = null) {
+// A jump is rebuilt only for a target that names THIS PDF (isSelf, see selfMatcher) and a page this batch sent.
+// A bare "#page=N" names no file, and "Other.pdf#page=2" is another book: both stay readable text.
+const normFile = f => { let t = String(f || '').replace(/\\/g, '/'); try { t = decodeURIComponent(t); } catch { /* keep */ } return t.trim().replace(/^\.?\/+/, '').toLowerCase(); };
+// The names that mean this PDF: its vault path, and its link name (just the file name when no other file in the
+// vault has that name), each with or without ".pdf".
+export function selfMatcher(path, linkName) {
+  const names = new Set();
+  for (const n of [path, linkName]) { const x = normFile(n); if (x) { names.add(x); names.add(x.replace(/\.pdf$/, '')); } }
+  return file => names.has(normFile(file));
+}
+export function plainText(s, ok = new Set(), pageLink = null, isSelf = () => false) {
   const jumps = [];
-  const pageOf = target => { let t = String(target || ''); try { t = decodeURIComponent(t); } catch { /* keep */ } const m = t.match(/#page=(\d+)/i); return m ? +m[1] : 0; };
-  // A link's replacement: its words, then the page (a checked jump, or plain "p. N").
+  const parse = target => {
+    let t = String(target || '');
+    try { t = decodeURIComponent(t); } catch { /* keep */ }
+    const m = t.match(/#page=(\d+)/i);
+    return { n: m ? +m[1] : 0, file: t.replace(/#.*$/, '').trim() };
+  };
+  // A link's replacement: its words, then the page — a checked jump, "(p. N)" for this PDF's other pages or a
+  // bare #page, "(Other.pdf p. N)" for another file.
   const cite = (label, target) => {
-    const n = pageOf(target);
+    const { n, file } = parse(target);
     let words = String(label || '').trim();
     if (!n) return words;
     if (new RegExp(`^(?:p\\.?|page|第)?\\s*${n}\\s*页?$`, 'i').test(words)) words = ''; // the words are just the page
-    if (ok.has(n) && pageLink) { jumps.push(n); return words ? `${words} \u0001${jumps.length - 1}\u0002` : `\u0003${jumps.length - 1}\u0002`; }
-    return words ? `${words} (p. ${n})` : `p. ${n}`;
+    const base = file.replace(/\\/g, '/').split('/').pop();
+    if (words && file && [normFile(file), normFile(base)].includes(normFile(words))) words = ''; // the words are just the file
+    const self = !!file && isSelf(file);
+    if (self && ok.has(n) && pageLink) { jumps.push(n); return words ? `${words} \u0001${jumps.length - 1}\u0002` : `\u0003${jumps.length - 1}\u0002`; }
+    const where = self || !file ? `p. ${n}` : `${base} p. ${n}`;
+    return words ? `${words} (${where})` : where;
   };
   let out = String(s ?? '').replace(/\r\n?/g, '\n').replace(/[\u0001-\u0003]/g, ''); // (the marks used below)
   // 1. Reference definitions: remember, then remove the lines.
@@ -226,8 +246,8 @@ export function plainText(s, ok = new Set(), pageLink = null) {
   return out.replace(/\u0001(\d+)\u0002/g, (_, i) => `(${pageLink(jumps[+i])})`).replace(/\u0003(\d+)\u0002/g, (_, i) => pageLink(jumps[+i]))
     .replace(/[\u0001\u0002\u0003]/g, '').replace(/\n{3,}/g, '\n\n').trim();
 }
-export function checkCitations(r, ok, pageLink = null) {
-  const fix = n => (ok.has(n) ? n : 0), clean = s => plainText(s, ok, pageLink);
+export function checkCitations(r, ok, pageLink = null, isSelf = () => false) {
+  const fix = n => (ok.has(n) ? n : 0), clean = s => plainText(s, ok, pageLink, isSelf);
   return {
     title: clean(r.title), overview: clean(r.overview),
     sections: (r.sections || []).map(s => ({ ...s, heading: clean(s.heading), page: fix(s.page), points: (s.points || []).map(p => ({ ...p, text: clean(p.text), page: fix(p.page) })) })),
@@ -301,9 +321,9 @@ async function runBatches(job) {
       const content = `${hint}<pdf file="${path}">\n${b.text}</pdf>\n<pages_included>${pageRanges(agent ? range : b.pages)} of ${total}</pages_included>`;
       const r = await AI.request('summary', 'summary', { title: stem(path), content, path, job: { pages: pageRanges(range), total, pdf: path, part: i + 1, parts: n } }, { signal: stop.signal, provider: engine });
       if (!win || stop.signal.aborted) return;
-      // Links in the answer's text are rebuilt by Graphite, and only for pages this batch sent.
+      // Links in the answer's text are rebuilt by Graphite, and only for this PDF and pages this batch sent.
       const link = H.linkNameFor(path);
-      results.push(checkCitations(r, citable(b, agent), n => `[[${link}#page=${n}|p. ${n}]]`));
+      results.push(checkCitations(r, citable(b, agent), n => `[[${link}#page=${n}|p. ${n}]]`, selfMatcher(path, link)));
     }
     const covered = [...new Set(batches.flatMap(b => [...b.pages, ...(agent ? b.open : [])]))].sort((x, y) => x - y);
     const md = buildNote(path, mergeResults(results), { pages: covered, empty, engine, profile });

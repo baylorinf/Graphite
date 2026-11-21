@@ -72,7 +72,7 @@ async function main() {
     const foreign = sent.includes(TOTAL) ? 1 : TOTAL;
     // …and reference-style links (Codex retest 2): "见 [来源][ref]" with "[ref]: Long lecture.pdf#page=140" on its
     // own line, plus one valid inline link to a page this batch did send.
-    const prose = `See [[Long lecture.pdf#page=${foreign}|p. ${foreign}]] and [there](Long%20lecture.pdf#page=999) and <a href="#page=998">here</a>. 见 [来源][ref]，[本页](Long%20lecture.pdf#page=${sent[0]})。\n\n[ref]: Long lecture.pdf#page=${foreign}\n`;
+    const prose = `See [[Long lecture.pdf#page=${foreign}|p. ${foreign}]] and [there](Long%20lecture.pdf#page=999) and <a href="#page=998">here</a>. 见 [来源][ref]，[本页](Long%20lecture.pdf#page=${sent[0]})，[附录][a]，[同页](#page=${sent[0]})。\n\n[ref]: Long lecture.pdf#page=${foreign}\n[a]: Other.pdf#page=${sent[0]}\n`;
     return { title: 'Long lecture summary', overview: 'Part with pages ' + sent.join(',') + '. ' + prose, sections: [{ heading: 'Pages ' + sent[0], page: sent[0] || 0, points: [...sent.map(p => ({ text: 'Sent page ' + p, page: p })), ...bogus.map(p => ({ text: 'Bogus ' + p + ' ' + prose, page: p })), ...(open ? [{ text: 'Open page', page: BLANK[0] }] : [])] }], concepts: [{ term: 'Shared term', meaning: 'm ' + prose, page: sent[0] }],
       formulas: [{ latex: 'f(x)=x', meaning: 'lower f', page: sent[0] }, { latex: 'F(x)=x', meaning: 'upper F', page: sent[0] }, { latex: 'f(x) = x', meaning: 'same as lower f', page: sent[0] }] };
   };
@@ -132,7 +132,7 @@ async function main() {
         const ok = new Set(Array.from({ length: 24 }, (_, i) => i + 1));
         const link = n => `[[Long.pdf#page=${n}|p. ${n}]]`;
         const prose = '见 [来源][ref]，也见 [第三页](Long.pdf#page=3)、[[Long.pdf#page=5|第五页]]、[[Long.pdf#page=140]]、<Long.pdf#page=140>、[ref2]。\n\n[ref]: Long.pdf#page=140\n[ref2]: <Long.pdf#page=7> "title"\n  [REF3]: https://example.com/x#page=2';
-        const out = m.checkCitations({ title: 't', overview: prose, sections: [{ heading: 'h', page: 1, points: [{ text: prose, page: 1 }] }], concepts: [], formulas: [] }, ok, link);
+        const out = m.checkCitations({ title: 't', overview: prose, sections: [{ heading: 'h', page: 1, points: [{ text: prose, page: 1 }] }], concepts: [], formulas: [] }, ok, link, m.selfMatcher('Course/Long.pdf', 'Long.pdf'));
         return { overview: out.overview, point: out.sections[0].points[0].text };
       }));
       for (const s of [r.overview, r.point]) {
@@ -144,6 +144,35 @@ async function main() {
         for (const n of [3, 5, 7]) assert.ok(s.includes(`[[Long.pdf#page=${n}|p. ${n}]]`), `valid page ${n} lost its link: ` + s);
         assert.match(s, /p\. 140/, 'the readable page number was dropped: ' + s);
       }
+    });
+
+    await test('the same page number in another PDF, a bare #page, or a same-named file elsewhere never becomes a jump to this PDF', async () => {
+      const r = await p.evaluate(() => import('/summary.js').then(m => {
+        const ok = new Set(Array.from({ length: 24 }, (_, i) => i + 1));
+        const jump = n => `[[Long.pdf#page=${n}|p. ${n}]]`;
+        const self = m.selfMatcher('Course/Long.pdf', 'Long.pdf'); // the only Long.pdf in the vault
+        const run = (text, isSelf = self, link = jump) => m.checkCitations({ title: '', overview: text, sections: [], concepts: [], formulas: [] }, ok, link, isSelf).overview;
+        return {
+          otherRef: run('[附录][a]\n\n[a]: Other.pdf#page=2'),
+          otherInline: run('[附录](Other.pdf#page=2) [[Other.pdf#page=3]] <Other.pdf#page=4> [[Books/Other.pdf#page=5|另一本]] [x](Other%2Epdf#page%3D6)'),
+          bare: run('[本页](#page=2)，[[#page=3]]，见 #page=4，[r][b]\n[b]: #page=5'),
+          same: run('[同书](Long.pdf#page=2) [全路径](Course/Long.pdf#page=3) [[Course/Long#page=4|无扩展名]] [编码](Long%2Epdf#page%3D5) [ref][c]\n[c]: <Course/Long.pdf#page=6> "t"'),
+          sameOutOfBatch: run('[同书](Long.pdf#page=140)'),
+          elsewhere: run('[同名](Elsewhere/Long.pdf#page=2) [[Other/Long.pdf#page=3]]'),
+          // Two Long.pdf in the vault: the link name is the full path, so a bare "Long.pdf" is not clearly this one.
+          ambiguous: run('[只写文件名](Long.pdf#page=2) [全路径](Course/Long.pdf#page=3)', m.selfMatcher('Course/Long.pdf', 'Course/Long.pdf'), n => `[[Course/Long.pdf#page=${n}|p. ${n}]]`),
+        };
+      }));
+      const noJump = s => !/\[\[/.test(s);
+      assert.ok(noJump(r.otherRef) && /附录 \(Other\.pdf p\. 2\)/.test(r.otherRef) && !/\[a\]/.test(r.otherRef), 'another PDF became a jump: ' + r.otherRef);
+      assert.ok(noJump(r.otherInline), 'another PDF became a jump: ' + r.otherInline);
+      for (const x of ['附录 (Other.pdf p. 2)', 'Other.pdf p. 3', 'Other.pdf p. 4', '另一本 (Other.pdf p. 5)', 'x (Other.pdf p. 6)']) assert.ok(r.otherInline.includes(x), 'missing "' + x + '": ' + r.otherInline);
+      assert.ok(noJump(r.bare), 'a bare #page became a jump: ' + r.bare);
+      for (const x of ['本页 (p. 2)', 'p. 3', '见 p. 4', 'r (p. 5)']) assert.ok(r.bare.includes(x), 'missing "' + x + '": ' + r.bare);
+      for (const n of [2, 3, 4, 5, 6]) assert.ok(r.same.includes(`[[Long.pdf#page=${n}|p. ${n}]]`), `this PDF, page ${n}: no jump: ` + r.same);
+      assert.ok(noJump(r.sameOutOfBatch) && /同书 \(p\. 140\)/.test(r.sameOutOfBatch), 'a page outside the batch became a jump: ' + r.sameOutOfBatch);
+      assert.ok(noJump(r.elsewhere) && /同名 \(Long\.pdf p\. 2\)/.test(r.elsewhere), 'a same-named file elsewhere became a jump: ' + r.elsewhere);
+      assert.ok(!r.ambiguous.includes('page=2') && r.ambiguous.includes('[[Course/Long.pdf#page=3|p. 3]]'), 'ambiguous file name: ' + r.ambiguous);
     });
 
     await test('a page with no spaces longer than a batch: no UTF-16 surrogate is split; every character, in order, within the limit', async () => {
@@ -222,7 +251,12 @@ async function main() {
       assert.ok(hrefs.every(([txt, href, target, heading]) => target === 'Long lecture.pdf' && /^page=\d+$/.test(heading) && /^p\. \d+$/.test(txt)), 'a link not added by Graphite: ' + JSON.stringify(hrefs.find(([txt, href, target, heading]) => !(target === 'Long lecture.pdf' && /^page=\d+$/.test(heading) && /^p\. \d+$/.test(txt)))));
       const shown = await p.locator('.ai-summary .sum-preview').innerText();
       assert.match(shown, /See p\. \d+ and there \(p\. 999\) and here \(p\. 998\)/);
-      assert.match(shown, /见 来源 \(p\. \d+\)，本页 \(p\. \d+\)/, 'source words or the valid page link lost');
+      assert.match(shown, /见 来源 \(p\. \d+\)，本页 \(p\. \d+\)，附录 \(Other\.pdf p\. \d+\)，同页 \(p\. \d+\)/, 'source words or the valid page link lost');
+      // The same page number in Other.pdf and a bare #page: readable, never a jump into this PDF.
+      const extra = await p.evaluate(() => [...document.querySelectorAll('.ai-summary .sum-preview p, .ai-summary .sum-preview li')].filter(el => /附录 \(Other\.pdf/.test(el.textContent))
+        // anchors inside "附录 (Other.pdf p. N)，同页 (p. N)。" (an item's own page link after the prose is Graphite's)
+        .map(el => { const t = el.textContent; const i = t.indexOf('附录'), j = t.indexOf('。', i); return [...el.querySelectorAll('a')].filter(a => { const r = document.createRange(); r.selectNodeContents(el); r.setEndBefore(a); const at = r.toString().length; return at > i && at < j; }).length; }));
+      assert.ok(extra.length >= 1 && extra.every(n => n === 0), 'a jump after 附录 / 同页: ' + JSON.stringify(extra));
       assert.ok(!/\[ref\]|\]:/.test(shown), 'a reference definition is shown');
       // f(x)=x and F(x)=x are different formulas; "f(x) = x" is the same as f(x)=x.
       const formulas = await p.evaluate(() => [...document.querySelectorAll('.ai-summary .sum-preview li')].map(li => li.textContent).filter(s => /lower f|upper F/.test(s)));
@@ -244,6 +278,7 @@ async function main() {
       assert.ok(jumps.every(m => m[1] === 'Long lecture.pdf' && m[2] === m[3] && textPages.includes(+m[2])), 'a jump not made by Graphite');
       assert.equal(saved.split('#page=').length - 1, jumps.length, 'a page link Graphite did not check');
       assert.equal(jumps.filter(m => m[2] === '140').length, 1, 'page 140 linked from a batch that did not send it');
+      assert.ok(!/附录 \(Other\.pdf p\. \d+\)，同页 \(p\. \d+\)[^\n]*?\[\[/.test(saved.replace(/。[\s\S]*?$/gm, '')) && /附录 \(Other\.pdf p\. \d+\)，同页 \(p\. \d+\)。/.test(saved), 'Other.pdf or a bare #page was saved as a jump');
       // Reopened in the app, the reading view offers the same jumps (page 140 once).
       await p.locator('#tree [data-path="Course/Long lecture summary.md"]').click();
       await p.evaluate(() => document.querySelector('[data-cmd="mode-preview"]')?.click());
