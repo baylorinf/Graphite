@@ -93,6 +93,10 @@ body {
 #ribbon button:hover { background: var(--bg-3); color: var(--text); }
 #ribbon button:active { transform: scale(.96); }
 #ribbon svg.i { width: 19px; height: 19px; stroke-width: 1.7; }
+/* Plugin icons (Lucide: Graphie, study pages, chat) look like the built-in ones: same colour, line and size. */
+#ribbon button.plugin-ribbon { width: 36px; height: 36px; border-radius: 11px; color: var(--text-faint); }
+#ribbon button.plugin-ribbon:hover { background: var(--bg-3); color: var(--text); }
+#ribbon button.plugin-ribbon .svg-icon { width: 19px; height: 19px; stroke-width: 1.7; }
 #ribbon .spacer { min-height: 12px; }
 
 /* ---------- side panels ---------- */
