@@ -153,13 +153,15 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
   }
   const wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
   const isolated=(w,code)=>w.webContents.executeJavaScriptInIsolatedWorld(1004,[{code}]);
-  async function loadPage(w,raw,fresh=false) {
+  async function loadPage(w,raw,fresh=false,{quick=false}={}) {
     if(!schoolUrl(raw) || new URL(raw).origin!==SITE)throw new Error('无效的校方页面。');
     let timer;
     try { await Promise.race([w.loadURL(raw,fresh?{extraHeaders:'Cache-Control: no-cache\nPragma: no-cache'}:undefined),new Promise((_,reject)=>{timer=setTimeout(()=>{if(!w.isDestroyed())w.webContents.stop();reject(new Error('学校页面加载超时。'));},30000);})]); }
     finally {clearTimeout(timer);}
     const target = new URL(w.webContents.getURL());
     if(target.origin!==SITE || /^\/login(?:\/|$)/.test(target.pathname))return {login:true};
+    // A file page is server-rendered: one read is enough, without waiting for four unchanged samples.
+    if(quick){ await wait(120); return isolated(w,'('+readSchoolPage.toString()+')()'); }
     let page, previous='', stable=0;
     for(let i=0;i<16;i++){
       await wait(250);
@@ -174,6 +176,23 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
   async function withWorker(fn){
     const w=makeWindow(null,null,true); workers.add(w);
     try{return await fn(w);}finally{workers.delete(w);if(!w.isDestroyed())w.destroy();}
+  }
+  // Load one course file's page and save its download into the vault (one window, one transfer at a time).
+  async function downloadFile(w,course,file){
+    let page=await loadPage(w,SITE+'/courses/'+course.id+'/files/'+file.id,false,{quick:true});
+    if(page.login || !page.logged)throw Object.assign(new Error('学校登录已过期，请重新登录。'),{status:401});
+    // A theme that fills the link in later still gets the careful read.
+    if(!page.download)page=await loadPage(w,SITE+'/courses/'+course.id+'/files/'+file.id);
+    if(page.login || !page.logged)throw Object.assign(new Error('学校登录已过期，请重新登录。'),{status:401});
+    const url=schoolUrl(page.download);
+    if(!url || url.origin!==SITE || !url.pathname.endsWith('/files/'+file.id+'/download'))throw new Error('学校页面没有提供下载链接，可在原站查看。');
+    const folder=courseFolder(course);
+    let t;
+    try{return await new Promise((resolve,reject)=>{
+      const x={folder,resolve,reject};webTransfers.set(w.webContents,x);
+      t=setTimeout(()=>{x.item?.cancel();reject(new Error('下载超时，请重试。'));},300000);
+      w.webContents.downloadURL(url.href);
+    });}finally{clearTimeout(t);webTransfers.delete(w.webContents);}
   }
   const desktop = {
     openPortal(target) {
@@ -209,6 +228,13 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
       w.loadURL(SITE+'/courses').catch(()=>{});
     },
     verifyWebSubmission:input=>withWorker(w=>verifyWebSubmission(url=>loadPage(w,url,true),input)),
+    // Who is signed in? One school page, so a completed sign-in can show the saved courses without waiting for the
+    // whole course read. Never reads cookies, storage or the login form.
+    verifyWeb:()=>withWorker(async w=>{
+      const page=await loadPage(w,SITE+'/courses');
+      if(!page || page.login || !page.logged)return {logged:false,user:'',webIdentity:null};
+      return {logged:true,user:page.user || '',webIdentity:page.webIdentity || null};
+    }),
     syncWeb:(options={})=>withWorker(async w=>{
       const result=await readCourses(url=>loadPage(w,url),options);
       try{
@@ -220,19 +246,16 @@ function createCanvasDesktop({ app, BrowserWindow, session, safeStorage, vault }
       }catch{}
       return result;
     }),
-    downloadWeb:(course,file)=>withWorker(async w=>{
-      const page=await loadPage(w,SITE+'/courses/'+course.id+'/files/'+file.id);
-      if(page.login || !page.logged)throw Object.assign(new Error('学校登录已过期，请重新登录。'),{status:401});
-      const url=schoolUrl(page.download);
-      if(!url || url.origin!==SITE || !url.pathname.endsWith('/files/'+file.id+'/download'))throw new Error('学校页面没有提供下载链接，可在原站查看。');
-      const folder=courseFolder(course);
-      let t;
-      try{return await new Promise((resolve,reject)=>{
-        const x={folder,resolve,reject};webTransfers.set(w.webContents,x);
-        t=setTimeout(()=>{x.item?.cancel();reject(new Error('下载超时，请重试。'));},300000);
-        w.webContents.downloadURL(url.href);
-      });}finally{clearTimeout(t);webTransfers.delete(w.webContents);}
-    }),
+    // One hidden window for a whole pull: creating a window per file was most of the wait between downloads.
+    createDownloader(){
+      const w=makeWindow(null,null,true); workers.add(w);
+      let closed=false;
+      return {
+        download:(course,file)=>{ if(closed)throw new Error('下载会话已结束。'); return downloadFile(w,course,file); },
+        async close(){ if(closed)return; closed=true; workers.delete(w); if(!w.isDestroyed())w.destroy(); },
+      };
+    },
+    downloadWeb:(course,file)=>withWorker(w=>downloadFile(w,course,file)),
     // The readable part of one school page (in a hidden window with the student's session): for the in-app reader.
     readWeb:url=>withWorker(async w=>{
       const page=await loadPage(w,url);

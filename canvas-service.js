@@ -13,11 +13,22 @@ const SITE = 'https://oc.sjtu.edu.cn';
 const OOB = 'urn:ietf:wg:oauth:2.0:oob';
 const error = (status, message) => Object.assign(new Error(message), { status });
 
+// Which school account a freshly verified session belongs to. A numbered profile is exact; without one, the
+// display name is the same fallback the course reader already uses. When neither side can be compared, the answer
+// is "changed", so another student's saved courses are never shown.
+function accountSwitched(previousIdentity, nextIdentity, previousUser, nextUser) {
+  const oldId = String(previousIdentity || '').trim(), newId = String(nextIdentity || '').trim();
+  if (oldId || newId) return oldId !== newId;
+  const a = String(previousUser || '').trim().toLowerCase(), b = String(nextUser || '').trim().toLowerCase();
+  if (a && b) return a !== b;
+  return true;
+}
+
 // The desktop owns encrypted storage and the isolated school window. The browser
 // preview can use a calendar for this server session without persisting a private URL.
 function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf, autoPullMs = desktop ? 3 * 3600000 : 0, migrate = !!desktop, fetch: fetchImpl = fetch,
     clientId = process.env.GRAPHITE_CANVAS_CLIENT_ID, clientSecret = process.env.GRAPHITE_CANVAS_CLIENT_SECRET }) {
-  let data, pending, tail = Promise.resolve(), authError = '', refreshing, webSyncing = false, readingSchool = false, pullProgress = null, activePull = null;
+  let data, pending, tail = Promise.resolve(), authError = '', refreshing, webSyncing = false, readingSchool = 0, pullProgress = null, activePull = null;
   const shownPaths = new Map(); // a download as saved → the copy in the course folder (for "latest file")
   const configured = !!(clientId && clientSecret && desktop?.openAuth);
   function exclusive(fn) {
@@ -32,6 +43,12 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
     if (storage) await storage.save(next);
     data = next;
   }
+  // One writer at a time for the saved state. A long school read never holds the lock: it saves its progress
+  // through this, so signing in, syncing and the other actions stay responsive while courses are read.
+  const writeState = mutate => exclusive(async () => {
+    const next = mutate(data);
+    if (next) await save(next);
+  });
   // Top-level vault folders a Canvas course can be linked to (its new files are copied there).
   function vaultFolders() {
     try {
@@ -80,9 +97,10 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
     const accountKey = id ? createHash('sha256').update(JSON.stringify([SITE, web ? 'web' : 'oauth', id])).digest('hex') : null;
     return { connected: web ? !!visible.webVerified : !!visible.auth, configured, sessionOnly: !storage, user: visible.user || '',
       accountKey,
-      portalSupported: !!desktop?.openWebLogin, portalSyncEnabled: web,syncing:readingSchool, canSubmit: !web && !!visible.auth && !!visible.writeEnabled,
+      portalSupported: !!desktop?.openWebLogin, portalSyncEnabled: web,syncing:readingSchool>0, canSubmit: !web && !!visible.auth && !!visible.writeEnabled,
       canSubmitFiles: web ? !!visible.webVerified && !!desktop?.submitWeb : !!visible.auth && !!visible.writeEnabled,
       lastPull: visible.lastPull || null, pullProgress: hidden ? null : pullProgress,
+      syncProgress: hidden || readingSchool<=0 ? null : (data.syncProgress || null),
       authMode: web ? 'web' : (visible.auth || configured ? 'oauth' : null), authPending: !!pending && pending.until > Date.now(),
       authError, syncedAt: visible.syncedAt || null, snapshot: visible.snapshot || { courses: [], warnings: [] },
       calendar: visible.calendar || null, migration: data.migration || null, courseLinks: hidden ? {} : courseLinks(), vaultFolders: vaultFolders(), autoMirror: data.autoMirror !== false, autoPull: !!autoPullMs, portalOpened: !!visible.portalOpened, lastDownload: hidden ? null : (raw => shownPaths.get(raw) || raw)(desktop?.lastDownload?.() || null) };
@@ -123,17 +141,54 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
   }
   const api = createCanvasApi({ vault, fetch: fetchImpl, accessToken, getAccountId:()=>data.accountId || data.auth?.userId });
   const submissions = createSubmissionClient({fetch:fetchImpl, accessToken});
-  async function syncWeb(background=false,fullMaterials=false) {
-    readingSchool=true;
+  let normalRead = null, normalSession;
+  // A second ordinary read joins the one already running (no double requests); a pull's full read is its own, so
+  // signing in or pressing sync never waits for it. A new sign-in gets its own session id and never joins.
+  function syncWeb(background=false,fullMaterials=false,options={}) {
+    if (options.locked) return syncWebNow(background,fullMaterials,options);
+    if (fullMaterials) return syncWebNow(background,true,options);
+    if (normalRead && normalSession === (data.webSessionId || null)) return normalRead;
+    normalSession = data.webSessionId || null;
+    const run = syncWebNow(background,false,options);
+    normalRead = run;
+    run.then(() => { if (normalRead === run) normalRead = null; }, () => { if (normalRead === run) normalRead = null; });
+    return run;
+  }
+  async function syncWebNow(background=false,fullMaterials=false,{locked=false}={}) {
+    // Under the lock (a session that has not confirmed its account yet) write directly; otherwise every save goes
+    // through writeState so a minutes-long read never blocks signing in or the other short actions.
+    const write = mutate => locked
+      ? Promise.resolve().then(() => { const next = mutate(data); return next ? save(next) : undefined; })
+      : writeState(mutate);
+    // This read belongs to the sign-in it started with. A later sign-in for another account gets a new session id,
+    // so nothing this read collected (even a course saved halfway) can land under that account.
+    const session = data.webSessionId;
+    const mine = cur => cur.portalSyncEnabled && String(cur.webSessionId||'') === String(session||'');
+    readingSchool++;
     try {
       const keepPrevious = !data.webReconnect || !!data.snapshot?.webIdentity;
-      const result = await desktop.syncWeb({background,fullMaterials,previousSnapshot:keepPrevious ? data.snapshot : undefined,previousUser:keepPrevious ? data.user : ''});
-      if (!data.portalSyncEnabled) return;
+      const result = await desktop.syncWeb({background,fullMaterials,previousSnapshot:keepPrevious ? data.snapshot : undefined,previousUser:keepPrevious ? data.user : '',
+        // A finished course is saved at once: closing Graphite mid-read keeps what has already arrived, and the
+        // course list fills in while the rest is still being read.
+        onCourse: partial => write(cur => {
+          if (!mine(cur)) return null;
+          // Partial: the courses read so far replace their old copy, the ones not visited yet stay visible, and
+          // "last synced" only moves when the whole read ends.
+          const seen=new Set((partial.courses || []).map(c=>String(c.id)));
+          const kept=(cur.snapshot?.courses || []).filter(c=>!seen.has(String(c.id)));
+          return {...cur,
+            snapshot:{courses:[...(partial.courses || []),...kept],warnings:partial.warnings || [],webIdentity:partial.webIdentity ?? cur.snapshot?.webIdentity ?? null},
+            syncProgress:{done:partial.courses.length,total:partial.total || partial.courses.length}};
+        })});
+      if (!mine(data)) return;
       const oldUser=String(data.user||'').trim(), user=String(result.user||'').trim();
       const previousIdentity=data.snapshot?.webIdentity, nextIdentity=result.snapshot.webIdentity;
       const changedName=oldUser && user && oldUser!==user;
+      const sameName=!!oldUser && !!user && oldUser===user;
+      // A numbered profile decides; without one, the same display name keeps the account. An unnamed session only
+      // counts as a switch while the account is still unconfirmed.
       const switched=previousIdentity || nextIdentity ? String(previousIdentity || '') !== String(nextIdentity || '')
-        : !!data.webReconnect || Boolean(changedName);
+        : Boolean(changedName) || (!sameName && !!data.webReconnect);
       if (switched) desktop.clearLastDownload?.();
       let calendar=switched?null:data.calendar, url=switched?null:data.feed;
       const muted=switched?false:data.feedMuted;
@@ -158,23 +213,31 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         }
       }
       authError='';
-      await save({...data, ...(switched ? {requests:undefined,lastPull:null,pullCache:undefined,pullSessionId:null} : {}),
+      // A foreground read that hit no cap is complete enough to pull from: remember when it finished. A capped or
+      // background read is not, so a pull must read again.
+      const truncated = [result.snapshot, ...(result.snapshot.courses || [])]
+        .some(page => (page.warnings || []).some(w => /部分单元附件|超过 100 页|作业详情超过/.test(w)));
+      await write(cur => !mine(cur) ? null : ({...cur,
+        ...(switched ? {requests:undefined,lastPull:null,pullCache:undefined,pullSessionId:null} : {}),
         webVerified:true, webReconnect:false, user:result.user, snapshot:result.snapshot, syncedAt:result.syncedAt,
-        feed:url, calendar, feedMuted:muted, feedAutomatic:!!result.feed && !muted});
+        pullReadyAt:background || truncated ? null : new Date().toISOString(),
+        feed:url, calendar, feedMuted:muted, feedAutomatic:!!result.feed && !muted, syncProgress:null, syncError:null}));
     } catch(e) {
       authError=e.message;
-      if(e.status===401) await save({...data,webVerified:false});
+      // A single page failing is not a failed sign-in: keep the account and the courses already read. Only the
+      // school saying the session is gone asks for a new login.
+      await write(cur => !mine(cur) ? null : ({...cur,syncProgress:null,syncError:e.message,...(e.status===401?{webVerified:false}:{})})).catch(()=>{});
       throw e;
-    } finally {readingSchool=false;}
+    } finally {readingSchool=Math.max(0,readingSchool-1);}
   }
-  async function downloadOne(courseId,fileId) {
+  async function downloadOne(courseId,fileId,session) {
     if (data.portalSyncEnabled) {
       if (!data.webVerified) throw error(401,'请重新登录学校网站。');
       const course=data.snapshot?.courses.find(c=>String(c.id)===String(courseId));
       // A file linked from a page or an assignment (read in Graphite) may not be in the course's file list yet.
       const file=course?.files?.find(f=>String(f.id)===String(fileId)) || (course && /^\d+$/.test(String(fileId)) ? {id:String(fileId),name:''} : null);
       if (!file || !/^\d+$/.test(String(file.id))) throw error(404,'请先同步此课件。');
-      return desktop.downloadWeb(course,file);
+      return session ? session.download(course,file) : desktop.downloadWeb(course,file);
     }
     if (!data.auth) throw error(401,'请先连接交大 Canvas。');
     return api.download(courseId,fileId,data.snapshot||{});
@@ -248,7 +311,15 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
     if (method==='POST' && action==='pull') return runPull(body.courseId == null ? null : String(body.courseId));
     // Reading one page can take several seconds on the school site: outside the lock, like a pull.
     if (method==='POST' && action==='read') return readPage(body);
+    // A web sync reads every course page for minutes: never hold the lock for it either.
+    if (method==='POST' && action==='sync') return runSync();
     return exclusive(() => handleOther(method, action, body));
+  }
+  async function runSync() {
+    await exclusive(ready);
+    if (waitingForWebLogin()) throw error(401,'请先完成学校登录并核对账户。');
+    if (data.portalSyncEnabled) { await syncWeb(); return view(); }
+    return exclusive(() => handleOther('POST','sync',{}));
   }
   // One Canvas page for Graphite's reader (assignment, announcement, page, discussion, syllabus).
   async function readPage(body) {
@@ -281,7 +352,19 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         const warnings = [];
         let usingSnapshot = false;
         try {
-          if (data.portalSyncEnabled) await syncWeb(auto,true);
+          if (data.portalSyncEnabled) {
+            // A deep read that just finished already holds every course, assignment and file: download from it
+            // instead of reading the whole school site again. The shortcut is used once; the next pull reads again.
+            if (normalRead) { try { await normalRead; } catch { /* reported by the read itself */ } }
+            const ready = !data.syncError && data.pullReadyAt &&
+              Date.now() - (Date.parse(data.pullReadyAt) || 0) < 10 * 60000;
+            if (ready) await exclusive(() => save({...data, pullReadyAt:null}));
+            else {
+              await syncWeb(auto, true);
+              // This pull's own read is not handed to the next one: by then the school may have changed.
+              await exclusive(() => save({...data, pullReadyAt:null}));
+            }
+          }
           else {
             const snapshot = await api.sync(data.snapshot || undefined);
             await exclusive(() => save({...data,snapshot,syncedAt:new Date().toISOString()}));
@@ -303,10 +386,17 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         // Files are filed into the course folders as each course finishes; its notes link to those copies.
         const mirror = { added: [], duplicates: 0, failed: [], unlinked: [], index: [] };
         if (cached.mirrored && data.pullCache?.owner === owner) data = { ...data, pullCache: { ...data.pullCache, mirrored: cached.mirrored } };
-        const { result,cache,noteCache } = await pullMaterials({vault,courses,warnings,usingSnapshot,download:downloadOne,noteWriter,
-          previous:cached.files,previousNotes:cached.notes,
-          noteDir: courseDir, place: (course, files, ids) => placeFiles(course, files, ids, mirror),
-          onProgress:progress=>{pullProgress=progress;}});
+        // One hidden window serves every file of this pull; closing it stops any download still running.
+        let dl=null;
+        try{ dl=desktop?.createDownloader?.()||null; }catch{ dl=null; }
+        let pulled;
+        try {
+          pulled = await pullMaterials({vault,courses,warnings,usingSnapshot,download:(cid,id)=>downloadOne(cid,id,dl),noteWriter,
+            previous:cached.files,previousNotes:cached.notes,
+            noteDir: courseDir, place: (course, files, ids) => placeFiles(course, files, ids, mirror),
+            onProgress:progress=>{pullProgress=progress;}});
+        } finally { if(dl) await Promise.resolve(dl.close()).catch(()=>{}); }
+        const { result,cache,noteCache } = pulled;
         result.mirror = mirror;
         result.finishedAt=new Date().toISOString();
         if (auto) result.auto = true;
@@ -362,17 +452,60 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         // Reopening an existing desktop window focuses it. Its original completion callback is still active.
         const previous=pending?.web ? pending : null, request=previous || {web:true};
         request.until=Date.now()+15*60000;pending=request;authError='';
-        const onLogin=ok=>exclusive(async()=>{
+        const onLogin=ok=>{
           if(pending!==request)return;
           if(!ok){pending=null;return;}
-          try{
-            // Keep previous web data private until the school page identifies its owner.
-            // Network errors may outlive this process. A retry can still confirm the account.
-            await save({...(data.portalSyncEnabled ? data : {}),portalSyncEnabled:true,portalOpened:true,
-              webVerified:false,webReconnect:true,auth:null,accountId:null,writeEnabled:false});
-            await syncWeb();
-          } catch(e){authError=e.message;}finally{if(pending===request)pending=null;}
-        });
+          const confirmed=exclusive(async()=>{
+            if(pending!==request)return {sync:false};
+            let account=null, unreadable=false;
+            // Who is signed in? One school page, so signing in no longer waits for the whole course read.
+            for(let attempt=0;attempt<2 && !account;attempt++){
+              try{account=await desktop.verifyWeb?.()||null;}
+              catch{unreadable=true;}
+            }
+            if(!account){
+              if(!desktop.verifyWeb || unreadable){
+                // No quick check (browser preview or an unreadable page): keep the careful path that confirms the
+                // account by reading the courses first, and keep the previous data private until it does.
+                try{
+                  await save({...(data.portalSyncEnabled ? data : {}),portalSyncEnabled:true,portalOpened:true,
+                    webVerified:false,webReconnect:true,auth:null,accountId:null,writeEnabled:false,
+                    webSessionId:randomBytes(16).toString('hex')});
+                  await syncWeb(false,false,{locked:true});
+                } catch(e){authError=e.message;}
+                finally {if(pending===request)pending=null;}
+                return {sync:false};
+              }
+              authError='学校登录未完成，请重试。';
+              return {sync:false};
+            }
+            if(!account.logged){authError='学校登录未完成，请重试。';return {sync:false};}
+            // A different student's courses, drafts and downloads never appear under this one.
+            const switched=accountSwitched(data.snapshot?.webIdentity,account.webIdentity,data.user,account.user);
+            if(switched)desktop.clearLastDownload?.();
+            // Clicking sign-in again on a session that is already confirmed changes nothing and starts no read —
+            // unless the last read failed, in which case this is the retry.
+            const fresh=!switched && data.webVerified && !data.syncError && data.syncedAt &&
+              Date.now()-(Date.parse(data.syncedAt)||0)<10*60000;
+            await save(switched
+              ? {portalSyncEnabled:true,portalOpened:true,webVerified:true,webReconnect:false,auth:null,accountId:null,
+                 writeEnabled:false,user:account.user||'',snapshot:null,syncedAt:null,lastPull:null,pullCache:undefined,
+                 pullSessionId:null,requests:undefined,feed:null,calendar:null,feedAutomatic:false,feedMuted:false,
+                 webSessionId:randomBytes(16).toString('hex'),syncError:null}
+              : {...data,portalSyncEnabled:true,portalOpened:true,webVerified:true,webReconnect:false,auth:null,
+                 accountId:null,writeEnabled:false,user:account.user||data.user||'',
+                 ...(fresh && data.pullReadyAt ? {pullReadyAt:new Date().toISOString()} : {}),
+                 webSessionId:data.webSessionId||randomBytes(16).toString('hex')});
+            authError='';
+            pending=null;
+            return {sync:!fresh};
+          });
+          confirmed.then(result=>{if(result?.sync)void syncWeb().catch(e=>{authError=e.message;});},
+            e=>{authError=e.message||String(e);})
+            .finally(()=>{if(pending===request)pending=null;});
+          // Resolves once the account is confirmed (and, without a quick check, once that first read is done).
+          return confirmed;
+        };
         try { await desktop.openWebLogin(onLogin); }
         catch(e) {
           if (pending===request) { if(previous)request.until=0; else pending=null; }
@@ -403,7 +536,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         return view();
       }
       if (action === 'sync') {
-        if(data.portalSyncEnabled){await syncWeb();return view();}
+        // The web path is handled by runSync(), outside this lock. This branch is the optional official API.
         if (!data.auth && !data.feed) throw error(401, '请先连接 Canvas 或添加日历订阅。');
         const issues = [];
         let done = false, firstError;
@@ -548,7 +681,11 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
     const tick=setInterval(async()=>{
       if(webSyncing)return;
       webSyncing=true;
-      try{await exclusive(async()=>{await ready();if(data.portalSyncEnabled && data.webVerified && Date.now()-(Date.parse(data.syncedAt)||0)>14*60000)await syncWeb(true);});}
+      try{
+        // Only the check holds the lock; the read itself saves course by course and stays usable meanwhile.
+        await exclusive(ready);
+        if(data.portalSyncEnabled && data.webVerified && Date.now()-(Date.parse(data.syncedAt)||0)>14*60000) await syncWeb(true);
+      }
       catch{}finally{webSyncing=false;}
     },15*60000);tick.unref?.();
   }

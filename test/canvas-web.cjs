@@ -90,6 +90,18 @@ test('follows only visible module attachments, folder pages and a recognized sub
   assert(!calls.includes('/courses/7/modules/items/81'));
 });
 
+test('a finished course is handed over while later courses are still being read',async()=>{
+  const pages={
+    '/courses':{hasCourseTable:true,enrollments:[{href:url('/courses/7'),title:'One'},{href:url('/courses/8'),title:'Two'}]},
+    '/courses/7':{tabs:[]},'/courses/8':{tabs:[]},
+  };
+  const seen=[];
+  const result=await readCourses(async h=>{const p=h.slice(SITE.length);assert(pages[p],p);return {logged:true,...pages[p]};},
+    {onCourse:({courses,total,done})=>seen.push({done,total,names:courses.map(c=>c.name)})});
+  assert.deepEqual(seen,[{done:1,total:2,names:['One']},{done:2,total:2,names:['One','Two']}]);
+  assert.equal(result.snapshot.courses.length,2);
+});
+
 test('background checks have a detail budget, trust previous receipts only for a matching numbered account, and respect explicit unsubmitted status',async()=>{
   const entries=[1,2,3,4,5,6].map(n=>({href:url('/courses/7/assignments/'+n),title:'Sheet '+n,...(n===5?{submitted:false}:{})}));
   const cached={webIdentity:'43',courses:[{id:'7',assignments:[{id:'1',submitted:true,attempt:3,checkedAt:'old',dueLabel:'Friday'},{id:'5',submitted:true,attempt:1,checkedAt:'old'}]}]};

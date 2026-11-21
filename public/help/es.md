@@ -6,11 +6,29 @@ Graphite es una aplicación para tomar notas conectadas entre sí. Cada nota es 
 
 ## Archivos y fechas de Canvas SJTU
 
-Abre Canvas con el **botón de la universidad** (un edificio) de la cinta inferior izquierda (o una pestaña nueva, o **Ajustes → General**) y elige **Acceder con jAccount**. Todo se queda en Graphite: tareas, anuncios, páginas y debates se abren en el lector de Graphite, y los archivos se abren en Graphite tras guardarse en tu bóveda. **Abrir en la ventana Canvas de Graphite** sirve para lo que el lector no muestra (hacer un cuestionario, responder en un debate).
+Graphite entra en Canvas SJTU con tu propio jAccount, lee los cursos que puedes ver, guarda los materiales en tu bóveda, muestra las fechas de entrega y te deja entregar tareas sin salir de la aplicación. No hace falta ninguna clave de API, y tu contraseña solo se escribe en la página de acceso de la universidad.
 
-**Las diapositivas llegan solas.** Con **Sincronizar diapositivas automáticamente**, Graphite trae archivos nuevos al iniciar y cada 3 horas mientras tengas la sesión abierta. Elige en cada curso dónde van sus archivos (**Carpeta del curso**: Graphite adivina la carpeta, p. ej. 线性代数 → *Linear Algebra*, o crea una con el nombre del curso). Ya no hay una carpeta Canvas aparte: las notas de tareas van a `作业 Homework/`, los requisitos del curso a la carpeta del curso, y los archivos tal como llegan de la universidad se guardan aparte, así nada se descarga dos veces. Una carpeta `Canvas/` antigua se reparte una vez en las carpetas de curso, al primer inicio. Diapositivas en `<Curso>/课件 Slides/`, tareas en `作业 Homework/`, exámenes y soluciones en `复习资料/`; PowerPoint y Word reciben una copia PDF. Lo que ya está se omite, nunca se sobrescribe nada (otro archivo con el mismo nombre pasa a «nombre (2)»), lo que borres no vuelve, y la nota índice del curso recibe una línea de enlaces. Una insignia en el botón de Canvas y la tarjeta **Nuevo en tus carpetas de curso** muestran lo añadido. **Descargar los materiales de todos los cursos** hace lo mismo al momento.
+**1. Entrar.** Haz clic en el **botón de Canvas** (un edificio) de la cinta inferior izquierda, o abre una pestaña nueva y elige Canvas SJTU, y luego en **Acceder con jAccount**. Termina el acceso en la página de la universidad (contraseña o código QR); la ventana se cierra sola. Mientras indica que está esperando, no hay que pulsar nada más.
 
-**Fechas y entrega en un clic.** **Próximos 30 días** muestra los días que faltan. **Entregar tarea** junto a una fecha elige el archivo correspondiente de la carpeta de tareas del curso y muestra la vista previa; revísala y pulsa **Confirmar y entregar**. Nada se envía antes de confirmar. En **Tareas** también puedes elegir archivos tú mismo. Añade tu calendario de Canvas en **Suscripción de calendario**.
+**2. Lectura de los cursos.** Graphite lee tus cursos uno a uno en segundo plano y la barra de sincronización muestra el progreso (por ejemplo «3/6»). Puedes seguir trabajando, y cada curso aparece en cuanto se ha leído. Con la aplicación abierta, la lista de cursos se actualiza cada 15 minutos; pulsa **Sincronizar** para hacerlo ya.
+
+**3. Los archivos se ordenan solos.** Bajo cada curso, elige su carpeta en **Carpeta del curso** (Graphite sugiere una por el nombre, p. ej. 线性代数 → *Linear Algebra*, o puedes crear otra). Con **Sincronizar diapositivas automáticamente**, Graphite descarga los archivos nuevos al arrancar y luego cada 3 horas, y los ordena: diapositivas en `<Curso>/课件 Slides/`, tareas en `作业 Homework/`, exámenes y soluciones en `复习资料/`, y los requisitos en la carpeta del curso. Los archivos PowerPoint y Word reciben además una copia en PDF. Para hacerlo ahora, pulsa **Descargar los materiales de todos los cursos**; para un solo curso, **Descargar archivos del curso**.
+- Un archivo que ya está se omite y nunca se sobrescribe nada; otro archivo con el mismo nombre se guarda como «nombre (2)».
+- Un archivo que borras no se vuelve a descargar.
+- Los archivos nuevos ponen una insignia en el botón de Canvas y aparecen en **Nuevo en tus carpetas de curso**; la nota índice del curso recibe una línea de enlaces.
+- Lo que descargues a mano en la ventana de Canvas va a `Downloads/` en la raíz de la bóveda.
+- Una carpeta `Canvas/` antigua se reparte una sola vez entre las carpetas de curso, al primer arranque.
+
+**4. Requisitos, fechas y entregas.** Tareas, anuncios, páginas y debates se abren en el lector de Graphite; para lo que no puede mostrar (hacer un cuestionario, responder en un debate), usa **Abrir en la ventana Canvas de Graphite**. **Requisitos del curso** muestra el programa publicado por el profesor. **Próximos 30 días** lista lo que vence y los días que faltan. Pulsa **Entregar tarea** junto a una fecha y Graphite elige el archivo más probable de la carpeta de tareas del curso (por número, título y luego el más reciente) y muestra una vista previa; revisa curso, tarea y archivo, y pulsa **Confirmar y entregar**. No se envía nada antes de confirmar. También puedes elegir tú en **Tareas** con **Elegir de la bóveda** o **Elegir del equipo**. Si el resultado no está claro, pulsa **Comprobar entrega** antes de volver a entregar.
+
+**5. Calendario y cerrar sesión.** Pega el enlace del calendario de Canvas en **Suscripción al calendario** para ver todos los eventos. **Cerrar sesión del portal** solo cierra la sesión del sitio de la universidad; **Desconectar cuenta** también borra la cuenta, la suscripción y la caché de cursos de este equipo. Los archivos ya guardados en la bóveda se conservan.
+
+**Cuánto tarda cada cosa.**
+- Entrar con jAccount: un minuto aproximadamente (según lo rápido que escribas o escanees).
+- Primera lectura de los cursos: de 30 segundos a un minuto por curso, unos 3–5 minutos para seis.
+- Siguientes veces: los cursos guardados aparecen al instante; la actualización suele tardar 1–3 minutos.
+- Descargar todos los materiales: 1–3 segundos por archivo, 1–2 minutos para unas decenas; cada copia PDF añade unos segundos.
+- Entrega: el recibo suele aparecer 10–30 segundos después de confirmar.
 
 ## Recortar, archivar y repasar lo que lees
 

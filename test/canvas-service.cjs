@@ -318,3 +318,175 @@ test('a long pull does not block signing in, syncing or linking a folder', async
   const result = await pull;
   assert.equal(result.courses, 1);
 });
+
+// 1.1.53: a finished sign-in is confirmed by one school page, not by the whole course read. The same student's
+// courses come back at once; the read continues in the background and writes each course as it arrives.
+async function waitFor(read, check, label, timeout = 5000) {
+  const end = Date.now() + timeout;
+  let value;
+  do {
+    value = await read();
+    if (check(value)) return value;
+    await new Promise(r => setTimeout(r, 10));
+  } while (Date.now() < end);
+  throw new Error('Timed out waiting for ' + label + ': ' + JSON.stringify(value));
+}
+
+test('a quick account check gives the same student their courses back before the course read finishes', async () => {
+  let state = { portalSyncEnabled: true, webVerified: false, webReconnect: true, user: '同名同学',
+    snapshot: { webIdentity: null, courses: [{ id: '6', name: '旧课程' }] }, syncedAt: '2026-11-21T08:00:00.000Z',
+    lastPull: { saved: 4 }, pullCache: { owner: 'web:old', files: { '6/1': { path: 'Old/a.pdf' } } },
+    requests: { draft: { pending: true } }, pullSessionId: 'old' };
+  let finish, started, releaseRead, reads = 0;
+  const readStarted = new Promise(r => { started = r; });
+  const gate = new Promise(r => { releaseRead = r; });
+  const svc = createCanvasService({
+    storage: { load: async () => structuredClone(state), save: async next => { state = structuredClone(next); } },
+    desktop: {
+      openWebLogin: cb => { finish = cb; }, clearLastDownload: () => {},
+      verifyWeb: async () => ({ logged: true, user: '同名同学', webIdentity: null }),
+      syncWeb: async () => {
+        reads++; started();
+        await gate;
+        return { user: '同名同学', snapshot: { courses: [{ id: '7', name: '新课程' }], warnings: [], webIdentity: null },
+          syncedAt: new Date().toISOString() };
+      },
+    },
+  });
+  const status = () => svc.handle('GET', 'status');
+  await svc.handle('POST', 'web-connect');
+  const opening = await status();
+  assert.equal(opening.connected, false); assert.deepEqual(opening.snapshot.courses, []);
+  await finish(true);
+  const restored = await waitFor(status, s => s.connected, 'confirmed account');
+  assert.deepEqual(restored.snapshot.courses.map(c => c.name), ['旧课程']);
+  assert.deepEqual(restored.lastPull, { saved: 4 });
+  assert.deepEqual(restored.snapshot.courses.map(c => c.id), ['6']);
+  await readStarted;
+  assert.equal((await status()).syncing, true);
+  releaseRead();
+  const done = await waitFor(status, s => s.snapshot?.courses?.[0]?.name === '新课程', 'finished read');
+  assert.equal(done.connected, true); assert.equal(done.syncing, false);
+  // The same school display name keeps the pull record instead of re-downloading everything.
+  assert.deepEqual(done.lastPull, { saved: 4 });
+  assert.equal(state.pullCache.owner, 'web:old'); assert.ok(state.requests.draft);
+  // A second sign-in while the confirmed data is still fresh starts no read at all.
+  const before = reads;
+  await svc.handle('POST', 'web-connect');
+  await finish(true);
+  await waitFor(status, s => !s.authPending, 'second check');
+  assert.equal(reads, before);
+});
+
+test('courses not read yet stay visible while the rest are refreshed', async () => {
+  let state = { portalSyncEnabled: true, webVerified: true, webSessionId: 'same-session', user: '同名同学',
+    snapshot: { webIdentity: null, courses: [{ id: '1', name: '旧一' }, { id: '2', name: '旧二' }] } };
+  let finish, releaseRead;
+  const gate = new Promise(r => { releaseRead = r; });
+  const svc = createCanvasService({
+    storage: { load: async () => structuredClone(state), save: async next => { state = structuredClone(next); } },
+    desktop: {
+      openWebLogin: cb => { finish = cb; },
+      verifyWeb: async () => ({ logged: true, user: '同名同学', webIdentity: null }),
+      syncWeb: async options => {
+        await options.onCourse({ courses: [{ id: '1', name: '新一' }], warnings: [], webIdentity: null, total: 2, done: 1 });
+        await gate;
+        return { user: '同名同学', snapshot: { courses: [{ id: '1', name: '新一' }, { id: '2', name: '新二' }], warnings: [], webIdentity: null },
+          syncedAt: new Date().toISOString() };
+      },
+    },
+  });
+  const status = () => svc.handle('GET', 'status');
+  await svc.handle('POST', 'web-connect');
+  await finish(true);
+  const partial = await waitFor(status, s => s.syncProgress?.done === 1, 'partial course list');
+  // The saved copy of course 2 is still there while course 1 is already the refreshed one.
+  assert.deepEqual(partial.snapshot.courses.map(c => [c.id, c.name]), [['1', '新一'], ['2', '旧二']]);
+  assert.deepEqual(partial.syncProgress, { done: 1, total: 2 });
+  releaseRead();
+  const done = await waitFor(status, s => s.syncProgress === null && s.syncing === false, 'finished read');
+  assert.deepEqual(done.snapshot.courses.map(c => c.name), ['新一', '新二']);
+});
+
+test('a different student confirmed by the quick check never sees the previous courses', async () => {
+  let state = { portalSyncEnabled: true, webVerified: true, user: '甲同学',
+    snapshot: { webIdentity: null, courses: [{ id: '6', name: '甲课程' }] }, lastPull: { saved: 9 },
+    pullCache: { owner: 'web:甲', files: {} }, requests: { draft: {} }, pullSessionId: 'a' };
+  let finish, reads = 0;
+  const svc = createCanvasService({
+    storage: { load: async () => structuredClone(state), save: async next => { state = structuredClone(next); } },
+    desktop: {
+      openWebLogin: cb => { finish = cb; }, clearLastDownload: () => {},
+      verifyWeb: async () => ({ logged: true, user: '乙同学', webIdentity: null }),
+      syncWeb: async () => { reads++; return { user: '乙同学', snapshot: { courses: [{ id: '9', name: '乙课程' }], warnings: [], webIdentity: null }, syncedAt: new Date().toISOString() }; },
+    },
+  });
+  await svc.handle('POST', 'web-connect');
+  await finish(true);
+  const switched = await waitFor(svc.handle.bind(svc, 'GET', 'status'), s => s.connected && s.snapshot?.courses?.[0]?.name === '乙课程', 'new account');
+  assert.equal(switched.user, '乙同学');
+  assert.equal(reads, 1);
+  assert.equal(state.lastPull, null); assert.equal(state.pullCache, undefined);
+  assert.equal(state.requests, undefined); assert.equal(state.pullSessionId, null);
+});
+
+test('a pull right after a deep read downloads without reading every course again', async () => {
+  const vault = await fs.mkdtemp(path.join(os.tmpdir(), 'graphite-canvas-reuse-'));
+  try {
+    let state = { portalSyncEnabled: true, webVerified: true, user: '同名同学', webSessionId: 'session',
+      snapshot: { webIdentity: null, courses: [{ id: '7', name: '课程', files: [{ id: '70', name: 'a.pdf' }] }] } };
+    let finish, reads = 0, downloads = 0, sessions = 0;
+    const read = () => ({ user: '同名同学',
+      snapshot: { webIdentity: null, courses: [{ id: '7', name: '课程', files: [{ id: '70', name: 'a.pdf' }] }], warnings: [] },
+      syncedAt: new Date().toISOString() });
+    const svc = createCanvasService({ vault,
+      storage: { load: async () => structuredClone(state), save: async next => { state = structuredClone(next); } },
+      desktop: {
+        openWebLogin: cb => { finish = cb; },
+        verifyWeb: async () => ({ logged: true, user: '同名同学', webIdentity: null }),
+        syncWeb: async () => { reads++; return read(); },
+        createDownloader: () => {
+          sessions++;
+          return { download: async () => { downloads++; return { path: '下载/a.pdf', unchanged: false }; }, close: async () => {} };
+        },
+        downloadWeb: async () => { downloads++; return { path: '下载/a.pdf', unchanged: false }; },
+      } });
+    const status = () => svc.handle('GET', 'status');
+    await svc.handle('POST', 'web-connect');
+    await finish(true);
+    await waitFor(status, s => s.syncedAt, 'deep read');
+    assert.equal(reads, 1);
+    const pulled = await svc.handle('POST', 'pull', {});
+    assert.equal(reads, 1);          // the courses read moments ago are reused
+    assert.equal(sessions, 1);       // one hidden window for all downloads
+    assert.equal(downloads, 1);
+    assert.equal(pulled.courses, 1);
+  } finally { await fs.rm(vault, { recursive: true, force: true }); }
+});
+
+test('a failed course read keeps the confirmed account and the courses already read', async () => {
+  const synced = new Date().toISOString();
+  let state = { portalSyncEnabled: true, webVerified: false, webReconnect: true, user: '同名同学',
+    snapshot: { webIdentity: null, courses: [{ id: '6', name: '旧课程' }] }, syncedAt: synced };
+  let finish, reads = 0;
+  const svc = createCanvasService({
+    storage: { load: async () => structuredClone(state), save: async next => { state = structuredClone(next); } },
+    desktop: {
+      openWebLogin: cb => { finish = cb; },
+      verifyWeb: async () => ({ logged: true, user: '同名同学', webIdentity: null }),
+      syncWeb: async () => { reads++; throw new Error('network unavailable'); },
+    },
+  });
+  const status = () => svc.handle('GET', 'status');
+  await svc.handle('POST', 'web-connect');
+  await finish(true);
+  const failed = await waitFor(status, s => s.authError === 'network unavailable', 'failed read');
+  assert.equal(failed.connected, true);
+  assert.deepEqual(failed.snapshot.courses.map(c => c.name), ['旧课程']);
+  assert.equal(failed.syncedAt, synced);
+  assert.equal(reads, 1);
+  // The same session, but the last read failed: signing in again retries it.
+  await svc.handle('POST', 'web-connect');
+  await finish(true);
+  await waitFor(async () => reads, n => n === 2, 'retried read');
+});

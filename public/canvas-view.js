@@ -149,7 +149,9 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
   }
   function notice(text, isError = false) { message = text; failed = isError; }
   function feedback() {
-    return `<div class="cv-feedback${failed ? ' cv-error' : ''}" aria-live="polite" aria-atomic="true">${esc(message)}</div>`;
+    // The sign-in card already shows an expired login; don't repeat it above.
+    const dup = failed && state?.authError && (message === state.authError || message === label('authExpired') || /401|unauthori[sz]ed|expired|过期|重新登录/i.test(message));
+    return `<div class="cv-feedback${failed && !dup ? ' cv-error' : ''}" aria-live="polite" aria-atomic="true">${dup ? '' : esc(message)}</div>`;
   }
   function pullReport() {
     if (!lastPull) return '';
@@ -304,15 +306,15 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
       <div class="cv-context">
       ${state.authError ? `<p class="cv-feedback cv-error" role="alert">${esc(state.authError)}</p>` : ''}
       ${state.authPending && !state.syncing && (!connected || awaitWrite) && !authUntil ? `<p class="cv-meta">${esc(label('waiting'))}</p>` : ''}
-      ${!connected ? `<p>${esc(label(state.portalSupported ? 'webHelp' : state.configured ? 'authHint' : 'browserHelp'))}</p>
-      ${button(state.portalSupported ? 'web-connect' : state.configured ? 'connect' : 'login-portal', label('login'), 'mod-cta')}` : ''}${logout}
+      ${!connected ? `<p>${esc(label(state.syncing ? 'syncRunning' : state.authPending ? 'waiting' : state.portalSupported ? 'webHelp' : state.configured ? 'authHint' : 'browserHelp'))}</p>
+      ${state.authPending || state.syncing ? '' : button(state.portalSupported ? 'web-connect' : state.configured ? 'connect' : 'login-portal', label('login'), 'mod-cta')}` : ''}${logout}
       ${state.configured && state.portalSupported && (!connected || state.authMode === 'web') ? button('connect', label('apiConnect')) : ''}
       ${summaryReceipt ? `<p class="cv-feedback" data-cv-receipt>${esc(summaryReceipt)}</p>` : ''}
       ${pendingVerification ? `<div class="cv-bar"><span class="cv-meta">${esc(pendingVerification.title)}</span>${button('verify-submission',label('verify'))}</div>` : ''}
       ${state.lastDownload ? `<div class="cv-bar"><span class="cv-meta">${esc(label('latestFile'))} · ${esc(state.lastDownload)}</span>${button('open-latest', label('openFile'))}</div>` : ''}
       ${state.sessionOnly && (connected || state.calendar) ? `<p class="cv-meta">${esc(label('sessionOnly'))}</p>` : ''}
       ${migrationNote()}${calendarForm()}</div>
-      ${hasData ? `<div class="cv-bar cv-sync"><label class="cv-auto" title="${esc(label('autoHelp'))}"><input type="checkbox" data-cv-auto${state.autoMirror !== false ? ' checked' : ''}> ${esc(label('auto'))}</label><span class="cv-meta">${esc([state.syncing ? label('syncRunning') : '', latest ? label('synced') + ' · ' + formatTime(latest) : ''].filter(Boolean).join('　'))}</span><div class="cv-actions">${(connected || state.calendar) && !state.syncing ? button('sync', label('sync')) : ''}${connected ? button('pull', label('pullAll'), 'mod-cta') : ''}</div></div>${pullReport()}${state.snapshot?.courses?.length && (!connected || state.syncing || state.authError) ? `<p class="cv-meta">${esc(label('cache'))}</p>` : ''}${warnings(state.snapshot?.warnings)}` : ''}
+      ${hasData ? `<div class="cv-bar cv-sync"><label class="cv-auto" title="${esc(label('autoHelp'))}"><input type="checkbox" data-cv-auto${state.autoMirror !== false ? ' checked' : ''}> ${esc(label('auto'))}</label><span class="cv-meta">${esc([state.syncing ? label('syncRunning') + (state.syncProgress?.total ? ` ${state.syncProgress.done}/${state.syncProgress.total}` : '') : '', latest ? label('synced') + ' · ' + formatTime(latest) : ''].filter(Boolean).join('　'))}</span><div class="cv-actions">${(connected || state.calendar) && !state.syncing ? button('sync', label('sync')) : ''}${connected ? button('pull', label('pullAll'), 'mod-cta') : ''}</div></div>${pullReport()}${state.snapshot?.courses?.length && (!connected || state.syncing || state.authError) ? `<p class="cv-meta">${esc(label('cache'))}</p>` : ''}${warnings(state.snapshot?.warnings)}` : ''}
       <div class="cv-grid"><div class="cv-col">${hasData ? newFiles() + agenda() : ''}</div>
       <div class="cv-col cv-col-main">${reader ? readerPanel() : connected || state.snapshot?.courses?.length ? coursePanel() : ''}</div></div></div>`;
     for (const el of root.querySelectorAll('details[data-keep]')) el.open = open.has(el.dataset.keep);

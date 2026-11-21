@@ -6,11 +6,29 @@ Graphite is a note-taking app for linked thinking. Every note is a plain Markdow
 
 ## SJTU Canvas course files and deadlines
 
-Open Canvas from the **university button** (a building) in the bottom-left ribbon (or a new tab, or **Settings → General**) and choose **Sign in with jAccount**. Everything stays inside Graphite: assignments, announcements, pages and discussions open in Graphite's own reader, and files open in Graphite after they are saved to your vault. **Open in Graphite's Canvas window** is there for anything the reader cannot show (taking a quiz, replying to a discussion).
+Graphite signs in to SJTU Canvas with your own jAccount, reads the courses you can see, files the course materials into your vault, and shows deadlines and lets you submit work without leaving the app. No API key is needed, and your school password is only ever typed on the school's own sign-in page.
 
-**Slides arrive by themselves.** With **Sync new slides automatically** on, Graphite pulls new course files when it starts and every 3 hours while you are signed in. Choose under each course where its files go (**Course folder**: Graphite guesses the matching vault folder, e.g. 线性代数 → *Linear Algebra*, or makes one named after the course). There is no separate Canvas folder: assignment notes go to `作业 Homework/`, the course requirements to the course folder, and the files as the school sent them are kept out of sight, so nothing is downloaded twice. An older `Canvas/` folder is split into the course folders once, the first time Graphite starts. New files are filed like the import skill does: slides in `<Course>/课件 Slides/`, homework in `作业 Homework/`, exams and solutions in `复习资料/`; PowerPoint and Word files get a PDF copy. A file already in the course folder is skipped, nothing is ever overwritten (a different file with the same name becomes "name (2)"), a file you delete does not come back, and the course's index note gets a line of links. A badge on the Canvas button and the **New in your course folders** card tell you what was added. **Pull all course materials** does the same right away.
+**1. Sign in.** Click the **Canvas button** (a building) in the bottom-left ribbon, or open a new tab and choose SJTU Canvas, then click **Sign in with jAccount**. Finish signing in on the school page that opens (password or QR code); the window closes by itself. While it says it is waiting, there is nothing else to click.
 
-**Deadlines and one-click submit.** **Upcoming (30 days)** shows how many days are left. **Submit assignment** next to a deadline picks the matching file from the course's homework folder (by the assignment's number and words, then the newest) and shows the preview; check it and press **Confirm and submit**. Nothing is ever sent before you confirm. In a course's **Assignments** you can also choose files yourself from the vault or the computer. You can add your personal Canvas calendar feed under **Calendar subscription**.
+**2. Reading your courses.** Graphite then reads your courses one by one in the background, and the sync bar shows progress (for example "Syncing… 3/6"). You can keep working meanwhile, and each course appears as soon as it has been read. While the app is open the course list refreshes every 15 minutes; click **Sync now** to refresh at once.
+
+**3. Course files are filed for you.** Under each course, pick its vault folder in **Course folder** (Graphite suggests one from the course name, e.g. 线性代数 → *Linear Algebra*, or you can make a new one). With **Sync new slides automatically** on, Graphite downloads new files when it starts and every 3 hours after that, and files them: slides in `<Course>/课件 Slides/`, homework in `作业 Homework/`, exams and solutions in `复习资料/`, and the course requirements in the course folder. PowerPoint and Word files also get a PDF copy. To do it now, click **Pull all course materials**; for one course only, click that course's **Download course files**.
+- A file that is already there is skipped and nothing is ever overwritten; a different file with the same name is saved as "name (2)".
+- A file you delete is not downloaded again.
+- New files put a badge on the Canvas button and are listed in **New in your course folders**; the course's index note gets a line of links.
+- Files you download by hand in the Canvas window go to `Downloads/` at the top of your vault.
+- An older `Canvas/` folder is split into the course folders once, the first time Graphite starts.
+
+**4. Requirements, deadlines and submitting.** Assignments, announcements, pages and discussions open in Graphite's reader; for anything it cannot show (taking a quiz, replying to a discussion), use **Open in Graphite's Canvas window**. **Course requirements** shows the syllabus the teacher posted. **Next 30 days** lists what is due and how many days are left. Click **Submit assignment** next to a deadline and Graphite picks the most likely file from that course's homework folder (by assignment number, title, then the newest) and shows a preview; check the course, assignment and file, then click **Confirm and submit**. Nothing is sent before you confirm. You can also pick files yourself in a course's **Assignments** with **Choose from vault** or **Choose from computer**. If the result is unclear, click **Check submission status** before submitting again.
+
+**5. Calendar and signing out.** Paste the link from Canvas's Calendar → Calendar feed into **Calendar subscription** to see every event on your dashboard. **Sign out of school portal** only ends the school website's sign-in; **Disconnect account** also clears the saved account, calendar subscription and course cache on this computer. Files already in your vault stay.
+
+**How long things take.**
+- Signing in with jAccount: about a minute (depending on how fast you type or scan).
+- First read of your courses: about 30 seconds to a minute per course, so 3–5 minutes for six.
+- Later visits: your saved courses appear at once; the background update usually takes 1–3 minutes.
+- Pull all course materials: about 1–3 seconds per file, so 1–2 minutes for a few dozen files; each PowerPoint or Word PDF copy adds a few seconds.
+- Submitting: the receipt usually appears 10–30 seconds after you confirm.
 
 ## Snip, file and review what you read
 

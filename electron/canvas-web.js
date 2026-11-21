@@ -187,7 +187,7 @@ function readSchoolPage() {
   });
   const recognizableEmpty = /you are not enrolled in any courses|未注册任何课程|尚未注册任何课程|没有注册任何课程|您未加入任何课程|未註冊任何課程|您沒有註冊任何課程|未选修任何课程|no (?:está|estás) (?:inscrit[oa]|matriculad[oa]) en ningún curso|aucun cours|登録されているコースはありません|등록된 강좌가 없습니다/i.test(mainText)
     || (url.pathname==='/courses' && !!document.querySelector('#past_enrollments_table,#future_enrollments_table') && !hasCourseTable);
-  const busy = !!root.querySelector('[aria-busy="true"],.loadingIndicator,[data-testid="loading-spinner"]');
+  const busy = [...root.querySelectorAll('[aria-busy="true"],.loadingIndicator,[data-testid="loading-spinner"]')].some(visible);
   return { logged, user: accountName, webIdentity:identity ? (identity[1]||identity[2]) : null, pageUrl:url.href, denied, notFound,
     enrollments, hasCourseTable, recognizableEmpty, links, tabs, next, extraPages:pager.length>next.length,
     download: download?.href || null, receiptUrl: receiptLink?.href || null, receiptFiles,body,bodyLinks,syllabus:!!rich&&!assignment,upload:!!upload||enhancedUpload,due,...receipt,busy };
@@ -210,6 +210,9 @@ async function readCourses(loadPage, options = {}) {
   const index=await safe(SITE+'/courses');
   if (!index.hasCourseTable && !index.recognizableEmpty && !index.enrollments?.length) throw fail(422,'未识别学校的课程列表，已保留上次的同步结果。');
   const courses=[], seen=new Set(), warnings=[];
+  // How many courses this read will visit, for progress. One course is handed over as soon as it is complete, so a
+  // long read leaves usable courses behind even if Graphite closes (or one later page fails).
+  const total = new Set((index.enrollments || []).map(item => valid(item.href)?.pathname.match(/^\/courses\/(\d+)\/?$/)?.[1]).filter(Boolean)).size;
   const previous=options.previousSnapshot;
   const previousCourses=index.webIdentity && previous?.webIdentity===index.webIdentity ? previous.courses || [] : [];
   const sameDisplayName=!index.webIdentity && !previous?.webIdentity && index.user && index.user===options.previousUser;
@@ -223,8 +226,9 @@ async function readCourses(loadPage, options = {}) {
     const previousMaterial=old || (sameDisplayName && previous?.courses?.find(course=>course.id===id));
     const moduleFiles=new Map();
     courses.push(c);
+    const checkpoint=()=>options.onCourse?.({courses,warnings,webIdentity:index.webIdentity || null,total,done:courses.length});
     let home;
-    try { home=await safe(url); } catch(e){if(e.status===401)throw e;c.warnings.push(e.message);continue;}
+    try { home=await safe(url); } catch(e){if(e.status===401)throw e;c.warnings.push(e.message);await checkpoint();continue;}
     const approved=new Set((home.tabs || []).map(h=>valid(h)?.pathname?.replace(/\/$/,'')));
     const coursePath='/courses/'+id+'/';
     if(!approved.size) c.warnings.push('未识别课程导航，仅列出主页中已发布的链接。');
@@ -379,6 +383,7 @@ async function readCourses(loadPage, options = {}) {
         catch(e){if(e.status===401)throw e;c.warnings.push(a.title+'：'+e.message);}
       }
     }
+    await checkpoint();
   }
   return { user:index.user||'', snapshot:{courses,warnings,webIdentity:index.webIdentity||null}, syncedAt:new Date().toISOString() };
 }
