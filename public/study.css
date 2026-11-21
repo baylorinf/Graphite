@@ -266,3 +266,30 @@
 .snip-graphie { border-top: 1px solid var(--border); border-radius: 0 0 7px 7px; color: var(--text-muted); }
 .snip-target { font-size: 12.5px; }
 .study-decks { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 10px; }
+
+/* ---------- every other dropdown (dropdown.js): the same look as the AI picker ---------- */
+.gdd-native { position: absolute !important; width: 1px !important; height: 1px !important; min-width: 0 !important; padding: 0 !important; margin: 0 !important;
+  border: 0 !important; opacity: 0 !important; pointer-events: none !important; overflow: hidden !important; clip-path: inset(50%) !important; }
+.gdd-btn { display: inline-flex; align-items: center; gap: 8px; max-width: 100%; min-height: 32px; padding: 0 9px 0 12px; border-radius: 10px; box-sizing: border-box;
+  border: 1px solid var(--border); background: var(--bg-2); color: var(--text); font: inherit; font-size: 13px; line-height: 1.2; cursor: pointer; text-align: left; vertical-align: middle;
+  transition: border-color .15s, background .15s, box-shadow .15s; }
+.gdd-btn[hidden] { display: none; }
+.gdd-btn:hover:not(:disabled) { background: var(--bg-hover); border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); }
+.gdd-btn:focus-visible, .gdd-btn.is-open { box-shadow: 0 0 0 3px var(--accent-ring, var(--accent-bg)); border-color: var(--accent); outline: none; }
+.gdd-btn:disabled { opacity: .5; cursor: default; }
+.gdd-btn .gdd-value { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gdd-btn .aip-chev { transition: transform .15s; }
+.gdd-btn.is-open .aip-chev { transform: rotate(180deg); }
+.ai-field .gdd-btn, .cv-submit-inner .gdd-btn { width: 100%; }
+.cv-block .gdd-btn { width: min(100%, 34em); }
+.gdd-pop { display: flex; flex-direction: column; gap: 4px; overflow: hidden; }
+.gdd-search { flex: none; width: 100%; box-sizing: border-box; height: 32px; padding: 0 10px; border-radius: 9px; border: 1px solid var(--border); background: var(--bg); color: var(--text); font: inherit; font-size: 13px; }
+.gdd-search:focus { outline: none; border-color: var(--accent); }
+.gdd-list { overflow-y: auto; min-height: 0; outline: none; }
+.gdd-opt { padding: 7px 10px; }
+.gdd-opt .aip-name { flex: 1; min-width: 0; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gdd-opt.is-active { background: var(--bg-hover); }
+.gdd-opt.is-on { background: var(--accent-bg); }
+.gdd-opt.is-on .aip-name { font-weight: 600; }
+.gdd-opt.is-disabled { opacity: .45; cursor: default; }
+.gdd-none { padding: 10px; color: var(--text-muted); font-size: 13px; }

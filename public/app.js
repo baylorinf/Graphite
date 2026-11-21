@@ -3,6 +3,7 @@ import katex from '/lib/katex/katex.mjs';
 import '/lib/katex/contrib/mhchem.mjs'; // \ce{H2O} chemistry formulas
 import { t, LANGS, setLang, getLang, detectLang, applyI18n } from '/i18n.js';
 import * as PM from '/plugins.js';
+import '/dropdown.js'; // every plain <select> drawn as Graphite's styled dropdown
 import { hash, merge3, isConflictCopy } from '/sync.js';
 import { applyAppearance } from '/appearance.js';
 import * as RV from '/review.js';

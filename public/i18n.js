@@ -2735,3 +2735,28 @@ for (const [k, v] of Object.entries({
   'ai.job.transcribeDesc': ['“To Markdown” on a screenshot: the slide, formula or table written out as Markdown with $maths$, ready to file or turn into a card. Needs an AI that reads images.', '« En Markdown » sur une capture : diapositive, formule ou tableau retranscrits en Markdown avec $maths$, à classer ou à transformer en carte. Demande une IA qui lit les images.', '«A Markdown» en una captura: la diapositiva, fórmula o tabla en Markdown con $mates$, lista para archivar o convertir en tarjeta. Necesita una IA que lea imágenes.', 'スクリーンショットの「Markdown に」：スライド・数式・表を $数式$ 付き Markdown に書き起こし、ノートやカードに使えます。画像を読める AI が必要です。', '캡처의 “Markdown으로”: 슬라이드·수식·표를 $수식$ 포함 Markdown으로 옮겨 노트나 카드에 사용. 이미지를 읽는 AI 필요.', '截图上的「转成文字」：把课件、公式或表格转写成带 $公式$ 的 Markdown，可以直接放进笔记或制卡。需要能看图的 AI。', '截圖上的「轉成文字」：把課件、公式或表格轉寫成帶 $公式$ 的 Markdown，可以直接放進筆記或製卡。需要能看圖的 AI。'],
   'cmd.snip-region': ['Snip a region (screenshot)', 'Capturer une zone', 'Recortar una zona', '範囲を切り取る', '영역 캡처', '截图（框选区域）', '截圖（框選區域）'],
 })) ['en', 'fr', 'es', 'ja', 'ko', 'zh-CN', 'zh-TW'].forEach((c, i) => { D[c][k] = v[i]; });
+
+// 1.1.58: code help in the editor (completions, parameter hints, hover, problem marks), the O2 switch, styled dropdowns.
+for (const [k, v] of Object.entries({
+  'wb.o2': ['O2', 'O2', 'O2', 'O2', 'O2', 'O2', 'O2'],
+  'wb.o2Title': ['Optimise Run and Compile with -O2 (faster programs, remembered for this project). Debugging always builds without optimisation.', 'Optimiser l’exécution et la compilation avec -O2 (programmes plus rapides, mémorisé pour ce projet). Le débogage compile toujours sans optimisation.', 'Optimizar Ejecutar y Compilar con -O2 (programas más rápidos, se recuerda en este proyecto). Depurar siempre compila sin optimizar.', '実行とビルドを -O2 で最適化（速いプログラム、このプロジェクトで記憶）。デバッグは常に最適化なしでビルドします。', '실행과 컴파일을 -O2로 최적화(더 빠른 프로그램, 이 프로젝트에 기억). 디버그는 항상 최적화 없이 빌드합니다.', '用 -O2 优化运行和编译（程序更快，按项目记住）。调试始终不优化编译。', '用 -O2 最佳化執行與編譯（程式更快，依專案記住）。偵錯一律不最佳化編譯。'],
+  'wb.o2On': ['O2 on: Run and Compile build with -O2.', 'O2 activé : exécution et compilation avec -O2.', 'O2 activado: Ejecutar y Compilar usan -O2.', 'O2 オン：実行とビルドは -O2 です。', 'O2 켜짐: 실행과 컴파일에 -O2를 씁니다.', '已开启 O2：运行和编译使用 -O2。', '已開啟 O2：執行與編譯使用 -O2。'],
+  'wb.o2Off': ['O2 off: builds without optimisation (-O0).', 'O2 désactivé : compilation sans optimisation (-O0).', 'O2 desactivado: compila sin optimizar (-O0).', 'O2 オフ：最適化なし（-O0）でビルドします。', 'O2 꺼짐: 최적화 없이(-O0) 빌드합니다.', '已关闭 O2：不优化编译（-O0）。', '已關閉 O2：不最佳化編譯（-O0）。'],
+  'ci.kind.keyword': ['Keyword', 'Mot-clé', 'Palabra clave', 'キーワード', '키워드', '关键字', '關鍵字'],
+  'ci.kind.function': ['Function', 'Fonction', 'Función', '関数', '함수', '函数', '函式'],
+  'ci.kind.method': ['Method', 'Méthode', 'Método', 'メソッド', '메서드', '方法', '方法'],
+  'ci.kind.field': ['Field', 'Champ', 'Campo', 'フィールド', '필드', '字段', '欄位'],
+  'ci.kind.variable': ['Name in your code', 'Nom de votre code', 'Nombre de tu código', 'コード内の名前', '코드의 이름', '代码中的名称', '程式碼中的名稱'],
+  'ci.kind.snippet': ['Snippet', 'Extrait', 'Fragmento', 'スニペット', '스니펫', '代码片段', '程式碼片段'],
+  'ci.kind.type': ['Type', 'Type', 'Tipo', '型', '타입', '类型', '型別'],
+  'ci.kind.constant': ['Constant', 'Constante', 'Constante', '定数', '상수', '常量', '常數'],
+  'ci.kind.module': ['Module / header', 'Module / en-tête', 'Módulo / cabecera', 'モジュール / ヘッダー', '모듈 / 헤더', '模块 / 头文件', '模組 / 標頭檔'],
+  'ci.snippet': ['Snippet · Tab moves to the next field', 'Extrait · Tab passe au champ suivant', 'Fragmento · Tab pasa al siguiente campo', 'スニペット · Tab で次の欄へ', '스니펫 · Tab으로 다음 칸', '代码片段 · 按 Tab 跳到下一处', '程式碼片段 · 按 Tab 跳到下一處'],
+  'ci.definedAt': ['Defined on line {line}', 'Défini à la ligne {line}', 'Definido en la línea {line}', '{line} 行目で定義', '{line}번째 줄에 정의됨', '定义于第 {line} 行', '定義於第 {line} 行'],
+  'ci.none': ['No suggestions', 'Aucune suggestion', 'Sin sugerencias', '候補はありません', '제안 없음', '没有建议', '沒有建議'],
+  'ci.unclosed': ['“{c}” is never closed', '« {c} » n’est jamais fermé', '«{c}» nunca se cierra', '「{c}」が閉じられていません', '“{c}”이(가) 닫히지 않았습니다', '“{c}” 没有闭合', '「{c}」沒有閉合'],
+  'ci.unexpected': ['“{c}” has no opening bracket', '« {c} » n’a pas de parenthèse ouvrante', '«{c}» no tiene apertura', '「{c}」に対応する開き括弧がありません', '“{c}”에 맞는 여는 괄호가 없습니다', '“{c}” 没有对应的左括号', '「{c}」沒有對應的左括號'],
+  'ci.mismatch': ['“{c}” does not match “{o}” on line {line}', '« {c} » ne correspond pas à « {o} » ligne {line}', '«{c}» no corresponde a «{o}» de la línea {line}', '「{c}」は {line} 行目の「{o}」と対応しません', '“{c}”이(가) {line}번째 줄의 “{o}”와 맞지 않습니다', '“{c}” 与第 {line} 行的 “{o}” 不匹配', '「{c}」與第 {line} 行的「{o}」不相符'],
+  'dd.search': ['Type to filter…', 'Tapez pour filtrer…', 'Escribe para filtrar…', '入力して絞り込み…', '입력해 필터…', '输入以筛选…', '輸入以篩選…'],
+  'dd.none': ['No match', 'Aucun résultat', 'Sin coincidencias', '一致なし', '일치 항목 없음', '无匹配项', '無相符項目'],
+})) ['en', 'fr', 'es', 'ja', 'ko', 'zh-CN', 'zh-TW'].forEach((c, i) => { D[c][k] = v[i]; });

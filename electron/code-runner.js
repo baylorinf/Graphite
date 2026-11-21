@@ -10,6 +10,12 @@ const {debugProgram} = require('./code-debugger');
 const exec = promisify(execFile), win=process.platform==='win32';
 const MAX_INPUT=1024*1024, MAX_OUTPUT=4*1024*1024, CPP=/\.(?:cpp|cxx|cc|c\+\+)$/i;
 const fail=(code,message)=>Object.assign(Error(message),{code});
+// g++ arguments. Debugging always builds -O0 with debug information (stepping and variables match the code);
+// "O2" (optimize) builds an optimised program for Run and Compile.
+function compileArgs({mode,optimize=false,debugFlags=[],files=[],exe}){
+  const opt=optimize && mode!=='debug' ? ['-O2'] : ['-g','-O0'];
+  return ['-std=c++20',...opt,...(mode==='debug'?debugFlags:[]),...files,'-o',exe];
+}
 
 async function findTool(name){
   const dirs=(process.env.PATH||'').split(path.delimiter).filter(p=>path.isAbsolute(p));
@@ -117,7 +123,7 @@ function createCodeRunner({projects,onEvent}){
           debugFlags.unshift('-fdebug-prefix-map='+entry.root+'=.');
         }
       }
-      const compiled=await childRun(j,found.compiler.path,['-std=c++20','-g','-O0',...debugFlags,...files,'-o',exe],entry.root,env);
+      const compiled=await childRun(j,found.compiler.path,compileArgs({mode:req.mode,optimize:req.optimize===true,debugFlags,files:[...files],exe}),entry.root,env);
       assertRunning(j);
       if(compiled.code!==0){end={status:'compile_error',exitCode:compiled.code,message:'Compilation failed'};return;}
       if(req.mode==='build'){end={status:'success',exitCode:0};return;}
@@ -156,6 +162,7 @@ function createCodeRunner({projects,onEvent}){
     if(req.stdin!=null && (typeof req.stdin!=='string' || Buffer.byteLength(req.stdin)>MAX_INPUT))throw fail('invalid_input','Input must be text under 1 MiB');
     if(req.sources!=null && (!Array.isArray(req.sources)||req.sources.length>256||req.sources.some(s=>typeof s!=='string')))throw fail('invalid_source','Choose up to 256 source files');
     if(req.breakpoints!=null && (!Array.isArray(req.breakpoints)||req.breakpoints.length>512))throw fail('invalid_breakpoint','Choose up to 512 breakpoints');
+    if(req.optimize!=null && typeof req.optimize!=='boolean')throw fail('invalid_request','optimize must be true or false');
     const epoch=projectEpoch;
     const entry=await projects.resolveFile({projectId:req.projectId,path:req.path});
     if(epoch!==projectEpoch)throw fail('project_changed','The selected project changed');
@@ -181,3 +188,4 @@ function createCodeRunner({projects,onEvent}){
 
 module.exports=createCodeRunner;
 module.exports.createCodeRunner=createCodeRunner;
+module.exports.compileArgs=compileArgs;

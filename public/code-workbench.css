@@ -171,3 +171,69 @@ body.mode-code #left, body.mode-code .resizer[data-resize="left"], body.mode-cod
 @container code-wb (max-width: 600px) {
   .code-wb .wb-main, .code-wb.hide-assist .wb-main { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* ---------- 1.1.58: a calmer, more modern workbench (same tokens as the rest of Graphite, light and dark) ---------- */
+.code-wb { --wb-radius: 8px; --wb-h: 30px; font-size: 13px; }
+.code-wb button { height: var(--wb-h); padding: 0 11px; border-radius: var(--wb-radius); border-color: transparent; background: color-mix(in srgb, var(--text) 6%, transparent);
+  display: inline-flex; align-items: center; gap: 6px; transition: background .12s, border-color .12s, box-shadow .12s, color .12s; }
+.code-wb button:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 11%, transparent); }
+.code-wb button:focus-visible { outline: none; box-shadow: 0 0 0 2px var(--accent-ring, var(--accent-bg)); border-color: var(--accent); }
+.code-wb button.wb-primary { background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, #fff), var(--accent)); border-color: transparent; box-shadow: 0 1px 2px rgba(0,0,0,.18), inset 0 1px 0 rgba(255,255,255,.18); font-weight: 600; }
+.code-wb button.wb-primary:hover:not(:disabled) { filter: brightness(1.06); background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 88%, #fff), var(--accent)); }
+.code-wb [data-wb=stop] { color: #e5534b; }
+.code-wb [data-wb=stop]::before { content: "■" / ""; font-size: 10px; }
+
+.wb-project { padding: 8px 14px; gap: 10px; background: var(--bg); }
+.wb-proj-name { font-size: 13.5px; }
+.wb-proj-root { padding: 2px 8px; border-radius: 999px; background: color-mix(in srgb, var(--text) 6%, transparent); }
+
+.wb-tree { background: color-mix(in srgb, var(--bg-2) 70%, var(--bg)); }
+.wb-tree-bar { padding: 8px 10px; border-bottom: 0; }
+.wb-tree-title { font-size: 11px; letter-spacing: .07em; text-transform: uppercase; color: var(--text-muted); }
+.code-wb .wb-tree-bar button { height: 26px; padding: 0 8px; background: none; color: var(--text-muted); }
+.code-wb .wb-tree-bar button:hover:not(:disabled) { color: var(--text); background: color-mix(in srgb, var(--text) 9%, transparent); }
+.wb-tree-list { padding: 2px 6px 8px; }
+.wb-node { border-radius: 6px; padding-top: 4px; padding-bottom: 4px; margin: 1px 0; }
+.wb-node.is-active { background: var(--accent-bg); color: var(--text); box-shadow: inset 2px 0 0 var(--accent); }
+
+.wb-tabs { background: color-mix(in srgb, var(--bg-2) 70%, var(--bg)); min-height: 36px; padding: 4px 6px 0; gap: 2px; border-bottom: 1px solid var(--border); }
+.wb-tab { height: 32px; border: 0; border-radius: 8px 8px 0 0; padding: 0 6px 0 12px; }
+.wb-tab:hover:not(.is-active) { background: color-mix(in srgb, var(--text) 5%, transparent); color: var(--text); }
+.wb-tab.is-active { background: var(--bg); box-shadow: inset 0 2px 0 var(--accent), 0 1px 0 var(--bg); }
+.code-wb .wb-tab-x { height: 20px; width: 20px; padding: 0; justify-content: center; border-radius: 5px; background: none; opacity: .55; }
+.code-wb .wb-tab-x:hover { opacity: 1; background: color-mix(in srgb, var(--text) 12%, transparent) !important; }
+
+.wb-toolbar { padding: 7px 12px; gap: 6px; border-bottom: 1px solid var(--border); background: var(--bg); }
+.wb-file { font-size: 12.5px; }
+.wb-status { font-size: 12px; }
+.wb-sep { height: 20px; margin: 0 4px; }
+.code-wb button.wb-o2 { font-weight: 700; letter-spacing: .02em; font-family: var(--font-code, Consolas, monospace); color: var(--text-muted); background: none; border: 1px dashed color-mix(in srgb, var(--text) 25%, transparent); }
+.code-wb button.wb-o2.is-on { color: var(--accent); border-style: solid; border-color: color-mix(in srgb, var(--accent) 55%, transparent); background: var(--accent-bg); }
+.code-wb button.wb-o2.is-on::after { content: "" / ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px var(--accent-bg); }
+.wb-debug-controls { padding: 2px; border-radius: 10px; background: color-mix(in srgb, #e0a030 14%, transparent); }
+.code-wb .wb-debug-controls button { height: 26px; background: none; }
+
+.wb-cm .CodeMirror-gutters { background: var(--bg); border-right: 1px solid color-mix(in srgb, var(--border) 60%, transparent); }
+.wb-cm .CodeMirror-activeline-gutter, .wb-current-line { background: color-mix(in srgb, var(--accent) 6%, transparent); }
+.wb-tools { padding: 4px 12px; gap: 14px; font-size: 11.5px; background: color-mix(in srgb, var(--bg-2) 70%, var(--bg)); }
+
+.wb-panel { background: var(--bg); border-top: 1px solid var(--border); box-shadow: 0 -1px 0 color-mix(in srgb, var(--border) 40%, transparent); }
+.wb-panel-tabs { padding: 0 10px; gap: 4px; min-height: 36px; background: color-mix(in srgb, var(--bg-2) 70%, var(--bg)); }
+.code-wb .wb-panel-tabs [data-panel] { height: 35px; border-radius: 0; background: none; border: 0; box-shadow: inset 0 -2px 0 transparent; font-size: 12px; letter-spacing: .02em; }
+.code-wb .wb-panel-tabs [data-panel]:hover { color: var(--text); background: none; }
+.code-wb .wb-panel-tabs [data-panel].is-active { background: none; box-shadow: inset 0 -2px 0 var(--accent); color: var(--text); }
+.code-wb .wb-panel-toggle { height: 26px; background: none; color: var(--text-muted); }
+.wb-run-state { font-size: 12px; padding: 2px 9px; border-radius: 999px; }
+.wb-run-state.is-ok { background: color-mix(in srgb, #2f9e6a 14%, transparent); }
+.wb-run-state.is-bad { background: color-mix(in srgb, #d84c51 13%, transparent); }
+.wb-output { padding: 10px 14px; }
+.code-wb .wb-diag { padding: 6px 14px; border-radius: 0; height: auto; display: block; background: none; }
+.code-wb .wb-diag:hover:not(:disabled) { background: color-mix(in srgb, var(--text) 5%, transparent); }
+#wb-stdin { border-radius: 8px; padding: 8px 10px; }
+.code-wb .wb-bp-row, .code-wb .wb-diag { height: auto; }
+.wb-quick { border-radius: 12px; padding: 10px; backdrop-filter: blur(16px); background: color-mix(in srgb, var(--bg) 95%, transparent); }
+.wb-run-project:not([hidden]) { padding: 10px 14px; }
+.wb-assist { background: color-mix(in srgb, var(--bg-2) 70%, var(--bg)); }
+.wa-msg { border-radius: 10px; }
+.code-wb .wa-actions button, .code-wb .wa-send-row button { height: 28px; }
+.code-wb button[hidden], .code-wb [hidden] { display: none !important; }

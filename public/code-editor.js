@@ -1,5 +1,6 @@
 import { t } from '/i18n.js';
 import formats from '/source-formats.json' with { type: 'json' };
+import { attachIntel, langOf } from '/code-intel.js';
 
 export function sourceFormat(path) {
   const ext=(/\.([^./]+)$/.exec(path || '')?.[1] || '').toLowerCase();
@@ -126,6 +127,7 @@ export function createCodeEditor({vault, askName, openCreated, savedFile, copyLi
   function close() {
     if (active?.cm) {
       positions.set(active.key,{cursor:active.cm.getCursor(),scroll:active.cm.getScrollInfo().top});
+      active.intel?.dispose();
       active.cm.toTextArea();
     }
     active = null;
@@ -236,11 +238,12 @@ export function createCodeEditor({vault, askName, openCreated, savedFile, copyLi
       const area=document.createElement('textarea'); area.value=recovered?.text ?? a.disk ?? ''; host.append(area);
       a.cm=CM.fromTextArea(area,{
         mode:format.mode, lineNumbers:true, tabSize:4, indentUnit:4, indentWithTabs:false,
-        screenReaderLabel:path, theme:'graphite', viewportMargin:12,
+        screenReaderLabel:path, theme:'graphite', viewportMargin:12, gutters:['CodeMirror-linenumbers','ci-diag-gutter'],
         extraKeys:{Tab:cm=>cm.somethingSelected()?cm.indentSelection('add'):cm.execCommand('insertSoftTab'),
           'Shift-Tab':'indentLess','Ctrl-S':()=>save(),'Cmd-S':()=>save()},
       });
       attachFind(body,a.cm);
+      a.intel=attachIntel(a.cm,{lang:()=>langOf(path),t,gutter:'ci-diag-gutter'});
       const pos=positions.get(a.key);
       if (pos) { a.cm.setCursor(pos.cursor); a.cm.scrollTo(null,pos.scroll); }
       if (a.line) goTo(a.line);

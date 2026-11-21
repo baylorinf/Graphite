@@ -778,6 +778,145 @@ async function main() {
     assert.equal(await p.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--font-code-size').trim()), '19px');
   });
 
+  // ---------- 1.1.58: code help, O2, styled dropdowns ----------
+  const cmVal = p => p.evaluate(() => document.querySelector('#code-workbench .CodeMirror').CodeMirror.getValue());
+  const typeAtLine = async (p, line, text) => {
+    await p.locator(`${wb} .CodeMirror`).waitFor();
+    await p.waitForFunction(() => document.querySelector('#code-workbench .CodeMirror')?.CodeMirror.getValue().length > 0);
+    await p.evaluate(l => { const cm = document.querySelector('#code-workbench .CodeMirror').CodeMirror; cm.focus(); cm.setCursor({ line: l, ch: cm.getLine(l).length }); }, line);
+    await p.keyboard.press('Enter'); await p.keyboard.type(text, { delay: 25 });
+  };
+  await test('code help: completions as you type (std::, members, own names), Enter inserts with brackets, parameter hint follows the argument', async p => {
+    await openExternal(p);
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await typeAtLine(p, 3, 'std::so');
+    await p.locator('.ci-pop .ci-item', { hasText: 'sort' }).first().waitFor();
+    assert.match(await p.locator('.ci-pop .ci-item.is-active').innerText(), /^ƒ\s*sort/);
+    assert.match(await p.locator('.ci-pop .ci-doc').innerText(), /Sorts/);
+    await p.keyboard.press('Enter');
+    assert.match(await cmVal(p), /std::sort\(\)/);
+    await p.locator('.ci-sig').waitFor();
+    assert.match(await p.locator('.ci-sig').innerText(), /sort\(RandomIt first/);
+    assert.equal(await p.locator('.ci-sig .ci-param').innerText(), 'RandomIt first');
+    await p.keyboard.type('a, ');
+    await p.waitForFunction(() => document.querySelector('.ci-sig .ci-param')?.textContent === 'RandomIt last');
+    await p.keyboard.press('End'); await p.keyboard.type(';');
+    await typeAtLine(p, 4, 'x');
+    await p.keyboard.press('Control+Space');
+    await p.locator('.ci-pop .ci-item.is-active', { hasText: 'x' }).waitFor();
+    await p.keyboard.press('Escape');
+    assert.equal(await p.locator('.ci-pop').count(), 0, 'Esc closes the list');
+    await p.keyboard.press('Control+z'); await p.keyboard.press('Control+z');
+    await typeAtLine(p, 4, 'fo');
+    await p.locator('.ci-pop .ci-item', { hasText: 'for' }).first().waitFor();
+    const snippetRow = p.locator('.ci-pop .ci-item').filter({ has: p.locator('.ci-snippet') }).first();
+    await p.locator('.ci-pop .ci-item').filter({ has: p.locator('.ci-icon.ci-snippet') }).first().click();
+    assert.match(await cmVal(p), /for \(int i = 0; i < n; i\+\+\) \{/);
+    assert.deepEqual(await p.evaluate(() => document.querySelector('#code-workbench .CodeMirror').CodeMirror.getSelections()), ['i', 'i', 'i'], 'every i of the first field selected');
+    await p.keyboard.type('k');
+    assert.match(await cmVal(p), /for \(int k = 0; k < n; k\+\+\)/, 'the same name changes everywhere');
+    if (await p.locator('.ci-pop').count()) await p.keyboard.press('Escape'); // typing opened suggestions; Esc closes them, the snippet stays
+    await p.keyboard.press('Tab');
+    assert.equal(await p.evaluate(() => document.querySelector('#code-workbench .CodeMirror').CodeMirror.getSelection()), 'n');
+    void snippetRow;
+  });
+
+  await test('code help: brackets close themselves, Enter between braces indents, unbalanced brackets are marked, hover explains', async p => {
+    await openExternal(p);
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await typeAtLine(p, 4, 'if (x');
+    assert.match(await cmVal(p), /if \(x\)\n/, 'the ( got its )');
+    await p.keyboard.type(') {');
+    await p.keyboard.press('Enter');
+    assert.match(await cmVal(p), /if \(x\) \{\n {8}\n {4}\}/, 'block opened on its own line: ' + JSON.stringify(await cmVal(p)));
+    await p.keyboard.press('Backspace'); await p.keyboard.press('Backspace'); await p.keyboard.press('Backspace'); await p.keyboard.press('Backspace');
+    await p.keyboard.press('Backspace'); await p.keyboard.press('Backspace'); await p.keyboard.press('Backspace');
+    await p.evaluate(() => { const cm = document.querySelector('#code-workbench .CodeMirror').CodeMirror; cm.replaceRange('  int bad = (1 + 2;\n', { line: 5, ch: 0 }); });
+    await p.locator(`${wb} .ci-squiggle.ci-error`).first().waitFor();
+    await p.locator(`${wb} .ci-gutter.ci-error`).first().waitFor();
+    assert.match(await p.locator(`${wb} .ci-gutter.ci-error`).first().getAttribute('title'), /never closed/);
+    // hover over cout: its documentation
+    const xy = await p.evaluate(() => { const cm = document.querySelector('#code-workbench .CodeMirror').CodeMirror; const line = cm.getValue().split('\n').findIndex(l => l.includes('cout')); const c = cm.charCoords({ line, ch: cm.getLine(line).indexOf('cout') + 2 }, 'window'); return [(c.left + c.right) / 2, (c.top + c.bottom) / 2]; });
+    await p.mouse.move(xy[0] - 30, xy[1]); await p.mouse.move(xy[0], xy[1], { steps: 4 });
+    await p.locator('.ci-hover').waitFor();
+    assert.match(await p.locator('.ci-hover').innerText(), /Standard output/);
+  });
+
+  await test('compile errors are marked in the editor: wavy underline at the column, a gutter dot, the message on hover', async p => {
+    await p.evaluate(() => { const f = window.__fake.get('files') || {}; });
+    await openExternal(p);
+    await p.evaluate(() => { const f = window.__fake.get('files'); f['ext-1']['main.cpp'] = '// BROKEN\nint main() {\n    int x = 1\n    return 0;\n}\n'; window.__fake.set('files', f); });
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    await p.locator(`${wb} [data-wb=build]`).click();
+    await p.locator(`${wb} .wb-diag.is-error`).waitFor();
+    const mark = p.locator(`${wb} .CodeMirror-line .ci-squiggle.ci-error`).first();
+    await mark.waitFor();
+    assert.equal(await mark.innerText(), 'int', 'line 3, column 5');
+    assert.match(await mark.getAttribute('title'), /expected ';'/);
+    await p.locator(`${wb} .ci-gutter.ci-error`).first().waitFor();
+  });
+
+  await test('O2: a switch in the run toolbar; Run and Compile send optimize, Debug never; remembered per project', async p => {
+    await openExternal(p);
+    await p.locator(`${wb} [data-node="main.cpp"]`).click();
+    const o2 = p.locator(`${wb} [data-wb=o2]`);
+    assert.equal(await o2.getAttribute('aria-pressed'), 'false');
+    await o2.click();
+    assert.equal(await o2.getAttribute('aria-pressed'), 'true');
+    await p.locator(`${wb} [data-wb=run]`).click();
+    await p.waitForFunction(() => /O2 ·/.test(document.querySelector('#code-workbench .wb-run-state').textContent));
+    await p.locator(`${wb} [data-wb=build]`).click();
+    await p.locator(`${wb} .wb-run-state.is-ok`).waitFor();
+    await p.locator(`${wb} [data-wb=debug]`).click();
+    await p.waitForFunction(() => window.__calls.filter(c => c[1] === 'start').length === 3);
+    assert.deepEqual((await calls(p, 'run', 'start')).map(c => [c.mode, c.optimize]), [['run', true], ['build', true], ['debug', false]]);
+    await p.reload(); await p.waitForFunction(() => window.app?.commands);
+    await run(p, 'code-workbench');
+    await p.locator(`${wb} .wb-tab.is-active`).waitFor();
+    assert.equal(await p.locator(`${wb} [data-wb=o2]`).getAttribute('aria-pressed'), 'true', 'kept for this project');
+    await p.locator(`${wb} [data-wb=vault]`).click();
+    await p.waitForFunction(() => /This vault/.test(document.querySelector('#code-workbench .wb-proj-name').textContent));
+    assert.equal(await p.locator(`${wb} [data-wb=o2]`).getAttribute('aria-pressed'), 'false', 'another project has its own choice');
+  });
+
+  await test('dropdowns: plain selects are drawn as the styled dropdown (button + list with a check), keyboard works, the value is the select’s', async p => {
+    await run(p, 'new-code-file');
+    const btn = p.locator('.wb-new-dialog .gdd-btn');
+    await btn.waitFor();
+    assert.equal(await btn.innerText(), 'Vault root');
+    assert.equal(await p.locator('.wb-new-dialog select[data-f=folder]').evaluate(s => getComputedStyle(s).opacity), '0', 'the native list is not shown');
+    await btn.click();
+    await p.locator('.gdd-pop .gdd-opt.is-on', { hasText: 'Vault root' }).waitFor();
+    await p.locator('.gdd-pop .gdd-opt', { hasText: /^LA$/ }).click();
+    assert.equal(await p.locator('.wb-new-dialog [data-f=folder]').inputValue(), 'LA');
+    assert.equal(await btn.innerText(), 'LA');
+    assert.match(await p.locator('.wb-new-dialog .wb-target').innerText(), /LA\/main\.cpp/, 'change event reached the dialog');
+    await btn.focus(); await p.keyboard.press('ArrowDown');
+    await p.locator('.gdd-pop').waitFor();
+    await p.keyboard.press('ArrowDown'); await p.keyboard.press('Enter');
+    assert.equal(await p.locator('.wb-new-dialog [data-f=folder]').inputValue(), 'LA/Ch1');
+    await p.locator('.wb-new-dialog [data-f=folder]').selectOption('');
+    assert.equal(await btn.innerText(), 'Vault root', 'a value set from outside shows on the button');
+    await p.locator('.wb-new-dialog input[value=project]').check();
+    assert.equal(await btn.isDisabled(), true, 'disabled with the select');
+  });
+
+  await test('dropdowns: Settings font picker is the styled dropdown, with a filter box and each font in its own typeface', async p => {
+    await p.evaluate(() => import('/settings.js').then(m => m.openSettings('appearance')));
+    const btn = p.locator('.settings-content .gdd-btn').filter({ hasText: /Default|默认/ }).first();
+    await btn.waitFor();
+    await p.waitForFunction(() => document.querySelectorAll('.settings-content select').length > 2 && !document.querySelector('.settings-content select:not(.gdd-native):not(.aip-native)'), null, { timeout: 4000 }).catch(() => {});
+    assert.deepEqual(await p.locator('.settings-content select:not(.gdd-native):not(.aip-native)').evaluateAll(s => s.map(x => x.outerHTML.slice(0, 80))), [], 'no plain select left in Appearance');
+    await btn.click();
+    await p.locator('.gdd-pop .gdd-search').waitFor();
+    const n = await p.locator('.gdd-pop .gdd-opt').count();
+    assert.ok(n > 3, 'fonts listed: ' + n);
+    await p.keyboard.type('zzzz-no-such-font');
+    await p.locator('.gdd-pop .gdd-none').waitFor();
+    await p.keyboard.press('Escape');
+    assert.equal(await p.locator('.gdd-pop').count(), 0);
+  });
+
   await browser.close();
   await fs.rm(vault, { recursive: true, force: true }).catch(() => {});
   const failed = results.filter(r => !r.pass);

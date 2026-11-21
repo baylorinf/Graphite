@@ -126,3 +126,35 @@ test('real C++ project build, run, cancellation and debugger',{timeout:120000},a
   });
   assert.ok(!(await fs.readdir(root)).some(file=>file.endsWith('.exe')),'build artifact left in project');
 });
+
+test('O2: Run and Compile build with -O2 when asked; debugging always -O0 with debug information',()=>{
+  const {compileArgs}=require('../electron/code-runner');
+  const base={files:['a.cpp','b.cpp'],exe:'out.exe'};
+  assert.deepEqual(compileArgs({...base,mode:'run'}),['-std=c++20','-g','-O0','a.cpp','b.cpp','-o','out.exe']);
+  assert.deepEqual(compileArgs({...base,mode:'run',optimize:true}),['-std=c++20','-O2','a.cpp','b.cpp','-o','out.exe']);
+  assert.deepEqual(compileArgs({...base,mode:'build',optimize:true}),['-std=c++20','-O2','a.cpp','b.cpp','-o','out.exe']);
+  assert.deepEqual(compileArgs({...base,mode:'debug',optimize:true,debugFlags:['-fdebug-prefix-map=x=y']}),['-std=c++20','-g','-O0','-fdebug-prefix-map=x=y','a.cpp','b.cpp','-o','out.exe']);
+});
+
+test('O2: the optimize choice must be true or false',async()=>{
+  const runner=createCodeRunner({projects:{async resolveFile(){return {root:'/r',file:'/r/main.cpp'};},async resolveRoot(){return '/r';}},onEvent(){}});
+  await assert.rejects(runner.start({projectId:'p',path:'main.cpp',mode:'run',optimize:'yes'}),{code:'invalid_request'});
+});
+
+test('O2: a real optimised build runs and gives the same answer',{timeout:120000},async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'graphite o2 '));
+  const events=[],bus=new EventEmitter();
+  const projects={async resolveRoot(){return root;},async resolveFile({path:rel}){return {root,file:path.join(root,rel)};}};
+  const runner=createCodeRunner({projects,onEvent:e=>{events.push(e);bus.emit('event',e);}});
+  t.after(async()=>{await runner.dispose();await fs.rm(root,{recursive:true,force:true,maxRetries:4});});
+  const tools=await runner.tools();
+  if(!tools.compiler.found)return t.skip('Requires installed g++');
+  await fs.writeFile(path.join(root,'fast.cpp'),'#include <iostream>\nint main(){long long s=0;for(int i=1;i<=1000000;i++)s+=i%7;std::cout<<s;}\n');
+  const outs=[];
+  for(const optimize of [false,true]){
+    const job=await runner.start({projectId:'p',path:'fast.cpp',mode:'run',optimize});
+    for(;;){const e=events.find(e=>e.id===job.id&&e.type==='end');if(e){assert.equal(e.status,'success',JSON.stringify(e));break;}await once(bus,'event');}
+    outs.push(events.filter(e=>e.id===job.id&&e.type==='output').map(e=>e.text).join(''));
+  }
+  assert.equal(outs[0],'2999998');assert.equal(outs[1],outs[0]);
+});

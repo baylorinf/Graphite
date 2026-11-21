@@ -27,6 +27,7 @@ new MutationObserver(() => { for (const s of document.querySelectorAll('select[d
   .observe(document.documentElement, { childList: true, subtree: true });
 export function enhanceAISelect(select, feature) {
   if (!select || select.dataset.aip) return;
+  select._gdd?.destroy(); // drawn as a plain styled dropdown a moment ago: the AI picker takes over
   select.dataset.aip = '1';
   select.classList.add('aip-native');
   const btn = document.createElement('button');

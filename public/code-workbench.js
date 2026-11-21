@@ -8,6 +8,7 @@
 import { t } from '/i18n.js';
 import { sourceFormat, editorFor } from '/code-editor.js';
 import { createAssistant } from '/code-assistant-pane.js';
+import { attachIntel, langOf, parseDiagnostics as parseMessages } from '/code-intel.js';
 
 const CPP = /\.(cpp|cc|cxx|c\+\+)$/i;
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -61,6 +62,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
   let persistBad = false;          // unsaved text couldn't be kept in storage: switching projects waits, Retry shows
   let pendingProject = undefined;  // a project switch held back until the unsaved text is kept
   let assistant = null;            // the code assistant beside the editor (code-assistant-pane.js)
+  let intel = null;                // completions, hints, hover and problem marks (code-intel.js)
   // What is kept for a project (drafts, open files, cursors, breakpoints, input, assistant chat) belongs to its
   // workspace: the same folder visited again gets it back, a new folder put at the same path does not. Requests
   // to the desktop app, and checks that a late answer still belongs to the open project, use proj.id.
@@ -91,6 +93,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
             <span class="wb-spacer"></span>
             <button type="button" data-wb="save"></button>
             <span class="wb-sep"></span>
+            <button type="button" data-wb="o2" class="wb-o2" aria-pressed="false"></button>
             <button type="button" data-wb="build"></button><button type="button" data-wb="run" class="wb-primary"></button><button type="button" data-wb="run-project"></button><button type="button" data-wb="debug"></button><button type="button" data-wb="stop"></button>
             <button type="button" data-wb="assist" class="wb-assist-toggle" aria-pressed="true"></button>
             <span class="wb-debug-controls"><button type="button" data-wb="continue"></button><button type="button" data-wb="next"></button><button type="button" data-wb="step"></button><button type="button" data-wb="finish"></button></span>
@@ -133,7 +136,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     L('[data-wb=new-file]', 'wb.newFileShort', 'wb.newFile'); L('[data-wb=new-folder]', 'wb.newFolderShort', 'wb.newFolder');
     root.querySelector('[data-wb=refresh]').title = t('wb.refresh');
     L('[data-wb=save]', 'wb.save', 'wb.saveTitle'); L('[data-wb=build]', 'wb.build', 'wb.buildTitle'); L('[data-wb=run]', 'wb.runFile', 'wb.runFileTitle'); L('[data-wb=run-project]', 'wb.runProject', 'wb.runProjectTip');
-    L('[data-wb=debug]', 'wb.debug', 'wb.debugTitle'); L('[data-wb=stop]', 'wb.stop');
+    L('[data-wb=debug]', 'wb.debug', 'wb.debugTitle'); L('[data-wb=o2]', 'wb.o2', 'wb.o2Title'); L('[data-wb=stop]', 'wb.stop');
     L('[data-wb=continue]', 'wb.continue', 'wb.continueTitle'); L('[data-wb=next]', 'wb.next', 'wb.nextTitle'); L('[data-wb=step]', 'wb.step', 'wb.stepTitle'); L('[data-wb=finish]', 'wb.finish', 'wb.finishTitle');
     L('[data-wb=toggle-tree]', 'wb.files'); L('.wb-tree-title', 'wb.files');
     L('[data-panel=output]', 'wb.output'); L('[data-panel=input]', 'wb.input'); L('[data-panel=problems]', 'wb.problems'); L('[data-panel=debug]', 'wb.variables');
@@ -295,12 +298,15 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     host.querySelector('.wb-empty')?.remove();
     cm = CM(host, {
       lineNumbers: true, tabSize: 4, indentUnit: 4, indentWithTabs: false, theme: 'graphite', viewportMargin: 12,
-      gutters: ['wb-bp-gutter', 'CodeMirror-linenumbers'],
+      gutters: ['wb-bp-gutter', 'CodeMirror-linenumbers', 'ci-diag-gutter'],
       extraKeys: { Tab: c => (c.somethingSelected() ? c.indentSelection('add') : c.execCommand('insertSoftTab')), 'Shift-Tab': 'indentLess',
         'Ctrl-S': () => saveActive(), 'Cmd-S': () => saveActive(), F5: () => start(run ? 'continue' : 'debug'), 'Ctrl-F5': () => start('run'),
         F9: c => toggleBreakpoint(active, c.getCursor().line + 1), F10: () => debugCmd('next'), F11: () => debugCmd('step'), 'Shift-F11': () => debugCmd('finish') },
     });
     window.addEventListener('graphite-appearance', () => cm?.refresh()); // code font or size changed
+    intel = attachIntel(cm, { lang: () => langOf(active), t, gutter: 'ci-diag-gutter',
+      // Names from the other open files of the same language are offered too.
+      extraText: () => { const l = langOf(active); let s = ''; for (const b of buffers.values()) if (b.path !== active && b.doc && langOf(b.path) === l && s.length < 400000) s += b.doc.getValue() + '\n'; return s; } });
     cm.on('gutterClick', (c, line) => toggleBreakpoint(active, line + 1));
     cm.on('cursorActivity', () => { markCursorLine(); clearTimeout(assistTimer); assistTimer = setTimeout(() => assistant?.refresh(), 150); });
     cm.on('change', () => {
@@ -511,6 +517,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
       if (!cls) continue;
       const line = cm.addLineClass(d.line - 1, 'wrap', cls); diagMarks.push({ line, cls });
     }
+    intel?.setDiagnostics(diagnostics.filter(d => d.path === active));
   }
 
   /* ---------- compile, run, debug ---------- */
@@ -572,11 +579,11 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     }
     outText = ''; diagnostics = []; paused = null; markPaused(); markDiagnostics();
     const bps = mode === 'debug' ? [...breakpoints].flatMap(([path, s]) => [...s].map(line => ({ path, line }))) : [];
-    run = { id: null, mode, phase: 'starting', status: null };
+    run = { id: null, mode, phase: 'starting', status: null, o2: mode !== 'debug' && o2() };
     panel = { open: true, tab: 'output' }; store.set('wb:panel', panel);
     renderAll();
     try {
-      const r = await runner('start', { projectId: proj.id, path: entry, mode, stdin: root.querySelector('#wb-stdin').value, sources, breakpoints: bps });
+      const r = await runner('start', { projectId: proj.id, path: entry, mode, stdin: root.querySelector('#wb-stdin').value, sources, breakpoints: bps, optimize: mode !== 'debug' && o2() });
       run.id = r.id;
       for (const ev of early.splice(0)) if (ev.id === r.id) onEvent(ev);
     } catch (e) { run.status = 'error'; run.message = e.message; append('stderr', e.message + '\n'); }
@@ -610,19 +617,8 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     if (outText.length > OUT_MAX) outText = '…\n' + outText.slice(-OUT_MAX);
     renderOutput();
   }
-  // g++ messages: "C:/proj/src/main.cpp:12:5: error: …" → the file in the project, line, column, kind.
-  function parseDiagnostics(text) {
-    const out = [], rootPath = norm(proj?.root || '').toLowerCase();
-    for (const raw of text.replace(/\u0002/g, '').split('\n')) {
-      const m = /^(.*?):(\d+):(?:(\d+):)?\s*(fatal error|error|warning|note):\s*(.*)$/.exec(raw.trim());
-      if (!m) continue;
-      let file = norm(m[1]);
-      if (rootPath && file.toLowerCase().startsWith(rootPath + '/')) file = file.slice(rootPath.length + 1);
-      const inside = !/^[a-z]:\//i.test(file) && !file.startsWith('/');
-      out.push({ path: inside ? file : null, file: m[1], line: +m[2], col: +(m[3] || 0), kind: m[4] === 'fatal error' ? 'error' : m[4], text: m[5] });
-    }
-    return out;
-  }
+  // Compiler messages ("C:/proj/src/main.cpp:12:5: error: …") → the file in the project, line, column, kind.
+  const parseDiagnostics = text => parseMessages(text, proj?.root || '');
   // What the code assistant may send, only when asked: the selection, the open file as it is now (unsaved
   // changes included), or the compiler's messages. Paths are relative to the project.
   let assistTimer = 0;
@@ -679,6 +675,10 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     const n = parseInt(v, 10);
     if (n > 0) goToLine(n);
   }
+  // O2: build optimised (g++ -O2) when running or compiling, remembered per project. Debugging always uses -O0,
+  // so stepping and variables match the code.
+  const o2 = () => !!(proj && store.get('wb:o2:' + ws(), false));
+  function toggleO2() { if (!proj) return; const on = !o2(); store.set('wb:o2:' + ws(), on); renderToolbar(); toast(t(on ? 'wb.o2On' : 'wb.o2Off')); }
   async function debugCmd(action) {
     if (!run?.id || run.status || run.phase !== 'paused') return;
     run.phase = 'debugging'; renderToolbar();
@@ -722,6 +722,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     q('[data-wb=build]').disabled = !cpp || busy || !tools?.compiler?.found;
     q('[data-wb=run]').disabled = !cpp || busy || !tools?.compiler?.found;
     q('[data-wb=debug]').disabled = !cpp || busy || !tools?.debugger?.found;
+    const o2b = q('[data-wb=o2]'); o2b.disabled = !cpp || busy; o2b.setAttribute('aria-pressed', String(o2())); o2b.classList.toggle('is-on', o2());
     q('[data-wb=stop]').hidden = !busy;
     const pausedNow = busy && run.phase === 'paused';
     q('.wb-debug-controls').hidden = !(busy && run.mode === 'debug');
@@ -730,10 +731,10 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
   }
   function runStateText() {
     if (!run) return '';
-    if (!run.status) return t('wb.phase.' + (run.phase || 'starting'));
+    if (!run.status) return (run.o2 ? 'O2 · ' : '') + t('wb.phase.' + (run.phase || 'starting'));
     const s = run.status === 'success' ? (run.mode === 'build' ? t('wb.end.built') : t('wb.end.success', { code: run.exitCode ?? 0 }))
       : run.status === 'runtime_error' ? t('wb.end.runtime', { code: run.exitCode ?? '?' }) : t('wb.end.' + run.status);
-    return s + (run.message && run.status !== 'success' ? ' · ' + run.message : '');
+    return (run.o2 ? 'O2 · ' : '') + s + (run.message && run.status !== 'success' ? ' · ' + run.message : '');
   }
   function renderOutput() {
     const pre = root.querySelector('.wb-output');
@@ -791,6 +792,7 @@ export function createCodeWorkbench(root, { toast, askText, vaultRoot, vaultFold
     if (a === 'keep-mine') return resolveConflict(true);
     if (a === 'load-disk') return resolveConflict(false);
     if (['build', 'run', 'debug'].includes(a)) return start(a);
+    if (a === 'o2') return toggleO2();
     if (a === 'run-project') return runProject();
     if (a === 'run-chosen') return runChosen();
     if (a === 'run-cancel') { root.querySelector('.wb-run-project').hidden = true; return; }
