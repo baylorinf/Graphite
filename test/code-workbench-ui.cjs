@@ -917,6 +917,22 @@ async function main() {
     assert.equal(await p.locator('.gdd-pop').count(), 0);
   });
 
+  await test('Study ↔ Code: the ribbon keeps its width and the side columns line up with the study sidebars (also after resizing them)', async p => {
+    await p.evaluate(() => window.__fake.set('proj', { id: 'ext-1', name: 'proj', root: 'C:/fake/proj' }));
+    await p.evaluate(() => document.getElementById('app').style.setProperty('--left-w', '300px'));
+    const box = s => p.evaluate(s => { const r = document.querySelector(s)?.getBoundingClientRect(); return r && r.width ? { l: Math.round(r.left), r: Math.round(r.right), w: Math.round(r.width) } : null; }, s);
+    const study = { ribbon: await box('#ribbon'), left: await box('#left'), right: await box('#right') };
+    await modeBtn(p, 'Code').click();
+    await p.locator(`${wb} .wb-tree`).waitFor();
+    const code = { ribbon: await box('#ribbon'), tree: await box(`${wb} .wb-tree`), assist: await box(`${wb} .wb-assist-host`) };
+    assert.equal(code.ribbon.w, study.ribbon.w, 'ribbon width');
+    assert.equal(code.tree.r, study.left.r + 8, 'the editor starts where the note area started');
+    assert.equal(code.assist.l, study.right.l - 8, 'the assistant starts where the right divider was');
+    await modeBtn(p, 'Study').click();
+    assert.deepEqual(await box('#ribbon'), study.ribbon, 'unchanged after coming back');
+    assert.deepEqual(await box('#left'), study.left);
+  });
+
   await browser.close();
   await fs.rm(vault, { recursive: true, force: true }).catch(() => {});
   const failed = results.filter(r => !r.pass);

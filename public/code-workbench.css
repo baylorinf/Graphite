@@ -122,12 +122,15 @@
 #ribbon .app-mode button.is-active, #ribbon .app-mode button[aria-pressed="true"] { background: var(--accent); color: #fff; font-weight: 600; }
 #ribbon .app-mode button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 /* the sidebars keep their grid cells (zero wide) so the editor area stays in its own column */
-body.mode-code #app { grid-template-columns: 44px 0 0 minmax(0, 1fr) 0 0 !important; }
+/* the ribbon keeps its study width (graphite.css), so nothing on the left moves when switching */
+body.mode-code #app { grid-template-columns: 52px 0 0 minmax(0, 1fr) 0 0 !important; }
 body.mode-code #left, body.mode-code .resizer[data-resize="left"], body.mode-code #right, body.mode-code .resizer[data-resize="right"] { visibility: hidden; overflow: hidden; pointer-events: none; }
 
 /* the code assistant column */
-.code-wb .wb-main { grid-template-columns: minmax(180px, 240px) minmax(0, 1fr) minmax(240px, 320px); }
-.code-wb.hide-assist .wb-main { grid-template-columns: minmax(180px, 240px) minmax(0, 1fr); }
+/* The project tree and the assistant take the widths of the study sidebars (and their 8px dividers, less the editor area’s 1px border), so the
+   sidebars and the editor edges stay where they are when switching Study ↔ Code. */
+.code-wb .wb-main { grid-template-columns: calc(var(--left-w, 260px) + 7px) minmax(0, 1fr) calc(var(--right-w, 280px) + 7px); }
+.code-wb.hide-assist .wb-main { grid-template-columns: calc(var(--left-w, 260px) + 7px) minmax(0, 1fr); }
 .code-wb.hide-assist .wb-assist-host { display: none; }
 .wb-assist { display: flex; flex-direction: column; gap: 6px; min-height: 0; padding: 8px 10px; border-left: 1px solid var(--border); background: var(--bg-2); overflow: hidden; }
 .wa-head { display: flex; align-items: center; gap: 6px; }
