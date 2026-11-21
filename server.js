@@ -266,7 +266,7 @@ function compatCaller(provider, key, body) {
       const regionUnavailable = provider === 'gemini' && [400, 403].includes(r.status) &&
         /user location is not supported for the api use/i.test(detail);
       const err = regionUnavailable ? new HttpError(403, 'Google Gemini does not offer API access from the current location.')
-        : r.status === 401 || r.status === 403 ? new HttpError(401, `The ${name} API key was not accepted`)
+        : r.status === 401 || r.status === 403 ? new HttpError(401, provider === 'custom' ? 'The custom provider rejected this API key' : `The ${name} API key was not accepted`)
         : r.status === 402 ? new HttpError(402, `Your ${name} balance is empty${P.topUp ? `; top it up at ${P.topUp}` : ''}`)
         : r.status === 404 ? new HttpError(404, `${name} doesn't know that model (${body.model || '?'}); press Test the key in Settings → AI to see the available models`)
         : r.status === 429 ? new HttpError(429, `Too many requests to ${name}, or no credit left; try again later`)
@@ -287,7 +287,10 @@ async function compatTask(provider, key, body, signal) {
     try {
       const m = await call('/models');
       models = (m.data || m.models || []).map(x => String(x.id || x.name || '').replace(/^models\//, '')).filter(Boolean).sort();
-    } catch (e) { if (e.raw !== 404) throw e; } // some providers have no model list; the key may still be fine
+    } catch (e) {
+      if (e.raw !== 404) throw e;
+      throw new HttpError(422, `${name} did not provide a model list. Access could not be verified. Choose a model and send a message to test it.`);
+    }
     const out = { ok: true, models };
     if (provider === 'deepseek') {
       const b = await call('/user/balance').catch(() => null);
