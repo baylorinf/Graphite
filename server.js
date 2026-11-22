@@ -52,6 +52,7 @@ class HttpError extends Error { constructor(status, msg) { super(msg); this.stat
    It is never stored or logged here and is only sent to the provider the user chose. */
 const ANTHROPIC_DEFAULT = 'claude-opus-5-5';
 const LANG_NAMES = { en: 'English', fr: 'French', es: 'Spanish', ja: 'Japanese', ko: 'Korean', 'zh-CN': 'Simplified Chinese', 'zh-TW': 'Traditional Chinese' };
+const summaryLocation = { page: { type: 'integer' }, source: { type: 'string' } };
 const AI_SCHEMAS = {
   check: {
     type: 'object', additionalProperties: false, required: ['summary', 'issues'],
@@ -80,10 +81,10 @@ const AI_SCHEMAS = {
   format: { type: 'object', additionalProperties: false, required: ['markdown', 'changes'], properties: { markdown: { type: 'string' }, changes: { type: 'array', items: { type: 'string' } } } },
   summary: { type: 'object', additionalProperties: false, required: ['title', 'overview', 'sections', 'concepts', 'formulas'], properties: {
     title: { type: 'string' }, overview: { type: 'string' },
-    sections: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['heading', 'page', 'points'], properties: { heading: { type: 'string' }, page: { type: 'integer' },
-      points: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['text', 'page'], properties: { text: { type: 'string' }, page: { type: 'integer' } } } } } } },
-    concepts: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['term', 'meaning', 'page'], properties: { term: { type: 'string' }, meaning: { type: 'string' }, page: { type: 'integer' } } } },
-    formulas: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['latex', 'meaning', 'page'], properties: { latex: { type: 'string' }, meaning: { type: 'string' }, page: { type: 'integer' } } } } } },
+    sections: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['heading', 'page', 'source', 'points'], properties: { heading: { type: 'string' }, ...summaryLocation,
+      points: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['text', 'page', 'source'], properties: { text: { type: 'string' }, ...summaryLocation } } } } } },
+    concepts: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['term', 'meaning', 'page', 'source'], properties: { term: { type: 'string' }, meaning: { type: 'string' }, ...summaryLocation } } },
+    formulas: { type: 'array', items: { type: 'object', additionalProperties: false, required: ['latex', 'meaning', 'page', 'source'], properties: { latex: { type: 'string' }, meaning: { type: 'string' }, ...summaryLocation } } } } },
   questions: {
     type: 'object', additionalProperties: false, required: ['questions'],
     properties: { questions: { type: 'array', items: {
@@ -151,6 +152,7 @@ markdown: the whole reformatted note.
 changes: one short item per kind of change, in ${ui}.`,
   summary: ui => `You summarize one PDF (lecture slides, a textbook chapter, notes) for a university student, so they can review it and jump back to the right page.
 The input is the PDF's text with "--- page N ---" markers (only the pages chosen), or, for a local agent, the file itself and the page range.
+- Each numbered source paragraph starts with a marker such as [P2S3]. For every section, point, concept and formula, put the exact supporting paragraph ID (without brackets) in source and its page number in page. Choose only from this batch. If there is no matching marker, use an empty string for source and a known page, or 0 if unknown. Use plain prose; Graphite creates the links.
 - Follow the document's own chapters or sections, in order. For each: heading (as in the document, or a short one), page (where it starts), and 2–6 points: the key ideas, each one or two sentences, with the page it comes from.
 - concepts: the key terms and definitions (term, one-sentence meaning, page). formulas: the important formulas or theorems (LaTeX without $ signs, what it means, page). Empty lists if there are none.
 - overview: two or three sentences on what the document covers.
@@ -173,7 +175,7 @@ const AI_EXAMPLES = {
   mock: { title: 'Linear Algebra mock paper', problems: [{ no: '1', marks: 10, kind: 'past', sourceFile: 'LA/复习资料/2024 midterm.pdf', sourcePage: 2, sourceLabel: '2024 midterm Q4', topic: 'Determinants', question: 'Compute $\\det A$ for ...', answer: 'Expand along the first row: ...' }], topics: [{ topic: 'Determinants', pastCount: 3, note: 'appears every year' }] },
   transcribe: { title: 'Definition of injectivity', markdown: '**Injective.** $T$ is injective if $T(u) = T(w)$ implies $u = w$.' },
   format: { markdown: 'the whole reformatted note', changes: ['Added frontmatter', 'Numbered the key points'] },
-  summary: { title: 'Lecture 3 summary', overview: 'What the lecture covers.', sections: [{ heading: '3.1 Eigenvalues', page: 2, points: [{ text: 'An eigenvector keeps its direction under $A$.', page: 2 }] }], concepts: [{ term: 'Eigenvalue', meaning: 'A scalar $\\lambda$ with $Av = \\lambda v$ for some $v \\neq 0$.', page: 2 }], formulas: [{ latex: '\\det(A - \\lambda I) = 0', meaning: 'characteristic equation', page: 3 }] },
+  summary: { title: 'Lecture 3 summary', overview: 'What the lecture covers.', sections: [{ heading: '3.1 Eigenvalues', page: 2, source: 'P2S1', points: [{ text: 'An eigenvector keeps its direction under $A$.', page: 2, source: 'P2S2' }] }], concepts: [{ term: 'Eigenvalue', meaning: 'A scalar $\\lambda$ with $Av = \\lambda v$ for some $v \\neq 0$.', page: 2, source: 'P2S2' }], formulas: [{ latex: '\\det(A - \\lambda I) = 0', meaning: 'characteristic equation', page: 3, source: 'P3S1' }] },
 };
 // OpenAI-compatible providers. `extra` holds optional fields (e.g. turning off slow "thinking"); if a provider
 // rejects them, the request is retried without them.
@@ -228,11 +230,18 @@ function tidyResult(task, out) {
   else if (task === 'format') { out.markdown = String(out.markdown || ''); out.changes = Array.isArray(out.changes) ? out.changes.map(String) : []; if (!out.markdown) throw new SyntaxError('empty'); }
   else if (task === 'summary') {
     const pg = x => (Number.isFinite(+x) ? Math.max(0, Math.round(+x)) : 0);
+    const location = item => {
+      const page = pg(item.page);
+      const source = typeof item.source === 'string' ? item.source.trim() : '';
+      const match = /^P([1-9]\d{0,8})S[1-9]\d{0,8}$/.exec(source);
+      // The renderer holds the actual batch index and verifies membership before it creates a link.
+      return match && Number(match[1]) === page ? { page, source } : { page };
+    };
     const arr = v => (Array.isArray(v) ? v.filter(x => x && typeof x === 'object') : []);
     out.title = String(out.title || ''); out.overview = String(out.overview || '');
-    out.sections = arr(out.sections).map(s => ({ heading: String(s.heading || ''), page: pg(s.page), points: arr(s.points).map(p => ({ text: String(p.text || ''), page: pg(p.page) })).filter(p => p.text) })).filter(s => s.heading || s.points.length);
-    out.concepts = arr(out.concepts).map(c => ({ term: String(c.term || ''), meaning: String(c.meaning || ''), page: pg(c.page) })).filter(c => c.term);
-    out.formulas = arr(out.formulas).map(f => ({ latex: String(f.latex || ''), meaning: String(f.meaning || ''), page: pg(f.page) })).filter(f => f.latex);
+    out.sections = arr(out.sections).map(s => ({ heading: String(s.heading || ''), ...location(s), points: arr(s.points).map(p => ({ text: String(p.text || ''), ...location(p) })).filter(p => p.text) })).filter(s => s.heading || s.points.length);
+    out.concepts = arr(out.concepts).map(c => ({ term: String(c.term || ''), meaning: String(c.meaning || ''), ...location(c) })).filter(c => c.term);
+    out.formulas = arr(out.formulas).map(f => ({ latex: String(f.latex || ''), meaning: String(f.meaning || ''), ...location(f) })).filter(f => f.latex);
     if (!out.sections.length && !out.overview) throw new SyntaxError('empty');
   }
   return out;
