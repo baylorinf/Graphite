@@ -15,7 +15,7 @@ async function main() {
       { text: 'Conflicting page.', page: 2, source: 'P3S1' },
       { text: 'Unusable ID.', page: 2, source: { paragraph: 4 } },
     ] }],
-    concepts: [{ term: 'coolant', meaning: 'liquid', page: 2, source: 'P2S2' }],
+    concepts: [{ term: 'coolant', meaning: 'liquid', page: 2, source: ' [p2s2] ' }],
     formulas: [{ latex: 'a=b', meaning: 'equilibrium', page: 2, source: 'P2S1' }],
   };
   const geminiFetch = async (_url, init) => {

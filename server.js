@@ -233,9 +233,10 @@ function tidyResult(task, out) {
     const location = item => {
       const page = pg(item.page);
       const source = typeof item.source === 'string' ? item.source.trim() : '';
-      const match = /^P([1-9]\d{0,8})S[1-9]\d{0,8}$/.exec(source);
+      const id = source.startsWith('[') && source.endsWith(']') ? source.slice(1, -1).trim() : source;
+      const match = /^P([1-9]\d{0,8})S[1-9]\d{0,8}$/i.exec(id);
       // The renderer holds the actual batch index and verifies membership before it creates a link.
-      return match && Number(match[1]) === page ? { page, source } : { page };
+      return match && Number(match[1]) === page ? { page, source: id.toUpperCase() } : { page };
     };
     const arr = v => (Array.isArray(v) ? v.filter(x => x && typeof x === 'object') : []);
     out.title = String(out.title || ''); out.overview = String(out.overview || '');
