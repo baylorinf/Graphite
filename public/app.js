@@ -19,7 +19,7 @@ import * as FJ from '/filejobs.js'; // jobs on your files (find new course files
 import { ICON, TAB_ICON, SEL_ICON } from '/icons.js'; // Lucide icons + the Graphite mark (scripts/make-icons.js)
 import { G, initGraph, buildGraph, drawGraph, readGraphColors, fitGraph, stopGraph } from '/graph.js';
 import { initSettings, openSettings, closeSettings, settingsOpen, refreshSettings } from '/settings.js';
-import { mountPdf } from '/pdfview.js';
+import { mountPdf, parseLocation } from '/pdfview.js';
 import { createReferencePane } from '/reference.js';
 import { createCanvasView } from '/canvas-view.js';
 import { canvasText } from '/canvas-strings.js';
@@ -2302,8 +2302,12 @@ async function showFile(path, { push = true, at = '' } = {}) {
   if (!f) return;
   // Study pages (.html) open as study tabs when the study-pages plugin is on.
   if (fileKind(path) === 'html' && window.moStudy?.handles?.(path)) { window.moStudy.open(path); return; }
-  const page = Number((/^page=(\d+)$/i.exec(at || '') || [])[1]) || 0;
+  // "page=12", or a paragraph "page=12&source=P12S3&fp=…" (summary links; see pdfview.js parseLocation).
+  const loc = parseLocation(at);
+  const page = loc?.page || 0;
   const time = Number((/^t=(\d+(?:\.\d+)?)$/i.exec(at || '') || [])[1]) || 0;
+  // The same PDF already open here: just go there (no reload, the zoom stays).
+  if (loc && S.view === 'file' && S.filePath === path && S.pdf?.path === path && S.pdf.ctl) { S.pdf.loc = loc; S.pdf.jumpPage = page; pdfJump(S.pdf); return; }
   leaveCustomTab();
   if (S.dirty) await saveNow();
   if (push) {
@@ -2335,7 +2339,7 @@ async function showFile(path, { push = true, at = '' } = {}) {
     <div class="fv-body fv-${kind}"></div>`;
   const body = box.querySelector('.fv-body');
   if (kind === 'code') void codeEditor.open(body,path,at);
-  else if (kind === 'pdf') openPdf(box, body, path, src, page);
+  else if (kind === 'pdf') openPdf(box, body, path, src, page, loc);
   else if (kind === 'office') showOfficeAsPdf(box, body, path, page);
   else if (kind === 'docx') showDocx(box, body, path, src);
   else if (kind === 'image') body.innerHTML = `<img class="fv-img" src="${src}" alt="${esc(fileName(path))}">`;
@@ -2469,9 +2473,18 @@ function closePdf() {
   try { S.pdf.ctl?.destroy(); } catch { /* ignore */ }
   S.pdf = null;
 }
-async function openPdf(box, body, path, src, page) {
+// Go where the last link asked: a source paragraph (scrolled into view and highlighted; its page when the PDF
+// changed and the paragraph is gone) or just a page. Old "#page=N" links take the page path unchanged.
+function pdfJump(token) {
+  const c = token?.ctl;
+  if (!c) return;
+  const loc = token.loc; token.loc = null;
+  if (loc?.source) c.goToSource(loc);
+  else if (token.jumpPage) { c.clearSource?.(); c.goTo(token.jumpPage); } // (nothing asked: leave any jump running)
+}
+async function openPdf(box, body, path, src, page, loc = null) {
   const pos = pdfPos(path);
-  const token = S.pdf = { path, ctl: null, requestedPage: page || pos?.page || 1 };
+  const token = S.pdf = { path, ctl: null, requestedPage: page || pos?.page || 1, loc: loc?.source ? loc : null };
   body.innerHTML = `<div class="pdf-host"><div class="fv-none pdf-loading">${esc(t('pdf.loading'))}</div></div>`;
   const host = body.firstElementChild;
   const pageIn = box.querySelector('.pdf-page'), pagesEl = box.querySelector('.pdf-pages'), scaleBtn = box.querySelector('.pdf-scale');
@@ -2482,7 +2495,7 @@ async function openPdf(box, body, path, src, page) {
       page: page || pos?.page || 1, scale: pos?.scale || 'page-width',
       onReady: () => {
         token.ready = true;
-        if (S.pdf === token && token.jumpPage) token.ctl?.goTo(token.jumpPage);
+        if (S.pdf === token && token.ctl) pdfJump(token);
       },
       onState: st => {
         if (S.pdf !== token) return;
@@ -2500,7 +2513,7 @@ async function openPdf(box, body, path, src, page) {
   }
   if (S.pdf !== token) { ctl.destroy(); return; } // another file was opened meanwhile
   token.ctl = ctl;
-  if (token.ready && token.jumpPage) ctl.goTo(token.jumpPage);
+  if (token.ready) pdfJump(token);
   pageIn.addEventListener('keydown', e => { if (e.key === 'Enter') { ctl.goTo(parseInt(pageIn.value, 10) || 1); pageIn.blur(); } if (e.key === 'Escape') { pageIn.value = ctl.page; pageIn.blur(); } });
   pageIn.addEventListener('blur', () => { pageIn.value = ctl.page; });
   pageIn.addEventListener('focus', () => pageIn.select());
@@ -2987,10 +3000,10 @@ async function openInTab(path, { where = 'auto', keep = false, heading = '', ind
     if (heading && isMd(path)) setTimeout(() => scrollToHeading(heading), 30);
     else if (heading && S.view === 'file' && S.filePath === path) {
       if (sourceFormat(path) && /^L\d+$/i.test(heading)) { codeEditor.goTo(Number(heading.slice(1))); return; }
-      const match = /^page=(\d+)$/i.exec(heading);
-      if (match && S.pdf?.path === path) {
-        S.pdf.jumpPage = Number(match[1]);
-        if (S.pdf.ready) S.pdf.ctl?.goTo(S.pdf.jumpPage);
+      const loc = parseLocation(heading);
+      if (loc && S.pdf?.path === path) {
+        S.pdf.jumpPage = loc.page; S.pdf.loc = loc.source ? loc : null;
+        if (S.pdf.ready) pdfJump(S.pdf);
       } else if (!isMd(path)) await showFile(path, { push: false, at: heading });
     }
     return;

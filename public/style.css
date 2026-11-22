@@ -634,6 +634,10 @@ mark.search-flash { background: rgba(255, 200, 40, .55); color: inherit; border-
 .pdf-scroll { position: absolute; inset: 0; overflow: auto; }
 .pdf-scroll .pdfViewer { padding: 10px 0 40px; }
 .pdf-scroll .pdfViewer .page { margin: 0 auto 12px; border: 0; box-shadow: 0 1px 3px rgba(0,0,0,.18), 0 4px 14px rgba(0,0,0,.08); }
+/* The source paragraph a summary link points to (pdfview.js goToSource): drawn on the page, above the text. */
+.pdf-scroll .pdfViewer .page .pdf-source-hl { position: absolute; z-index: 3; pointer-events: none; border-radius: 4px; background: rgba(255, 196, 0, .22); box-shadow: 0 0 0 2px rgba(230, 150, 0, .85); }
+.pdf-scroll .pdfViewer .page .pdf-source-hl.pdf-source-flash { animation: pdf-source-flash 1.2s ease-out 1; }
+@keyframes pdf-source-flash { 0% { background: rgba(255, 196, 0, .55); box-shadow: 0 0 0 6px rgba(230, 150, 0, .45); } 100% { background: rgba(255, 196, 0, .22); box-shadow: 0 0 0 2px rgba(230, 150, 0, .85); } }
 .pdf-loading { position: absolute; inset: 0; }
 .pdf-ctl { display: inline-flex; align-items: center; gap: 4px; flex-wrap: nowrap; min-width: 0; }
 .pdf-page { width: 3.2em; text-align: center; padding: 3px 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit; font-size: 12.5px; }
@@ -761,6 +765,9 @@ details.ai-provider[open] > summary::before { transform: rotate(90deg); }
 .check-engine { max-width: 280px; font-size: 12.5px; padding: 2px 4px; border-radius: 6px; background: var(--bg-2); color: var(--text); border: 1px solid var(--border); }
 .check-mode .check-setup { text-decoration: none; color: var(--text-muted); }
 .ai-tool .review-box { width: min(760px, 94vw); }
+/* The summary window set aside while you look at a source in the PDF; the button brings it back unchanged. */
+.ai-summary.sum-peek { display: none; }
+.sum-return { position: fixed; right: 24px; bottom: 24px; z-index: 1000; box-shadow: 0 4px 16px rgba(0,0,0,.25); }
 .ai-tool-body { display: flex; flex-direction: column; gap: 10px; }
 .ai-field { display: flex; flex-direction: column; gap: 4px; font-size: 13px; }
 .ai-field > span { font-weight: 600; color: var(--text-muted); }

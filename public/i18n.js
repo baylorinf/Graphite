@@ -2427,6 +2427,7 @@ for (const [key, labels] of Object.entries({
   'sum.batch': ['Part {i} of {n}: pages {pages}', 'Partie {i} sur {n} : pages {pages}', 'Parte {i} de {n}: páginas {pages}', '{n} 回中 {i} 回目：{pages} ページ', '{n}개 중 {i}번째: {pages}쪽', '第 {i}/{n} 批：第 {pages} 页', '第 {i}/{n} 批：第 {pages} 頁'],
   'sum.keptParts': ['{done} of {n} parts are done and kept; Retry continues with the rest.', '{done} parties sur {n} sont faites et gardées ; Réessayer continue avec le reste.', '{done} de {n} partes hechas y guardadas; Reintentar sigue con el resto.', '{n} 回中 {done} 回分は完了・保持済みです。「再試行」で残りを続けます。', '{n}개 중 {done}개는 끝나서 보관했습니다. 다시 시도하면 나머지를 이어서 합니다.', '已完成并保留 {done}/{n} 批，点「重试」从未完成的批次继续。', '已完成並保留 {done}/{n} 批，點「重試」從未完成的批次繼續。'],
   'sum.retry': ['Retry', 'Réessayer', 'Reintentar', '再試行', '다시 시도', '重试', '重試'],
+  'sum.backToPreview': ['Back to the summary (not saved yet)', 'Retour au résumé (pas encore enregistré)', 'Volver al resumen (aún sin guardar)', '要約に戻る（まだ保存していません）', '요약으로 돌아가기 (아직 저장 안 함)', '返回摘要预览（尚未保存）', '返回摘要預覽（尚未儲存）'],
   'sum.stopped': ['Stopped. Nothing was written.', 'Arrêté. Rien n’a été écrit.', 'Detenido. No se escribió nada.', '中止しました。何も書き込んでいません。', '중지했습니다. 아무것도 쓰지 않았습니다.', '已停止，没有写入任何内容。', '已停止，沒有寫入任何內容。'],
   'sum.nothingWritten': ['Your notes were not changed.', 'Vos notes n’ont pas été modifiées.', 'Tus notas no se modificaron.', 'ノートは変更されていません。', '노트는 변경되지 않았습니다.', '你的笔记没有被修改。', '你的筆記沒有被修改。'],
   'sum.pagesLine': ['pages {pages}', 'pages {pages}', 'páginas {pages}', '{pages} ページ', '{pages}쪽', '第 {pages} 页', '第 {pages} 頁'],

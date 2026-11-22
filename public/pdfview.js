@@ -21,7 +21,7 @@ async function loadLib() {
 // The text of a PDF, page by page. All pages unless `only` (a list of page numbers) is given.
 // Returns { pages: [{ n, text }], numPages, empty: [page numbers with no text, e.g. scanned pages] }.
 // `pages` is also usable as a plain list of strings through .map(p => p.text).
-export async function pdfText(src, { only = null, onProgress = null } = {}) {
+export async function pdfText(src, { only = null, onProgress = null, paras = false } = {}) {
   const { pdfjs } = await loadLib();
   const doc = await pdfjs.getDocument({ url: src, cMapUrl: '/lib/pdfjs/cmaps/', cMapPacked: true }).promise;
   // A given list is used exactly: an empty or out-of-range list never turns into "the whole document".
@@ -33,12 +33,96 @@ export async function pdfText(src, { only = null, onProgress = null } = {}) {
     let line = '', out = '';
     for (const it of tc.items) { line += it.str; if (it.hasEOL) { out += line + '\n'; line = ''; } }
     const text = (out + line).trim();
-    pages.push({ n, text });
+    // With `paras`, also the page's paragraphs with their source IDs ("P7S3" = page 7, paragraph 3): the same
+    // split the viewer uses to find and highlight a paragraph, so an ID means the same text on both sides.
+    pages.push(paras ? { n, text, paras: text ? paragraphs(tc, n).map(({ id, text: t, fp }) => ({ id, text: t, fp })) : [] } : { n, text });
     if (!text) empty.push(n);
     onProgress?.(pages.length, want.length);
   }
   return { pages, numPages: doc.numPages, empty };
 }
+
+/* ---------- paragraphs and source IDs ----------
+   A page's text is split into paragraphs from its text items alone (text and geometry in PDF units, so the
+   zoom level never changes the result): lines are items on one baseline; a new paragraph starts at a gap wider
+   than ~1.7 line heights or 1.35 × the page's usual line spacing, a jump up the page (a new column or box) or
+   far to the right, a clear change of type size, or after MAX_LINES lines (so a page of one endless block still
+   has places to point at). Paragraph i (1-based) of page n is "P{n}S{i}". Each also has `fp`, a fingerprint of
+   its words: a link carries it, so after the PDF changed a link finds its paragraph again (or falls back to the
+   page) instead of highlighting whatever is now paragraph i. */
+const MAX_LINES = 40;
+export function textFingerprint(s) {
+  const t = String(s || '').replace(/\s+/g, '').toLowerCase();
+  let h = 0x811c9dc5;
+  for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36).padStart(7, '0');
+}
+// tc: PDF.js getTextContent() of page n.
+// Returns [{ id, n, i, text, fp, box: [x0, y0, x1, y1], lines: [[x0, y0, x1, y1]…] }] in PDF units.
+export function paragraphs(tc, n) {
+  const lines = [];
+  let cur = null, brk = true;
+  for (const it of tc.items || []) {
+    if (typeof it.str !== 'string') continue; // marked-content markers
+    const tr = it.transform || [1, 0, 0, 1, 0, 0];
+    const h = Math.abs(it.height) || Math.hypot(tr[2], tr[3]) || 1;
+    if (it.str.trim()) {
+      const x = tr[4], y = tr[5], w = Math.abs(it.width) || 0;
+      if (brk || !cur || Math.abs(y - cur.y) > Math.max(0.5, h * 0.5)) {
+        cur = { str: '', y, h, x0: x, x1: x + w, y0: y - h * 0.25, y1: y + h };
+        lines.push(cur);
+      }
+      cur.str += it.str;
+      cur.h = Math.max(cur.h, h);
+      cur.x0 = Math.min(cur.x0, x); cur.x1 = Math.max(cur.x1, x + w);
+      cur.y0 = Math.min(cur.y0, y - h * 0.25); cur.y1 = Math.max(cur.y1, y + h);
+      brk = false;
+    } else if (cur && !brk) cur.str += it.str; // a space between words
+    if (it.hasEOL) brk = true;
+  }
+  const pitches = [];
+  for (let k = 1; k < lines.length; k++) { const d = lines[k - 1].y - lines[k].y; if (d > 0) pitches.push(d); }
+  pitches.sort((a, b) => a - b);
+  const usual = pitches.length ? pitches[Math.floor(pitches.length / 2)] : 0;
+  const out = [];
+  let para = null;
+  lines.forEach((l, k) => {
+    const prev = lines[k - 1];
+    let fresh = !para || para.lines.length >= MAX_LINES;
+    if (!fresh) {
+      const d = prev.y - l.y, hh = Math.max(prev.h, l.h);
+      fresh = d <= 0 // up the page: a new column or box
+        || d > hh * 1.7 || (usual > 0 && d > usual * 1.35)
+        || hh / Math.min(prev.h, l.h) > 1.25 // a heading's type size
+        || l.x0 > prev.x1 + hh * 2; // far to the right: a side box
+    }
+    if (fresh) { para = { lines: [] }; out.push(para); }
+    para.lines.push(l);
+  });
+  return out.map((p, i) => {
+    const text = p.lines.map(l => l.str.trim()).join('\n');
+    const box = [Math.min(...p.lines.map(l => l.x0)), Math.min(...p.lines.map(l => l.y0)), Math.max(...p.lines.map(l => l.x1)), Math.max(...p.lines.map(l => l.y1))];
+    return { id: `P${n}S${i + 1}`, n, i: i + 1, text, fp: textFingerprint(text), box, lines: p.lines.map(l => [l.x0, l.y0, l.x1, l.y1]) };
+  });
+}
+// "P7S3" → { page: 7, para: 3, id: 'P7S3' } (also "[P7S3]", any case); null for anything else.
+export function parseSourceId(s) {
+  const m = /^\s*\[?\s*p(\d+)\s*s(\d+)\s*\]?\s*$/i.exec(String(s ?? ''));
+  return m && +m[1] > 0 && +m[2] > 0 ? { page: +m[1], para: +m[2], id: `P${+m[1]}S${+m[2]}` } : null;
+}
+// A link's place in a PDF, from the part after "#": "page=7" or "page=7&source=P7S3&fp=0abc123".
+// Returns { page, source, fp } (source '' when absent or not on that page), or null when there is no page.
+export function parseLocation(at) {
+  const s = String(at || '').replace(/^#/, '');
+  if (!/^page=\d+(?:&|$)/i.test(s)) return null;
+  const q = new URLSearchParams(s.replace(/^page=/i, 'page='));
+  const page = Number(/^page=(\d+)/i.exec(s)[1]) || 0;
+  if (!page) return null;
+  const src = parseSourceId(q.get('source'));
+  return { page, source: src && src.page === page ? src.id : '', fp: (q.get('fp') || '').replace(/[^0-9a-z]/gi, '').toLowerCase() };
+}
+// The part after "#" of a link to a paragraph (or just its page).
+export const locationHash = (page, source = '', fp = '') => `page=${page}${source ? `&source=${source}${fp ? `&fp=${fp}` : ''}` : ''}`;
 export async function pdfPageCount(src) { const { pdfjs } = await loadLib(); return (await pdfjs.getDocument({ url: src }).promise).numPages; }
 // "1-5, 8, 10-12" → [1,2,3,4,5,8,10,11,12]. Only an empty field means "all pages" (null).
 // Anything else must name real pages: page 0, a page past `max` (the document's page count) or a range that
@@ -124,10 +208,94 @@ export async function mountPdf(host, src, opts = {}) {
     viewer.currentScale = Math.max(0.25, Math.min(5, Math.round(viewer.currentScale * f * 100) / 100));
   }
 
+  // The highlighted source paragraph: { page, id, rect: [left, top, width, height] in % of the page }. Drawn
+  // inside the page's own box in percent, so it stays on the words at any zoom; PDF.js empties a page's box
+  // when it redraws it (zoom, scrolling far away), so it is put back after each redraw.
+  let mark = null, seq = 0;
+  const drawMark = () => {
+    host.querySelectorAll('.pdf-source-hl').forEach(el => { if (!mark || el.dataset.source !== mark.id || el.closest('.page')?.dataset.pageNumber !== String(mark.page)) el.remove(); });
+    if (!mark) return null;
+    const pageDiv = host.querySelector(`.page[data-page-number="${mark.page}"]`);
+    if (!pageDiv) return null;
+    let el = pageDiv.querySelector('.pdf-source-hl');
+    if (!el) {
+      el = Object.assign(document.createElement('div'), { className: 'pdf-source-hl' });
+      el.dataset.source = mark.id; el.dataset.page = String(mark.page); el.dataset.result = mark.result || ""; el.title = mark.id;
+      const [l, t, w, h] = mark.rect;
+      Object.assign(el.style, { left: l + '%', top: t + '%', width: w + '%', height: h + '%' });
+      pageDiv.append(el);
+    }
+    return el;
+  };
+  eventBus.on('pagerendered', e => { if (mark && e.pageNumber === mark.page) drawMark(); });
+  eventBus.on('textlayerrendered', e => { if (mark && e.pageNumber === mark.page) drawMark(); });
+  eventBus.on('scalechanging', () => { if (mark) setTimeout(drawMark, 0); });
+  const paraCache = new Map(); // page → its paragraphs (the PDF doesn't change while it is open)
+  const parasOf = async n => {
+    if (!paraCache.has(n)) paraCache.set(n, doc.getPage(n).then(async pg => ({ pg, paras: paragraphs(await pg.getTextContent(), n) })));
+    return paraCache.get(n);
+  };
+  // Scroll so `el` is in view: its top a little below the top of the pane, or centred when it is short.
+  const reveal = el => {
+    const c = container.getBoundingClientRect(), r = el.getBoundingClientRect();
+    const want = r.height < c.height * 0.6 ? (c.height - r.height) / 3 : 24;
+    container.scrollTop += r.top - c.top - want;
+  };
+
   return {
     get page() { return viewer.currentPageNumber; },
     get pages() { return doc.numPages; },
-    goTo(n) { n = Math.max(1, Math.min(doc.numPages, n | 0)); viewer.currentPageNumber = n; },
+    // Any newer jump (another paragraph, a plain page link, the page box, Home / End) wins over a paragraph
+    // still being looked up: that lookup then neither scrolls nor highlights (see `seq` in goToSource).
+    goTo(n) { seq++; n = Math.max(1, Math.min(doc.numPages, n | 0)); viewer.currentPageNumber = n; },
+    // Go to a source paragraph: loc = { page, source: 'P7S3', fp } (see parseLocation). The paragraph is found by
+    // its ID when its words are still the same (fp); after the PDF changed, by its words on that page if exactly
+    // one paragraph there has them; otherwise (gone, or several identical paragraphs) only the page is shown,
+    // and nothing is highlighted, rather than a paragraph that may be the wrong one.
+    // Resolves to 'found' | 'moved' | 'page', or 'stale' when a newer jump came first (nothing done then);
+    // the result is also on the viewer as data-source-result.
+    async goToSource(loc) {
+      const me = ++seq;
+      const n = Math.max(1, Math.min(doc.numPages, (loc?.page | 0) || 1));
+      mark = null; drawMark();
+      host.dataset.sourceResult = 'pending'; host.dataset.source = '';
+      viewer.currentPageNumber = n;
+      let hit = null, result = 'page', pg = null;
+      if (loc?.source && n === loc.page) {
+        try {
+          const r = await parasOf(n); pg = r.pg;
+          const byId = r.paras.find(p => p.id === loc.source);
+          if (byId && (!loc.fp || byId.fp === loc.fp)) { hit = byId; result = 'found'; }
+          else if (loc.fp) {
+            const same = r.paras.filter(p => p.fp === loc.fp);
+            if (same.length === 1) { hit = same[0]; result = 'moved'; }
+          }
+        } catch { hit = null; result = 'page'; }
+      }
+      if (destroyed || me !== seq) return 'stale';
+      try {
+        if (hit) {
+          // PDF units → the page at zoom 1 (all four corners, so a rotated page works too), then % of the page.
+          // (PageViewport has convertToViewportPoint in every PDF.js version; convertToViewportRectangle not.)
+          const vp = pg.getViewport({ scale: 1 });
+          const [x0p, y0p, x1p, y1p] = hit.box;
+          const pts = [[x0p, y0p], [x1p, y0p], [x0p, y1p], [x1p, y1p]].map(([x, y]) => vp.convertToViewportPoint(x, y));
+          const pad = 3, xs = pts.map(q => q[0]), ys = pts.map(q => q[1]);
+          const x0 = Math.min(...xs) - pad, x1 = Math.max(...xs) + pad, y0 = Math.min(...ys) - pad, y1 = Math.max(...ys) + pad;
+          if (![x0, x1, y0, y1].every(Number.isFinite) || !vp.width || !vp.height) throw new Error('no box');
+          mark = { page: n, id: hit.id, result, rect: [x0 / vp.width * 100, y0 / vp.height * 100, (x1 - x0) / vp.width * 100, (y1 - y0) / vp.height * 100] };
+        }
+        const el = drawMark();
+        if (el) { reveal(el); el.classList.remove('pdf-source-flash'); void el.offsetWidth; el.classList.add('pdf-source-flash'); }
+      } catch {
+        // Could not draw it: say so honestly — the page is shown, nothing highlighted, never left "pending".
+        mark = null; drawMark(); hit = null; result = 'page';
+      }
+      host.dataset.sourceResult = result;
+      host.dataset.source = hit ? hit.id : '';
+      return result;
+    },
+    clearSource() { seq++; mark = null; drawMark(); host.dataset.source = ''; host.dataset.sourceResult = 'none'; },
     zoomIn: () => zoomBy(1.15),
     zoomOut: () => zoomBy(1 / 1.15),
     setScale(v) { viewer.currentScaleValue = String(v); },

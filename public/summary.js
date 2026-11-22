@@ -6,12 +6,17 @@
 // - Pages are checked against the PDF's real page count before any AI is asked (0, past the end, or a range
 //   running past the end are refused; an empty field means every page). Nothing is sent for a bad range.
 // - Page links come from Graphite, not the AI: a page the AI names that wasn't read is shown without a link.
+// - Paragraph links too: each paragraph is sent after its source ID ("[P7S3]" = page 7, paragraph 3; see
+//   pdfview.js paragraphs), the AI names it in `source`, and only an ID its batch sent, of this PDF, whose page
+//   agrees with the item's page, becomes [[file.pdf#page=7&source=P7S3&fp=…|p. 7 ¶3]]; anything else falls back
+//   to the checked page. The viewer scrolls to that paragraph and highlights it, or shows just the page when
+//   the PDF has changed so that the paragraph can't be found for sure.
 // - Nothing is written until you press Save in the preview. An existing summary is never overwritten silently:
 //   you choose "save as a new note" or "update the existing note" (with a warning if you edited it by hand).
 // - Stopping or a failed save leaves every existing note as it was.
 import { t } from '/i18n.js';
 import * as AI from '/ai.js';
-import { pdfText, parsePages, pageRanges } from '/pdfview.js';
+import { pdfText, parsePages, pageRanges, parseSourceId, locationHash } from '/pdfview.js';
 import { pagesError, pdfPageCount } from '/studyai.js';
 
 let H = null;
@@ -69,9 +74,21 @@ async function destinations(path, profile) {
 }
 
 /* ---------- the window ---------- */
-let win = null, pending = null;
-function close() { pending?.abort(); pending = null; win?.remove(); win = null; document.removeEventListener('keydown', onKey, true); }
-const onKey = e => { if (e.key === 'Escape' && win) { e.preventDefault(); e.stopPropagation(); close(); } };
+let win = null, pending = null, back = null;
+function close() { pending?.abort(); pending = null; win?.remove(); win = null; back?.remove(); back = null; document.removeEventListener('keydown', onKey, true); }
+// Esc closes the window, but not while it is set aside to look at a source (that would throw the result away).
+const onKey = e => { if (e.key === 'Escape' && win && !win.classList.contains('sum-peek')) { e.preventDefault(); e.stopPropagation(); close(); } };
+// A source link clicked in the preview: the window steps aside so the PDF (scrolled to that paragraph) can be
+// seen, and a button brings the same unsaved preview back, to Save without running the AI again.
+function peek() {
+  if (!win) return;
+  win.classList.add('sum-peek');
+  if (!back) {
+    back = document.body.appendChild(Object.assign(document.createElement('button'), { className: 'mod-button mod-cta sum-return', textContent: t('sum.backToPreview') }));
+    back.onclick = unpeek;
+  }
+}
+function unpeek() { win?.classList.remove('sum-peek'); back?.remove(); back = null; }
 function open(title) {
   close();
   win = document.body.appendChild(document.createElement('div'));
@@ -140,18 +157,33 @@ export async function summaryDialog(path) {
    batch really sent (for Claude Code and local agents, also the scanned pages of its range, which they open
    from the PDF themselves). */
 export const BATCH_CHARS = 90000;
-// pages: [{ n, text }] in order. Returns [{ pages: [n…] (pages whose text — or part of it — is in this batch),
-// open: [n…] (pages without text in this batch's range, for agents that can open the PDF), text }].
+// pages: [{ n, text, paras? }] in order. Returns [{ pages: [n…] (pages whose text — or part of it — is in this
+// batch), open: [n…] (pages without text in this batch's range, for agents that can open the PDF), text,
+// sources: { P7S3: fp, … } (the paragraphs whose words — or part of them — are in this batch) }].
+// With paras (pdfText(…, { paras: true })), a page is sent as its paragraphs, each after its source ID:
+// "[P7S3] words…", blank line between paragraphs. A part that starts inside a paragraph repeats its ID first,
+// so every piece of text the AI reads carries the ID it may cite.
 export function planBatches(pages, { budget = BATCH_CHARS, agent = false } = {}) {
   const pieces = [];
   for (const p of pages) {
-    const text = String(p.text || '');
+    const paras = (p.paras || []).filter(x => x && x.id && String(x.text || '').trim());
+    const spans = [];
+    let text = String(p.text || '');
+    if (text && paras.length) {
+      text = '';
+      for (const x of paras) {
+        if (text) text += '\n\n';
+        spans.push({ id: x.id, fp: x.fp || '', from: text.length, to: text.length + x.id.length + 3 + String(x.text).length });
+        text += `[${x.id}] ${x.text}`;
+      }
+    }
+    const within = (a, e) => Object.fromEntries(spans.filter(s => s.from < e && s.to > a).map(s => [s.id, s.fp]));
     if (!text) { pieces.push({ n: p.n, empty: true }); continue; }
     const head = `--- page ${p.n} ---\n`;
-    if (head.length + text.length + 1 <= budget) { pieces.push({ n: p.n, chunk: head + text + '\n' }); continue; }
+    if (head.length + text.length + 1 <= budget) { pieces.push({ n: p.n, chunk: head + text + '\n', sources: within(0, text.length) }); continue; }
     // Split at a line break or space near the end of the room, never inside a word (a hard cut only for a
     // "word" longer than half a batch).
-    const room = budget - 64; // leaves space for the "(part i/m)" marker
+    const room = budget - 64 - (spans.length ? 24 : 0); // leaves space for the "(part i/m)" marker and a repeated ID
     const cuts = [];
     for (let at = 0; at < text.length;) {
       let end = Math.min(text.length, at + room);
@@ -164,20 +196,27 @@ export function planBatches(pages, { budget = BATCH_CHARS, agent = false } = {})
         if (best === end && code >= 0xD800 && code <= 0xDBFF) best -= 1;
         end = best;
       }
-      cuts.push(text.slice(at, end)); at = end;
+      cuts.push({ at, end }); at = end;
     }
-    cuts.forEach((c, i) => pieces.push({ n: p.n, chunk: `--- page ${p.n} (part ${i + 1}/${cuts.length}) ---\n${c}\n` }));
+    cuts.forEach(({ at, end }, i) => {
+      // Inside a paragraph: its ID again, marked as continued.
+      const inside = spans.find(s => s.from < at && s.to > at);
+      const again = inside ? `[${inside.id}] (…) ` : '';
+      pieces.push({ n: p.n, chunk: `--- page ${p.n} (part ${i + 1}/${cuts.length}) ---\n${again}${text.slice(at, end)}\n`, sources: within(at, end) });
+    });
   }
   const batches = [];
   let cur = null, waiting = []; // pages without text before the first text: they go with the next batch
   for (const x of pieces) {
     if (x.empty) { if (cur) cur.open.push(x.n); else waiting.push(x.n); continue; }
-    if (!cur || (cur.text && cur.text.length + x.chunk.length > budget)) { cur = { pages: [], open: waiting, text: '' }; waiting = []; batches.push(cur); }
+    if (!cur || (cur.text && cur.text.length + x.chunk.length > budget)) { cur = { pages: [], open: waiting, text: '', sources: {} }; waiting = []; batches.push(cur); }
     cur.text += x.chunk;
+    Object.assign(cur.sources, x.sources);
     if (!cur.pages.includes(x.n)) cur.pages.push(x.n);
   }
   // Without any text (all scanned), agents still get the page range to open themselves.
-  if (!batches.length && agent && waiting.length) batches.push({ pages: [], open: waiting, text: '' });
+  if (!batches.length && agent && waiting.length) batches.push({ pages: [], open: waiting, text: '', sources: {} });
+  for (const b of batches) if (!Object.keys(b.sources).length) delete b.sources; // plain text: no IDs to cite
   return batches;
 }
 // The pages one batch's answer may cite.
@@ -199,25 +238,29 @@ export function selfMatcher(path, linkName) {
   for (const n of [path, linkName]) { const x = normFile(n); if (x) { names.add(x); names.add(x.replace(/\.pdf$/, '')); } }
   return file => names.has(normFile(file));
 }
-export function plainText(s, ok = new Set(), pageLink = null, isSelf = () => false) {
+// sources: { P7S3: fp, … }, the paragraphs this batch sent. A jump keeps a paragraph ("&source=P7S3") only when
+// that paragraph is one of them; the AI's bare "[P7S3]" markers in its prose become such jumps, or vanish when
+// the ID is not one this batch sent.
+const own = (o, k) => !!o && Object.prototype.hasOwnProperty.call(o, k);
+export function plainText(s, ok = new Set(), pageLink = null, isSelf = () => false, sources = {}) {
   const jumps = [];
   const parse = target => {
     let t = String(target || '');
     try { t = decodeURIComponent(t); } catch { /* keep */ }
-    const m = t.match(/#page=(\d+)/i);
-    return { n: m ? +m[1] : 0, file: t.replace(/#.*$/, '').trim() };
+    const m = t.match(/#page=(\d+)/i), q = parseSourceId((t.match(/[#&]source=([^&\s]*)/i) || [])[1]);
+    return { n: m ? +m[1] : 0, file: t.replace(/#.*$/, '').trim(), src: q && m && q.page === +m[1] && own(sources, q.id) ? q.id : '' };
   };
   // A link's replacement: its words, then the page — a checked jump, "(p. N)" for this PDF's other pages or a
   // bare #page, "(Other.pdf p. N)" for another file.
   const cite = (label, target) => {
-    const { n, file } = parse(target);
+    const { n, file, src } = parse(target);
     let words = String(label || '').trim();
     if (!n) return words;
     if (new RegExp(`^(?:p\\.?|page|第)?\\s*${n}\\s*页?$`, 'i').test(words)) words = ''; // the words are just the page
     const base = file.replace(/\\/g, '/').split('/').pop();
     if (words && file && [normFile(file), normFile(base)].includes(normFile(words))) words = ''; // the words are just the file
     const self = !!file && isSelf(file);
-    if (self && ok.has(n) && pageLink) { jumps.push(n); return words ? `${words} \u0001${jumps.length - 1}\u0002` : `\u0003${jumps.length - 1}\u0002`; }
+    if (self && ok.has(n) && pageLink) { jumps.push([n, src]); return words ? `${words} \u0001${jumps.length - 1}\u0002` : `\u0003${jumps.length - 1}\u0002`; }
     const where = self || !file ? `p. ${n}` : `${base} p. ${n}`;
     return words ? `${words} (${where})` : where;
   };
@@ -237,22 +280,54 @@ export function plainText(s, ok = new Set(), pageLink = null, isSelf = () => fal
     // 4. Reference links: [words][ref], [ref][], and [ref] when it was defined.
     .replace(/!?\[([^\]\n]+)\]\[([^\]\n]*)\]/g, (_, label, ref) => cite(label, refs.get((ref || label).trim().toLowerCase()) || ''))
     .replace(/!?\[([^\]\n]+)\](?![(:])/g, (m, label) => (refs.has(label.trim().toLowerCase()) ? cite(label, refs.get(label.trim().toLowerCase())) : m))
+    // 4b. Source IDs written as "[P7S3]": a checked jump to that paragraph, or nothing.
+    .replace(/[ \t]?\[\s*(P\d+S\d+)\s*\]/gi, (m, id) => {
+      const q = parseSourceId(id);
+      if (!q || !own(sources, q.id) || !ok.has(q.page)) return '';
+      if (!pageLink) return ` (p. ${q.page})`;
+      jumps.push([q.page, q.id]); return ` \u0001${jumps.length - 1}\u0002`;
+    })
     // 5. HTML links, <autolinks>, bare URLs and bare "#page=N".
     .replace(/<a\b[^>]*?href\s*=\s*["']?([^"'\s>]*)[^>]*>([\s\S]*?)<\/a>/gi, (_, href, label) => cite(label.replace(/<[^>]*>/g, ''), href))
     .replace(/<([^<>\s]+)>/g, (m, target) => (/^[a-z][\w+.-]*:|#page=\d+|^[^@\s]+@[^@\s]+$/i.test(target) ? cite(String(target).replace(/#.*$/, ''), target) : m))
     .replace(/\b(?:https?|file|obsidian|ftp):\/\/\S+/gi, m => m.replace(/:\/\//, ':​//'))
     .replace(/(^|[\s(])#page=(\d+)/gi, (_, pre, n) => pre + cite('', '#page=' + n));
   // 6. Only now the checked jumps go in, so nothing above can touch them.
-  return out.replace(/\u0001(\d+)\u0002/g, (_, i) => `(${pageLink(jumps[+i])})`).replace(/\u0003(\d+)\u0002/g, (_, i) => pageLink(jumps[+i]))
+  return out.replace(/\u0001(\d+)\u0002/g, (_, i) => `(${pageLink(...jumps[+i])})`).replace(/\u0003(\d+)\u0002/g, (_, i) => pageLink(...jumps[+i]))
     .replace(/[\u0001\u0002\u0003]/g, '').replace(/\n{3,}/g, '\n\n').trim();
 }
-export function checkCitations(r, ok, pageLink = null, isSelf = () => false) {
-  const fix = n => (ok.has(n) ? n : 0), clean = s => plainText(s, ok, pageLink, isSelf);
+// An item's "source" (the AI's answer for a section, point, concept or formula): "P7S3" (also "[P7S3]",
+// "Long.pdf#P7S3" or "Long.pdf#page=7&source=P7S3"). Valid only when that paragraph was sent in this batch and
+// any file it names is this PDF. Returns its { page, para, id } or null.
+export function sourceOf(item, sources = {}, isSelf = () => false) {
+  const s = String(item?.source ?? '').trim();
+  if (!s) return null;
+  let file = '', id = s;
+  const q = /[#&?]source=([^&\s]*)/i.exec(s);
+  if (q) { id = q[1]; file = s.split('#')[0]; }
+  else { const m = /^(.*?)[#:\s]+\[?\s*(P\d+S\d+)\s*\]?$/i.exec(s); if (m) { file = m[1]; id = m[2]; } }
+  const p = parseSourceId(id);
+  if (!p || !own(sources, p.id)) return null;
+  if (file.trim() && !isSelf(file.trim())) return null;
+  return p;
+}
+// sources: { P7S3: fp, … } of this batch. An item keeps its source (and fp, for the link) only when the source is
+// valid and its page agrees with the item's page (or the item gave none); otherwise the source is dropped and the
+// item falls back to its page, checked as before (a page this batch did not send becomes 0).
+export function checkCitations(r, ok, pageLink = null, isSelf = () => false, sources = {}) {
+  const fix = n => (ok.has(n) ? n : 0), clean = s => plainText(s, ok, pageLink, isSelf, sources);
+  const at = x => {
+    const { source, fp, ...rest } = x; void source; void fp;
+    const q = sourceOf(x, sources, isSelf);
+    // A page and a source that disagree (page 2, source P3S1): the ID is dropped, the page is checked as usual.
+    const agrees = q && (!(+x.page) || +x.page === q.page);
+    return agrees && ok.has(q.page) ?{ ...rest, page: q.page, source: q.id, fp: sources[q.id] || '' } : { ...rest, page: fix(x.page) };
+  };
   return {
     title: clean(r.title), overview: clean(r.overview),
-    sections: (r.sections || []).map(s => ({ ...s, heading: clean(s.heading), page: fix(s.page), points: (s.points || []).map(p => ({ ...p, text: clean(p.text), page: fix(p.page) })) })),
-    concepts: (r.concepts || []).map(c => ({ ...c, term: clean(c.term), meaning: clean(c.meaning), page: fix(c.page) })),
-    formulas: (r.formulas || []).map(f => ({ ...f, meaning: clean(f.meaning), page: fix(f.page) })),
+    sections: (r.sections || []).map(s => ({ ...at(s), heading: clean(s.heading), points: (s.points || []).map(p => ({ ...at(p), text: clean(p.text) })) })),
+    concepts: (r.concepts || []).map(c => ({ ...at(c), term: clean(c.term), meaning: clean(c.meaning) })),
+    formulas: (r.formulas || []).map(f => ({ ...at(f), meaning: clean(f.meaning) })),
   };
 }
 // One answer from several batches, in page order; the same concept or formula is kept once. Concepts compare
@@ -285,7 +360,7 @@ async function generate({ path, only, total, dest, engine, profile, body, action
   try {
     // The text of the chosen pages (also for Claude Code and local agents, as a start: they can open the PDF).
     let read;
-    try { read = await pdfText(src, { only: pages, onProgress: (i, n) => { const el = win?.querySelector('.sum-busy'); if (el) el.textContent = t('exam.readingN', { i, n }); } }); }
+    try { read = await pdfText(src, { only: pages, paras: true, onProgress: (i, n) => { const el = win?.querySelector('.sum-busy'); if (el) el.textContent = t('exam.readingN', { i, n }); } }); }
     catch (e) { if (e.code === 'range') return failed(t('exam.pagesRange', { part: pageRanges(pages), n: total })); throw e; }
     if (stop.signal.aborted) return failed(t('sum.stopped'));
     const agent = AI.isLocal(engine) || engine === AI.CC; // can open the PDF itself (scanned pages too)
@@ -319,11 +394,13 @@ async function runBatches(job) {
         + (b.open.length ? `<pages_without_text>${pageRanges(b.open)}${agent ? ' — scanned: open these pages from the PDF yourself.' : ''}</pages_without_text>\n` : '')
         + (n > 1 ? `<part>${i + 1} of ${n}: summarize only these pages; the other parts are summarized separately.</part>\n` : '');
       const content = `${hint}<pdf file="${path}">\n${b.text}</pdf>\n<pages_included>${pageRanges(agent ? range : b.pages)} of ${total}</pages_included>`;
-      const r = await AI.request('summary', 'summary', { title: stem(path), content, path, job: { pages: pageRanges(range), total, pdf: path, part: i + 1, parts: n } }, { signal: stop.signal, provider: engine });
+      // Claude Code gets the same numbered text in job.sourceText (API models and local frameworks read it in content).
+      const r = await AI.request('summary', 'summary', { title: stem(path), content, path, job: { pages: pageRanges(range), total, pdf: path, part: i + 1, parts: n, sourceText: b.text } }, { signal: stop.signal, provider: engine });
       if (!win || stop.signal.aborted) return;
       // Links in the answer's text are rebuilt by Graphite, and only for this PDF and pages this batch sent.
       const link = H.linkNameFor(path);
-      results.push(checkCitations(r, citable(b, agent), n => `[[${link}#page=${n}|p. ${n}]]`, selfMatcher(path, link)));
+      const srcs = b.sources || {};
+      results.push(checkCitations(r, citable(b, agent), (pg, id = '') => noteLink(link, pg, id, srcs[id] || ''), selfMatcher(path, link), srcs));
     }
     const covered = [...new Set(batches.flatMap(b => [...b.pages, ...(agent ? b.open : [])]))].sort((x, y) => x - y);
     const md = buildNote(path, mergeResults(results), { pages: covered, empty, engine, profile });
@@ -340,28 +417,35 @@ async function runBatches(job) {
   } finally { clearInterval(tick); if (pending === stop) pending = null; }
 }
 
+// A link to a page, or to a paragraph on it: [[Long.pdf#page=7&source=P7S3&fp=0abc123|p. 7 ¶3]] (fp: the paragraph's
+// words, so the viewer can tell when the PDF has changed since).
+export function noteLink(link, page, source = '', fp = '') {
+  const q = source ? parseSourceId(source) : null;
+  const id = q && q.page === page ? q.id : '';
+  return `[[${link}#${locationHash(page, id, id ? fp : '')}|p. ${page}${id ? ' ¶' + q.para : ''}]]`;
+}
 // The note, built by Graphite so every page link is real: a page that wasn't read gets no link.
 export function buildNote(path, r, { pages, empty = [], engine, profile = {} }) {
   const ok = new Set(pages);
   const link = H.linkNameFor(path);
-  const at = n => (n && ok.has(n) ? ` ([[${link}#page=${n}|p. ${n}]])` : '');
+  const at = x => (x?.page && ok.has(x.page) ? ` (${noteLink(link, x.page, x.source, x.fp)})` : '');
   const L = [];
   L.push(`[[${link}|${fileOf(path)}]] · ${t('sum.pagesLine', { pages: pageRanges(pages) })}`, '');
   if (r.overview) L.push(r.overview.trim(), '');
   if (empty.length) L.push(`> ${t('sum.emptyNote', { pages: pageRanges(empty) })}`, '');
   for (const s of r.sections || []) {
-    L.push(`## ${s.heading || t('sum.section')}${at(s.page)}`, '');
-    for (const p of s.points || []) L.push(`- ${p.text.trim()}${at(p.page)}`);
+    L.push(`## ${s.heading || t('sum.section')}${at(s)}`, '');
+    for (const p of s.points || []) L.push(`- ${p.text.trim()}${at(p)}`);
     L.push('');
   }
   if (r.concepts?.length) {
     L.push(`## ${t('sum.concepts')}`, '');
-    for (const c of r.concepts) L.push(`- **${c.term.trim()}**: ${c.meaning.trim()}${at(c.page)}`);
+    for (const c of r.concepts) L.push(`- **${c.term.trim()}**: ${c.meaning.trim()}${at(c)}`);
     L.push('');
   }
   if (r.formulas?.length) {
     L.push(`## ${t('sum.formulas')}`, '');
-    for (const f of r.formulas) L.push(`- $${f.latex.trim().replace(/^\$+|\$+$/g, '')}$${f.meaning ? ' — ' + f.meaning.trim() : ''}${at(f.page)}`);
+    for (const f of r.formulas) L.push(`- $${f.latex.trim().replace(/^\$+|\$+$/g, '')}$${f.meaning ? ' — ' + f.meaning.trim() : ''}${at(f)}`);
     L.push('');
   }
   const bodyText = L.join('\n').trim() + '\n';
@@ -380,6 +464,8 @@ async function preview({ path, md, dest, body, actions }) {
     <div class="sum-existing"></div>
     <div class="markdown sum-preview"></div>`;
   H.renderInto(body.querySelector('.sum-preview'), md, target, 1);
+  // Opening a link from here (the app's own click handler does the opening) sets the window aside first.
+  body.querySelector('.sum-preview').addEventListener('click', e => { if (e.target.closest('a.internal-link, [data-open]')) peek(); });
   const exists = H.S.files.has(target);
   let edited = false;
   if (exists) {
