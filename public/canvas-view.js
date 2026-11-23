@@ -5,6 +5,7 @@ import { createSubmissionDialog, supportedTypes, answersDraft, evidenceOf, expli
 const ORIGIN = 'https://oc.sjtu.edu.cn';
 const GROUPS = ['files', 'assignments', 'requirements', 'announcements', 'modules', 'quizzes', 'events', 'discussions', 'pages'];
 const STEP = 12;
+const CHANGE_STEP = 3;
 const label = key => canvasText(getLang(), key);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 function schoolLink(value) {
@@ -101,6 +102,7 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
   let awaitWrite = false, pendingVerification = null, summaryReceipt = '', firstSyncUntil = 0;
   let selected = '', group = 'files', limit = STEP, dateLimit = STEP, confirmDisconnect = false;
   let receipt = null, bulkFailures = [], visible = false, lastPull = null, progressTimer = 0, reader = null;
+  let changesOpen = false;
   const call = (method, name, body) => api(method, 'canvas/' + name, {}, body);
   // By ID only (two courses or assignments can share a name).
   const findAssignment = (courseId, assignmentId) => state?.snapshot?.courses?.find(c => String(c.id) === String(courseId))?.assignments?.find(a => String(a.id) === String(assignmentId)) || null;
@@ -137,7 +139,7 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
     // A different student (accountKey, never the display name, which two students can share).
     const otherAccount = !!(state?.accountKey && next.accountKey && state.accountKey !== next.accountKey);
     if (otherAccount || (state?.connected && !next.connected && !next.snapshot?.courses?.length)) {
-      selected = ''; receipt = null; bulkFailures = []; lastPull = null; limit = STEP; dateLimit = STEP; summaryReceipt = ''; pendingVerification = null;
+      selected = ''; receipt = null; bulkFailures = []; lastPull = null; limit = STEP; dateLimit = STEP; summaryReceipt = ''; pendingVerification = null; changesOpen = false;
     }
     const previous = state;
     state = next;
@@ -204,6 +206,20 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
         return `<li class="cv-row">${daysLeft(item)}<div class="cv-row-text"><div class="cv-title">${link(item.title, item.url)}</div><div class="cv-meta">${esc([formatTime(item.date, item.allDay), item.allDay ? label('allDay') : '', item.course].filter(Boolean).join(' · '))}</div></div>${quick}</li>`;
       }).join('')}</ul>${entries.length > dateLimit ? button('more-dates', label('more')) : ''}`
       : `<p class="cv-meta">${esc(label('noDates'))}</p>`}</section>`;
+  }
+  // Due dates Canvas moved since the last sync (from the status endpoint). Hidden while the list is empty.
+  function deadlineChanges() {
+    const list = (state.deadlineChanges || []).filter(c => c && c.title && dateValue(c.from) && dateValue(c.to));
+    if (!list.length) return '';
+    const shown = changesOpen ? list : list.slice(0, CHANGE_STEP);
+    return `<section class="cv-block cv-changes" data-cv-changes aria-labelledby="cv-changes-h"><h2 id="cv-changes-h">${esc(label('dateChanges'))} <small>${list.length}</small></h2>
+      <ul class="cv-list">${shown.map(c => {
+        const earlier = c.kind === 'earlier';
+        const course = c.courseName ? link(c.courseName, c.courseId != null ? '/courses/' + encodeURIComponent(c.courseId) : '') : '';
+        return `<li class="cv-row" data-change="${esc(c.courseId)}:${esc(c.assignmentId)}"><span class="cv-due cv-change-${earlier ? 'earlier' : 'later'}">${esc(label(earlier ? 'changeEarlier' : 'changeLater'))}</span>
+          <div class="cv-row-text"><div class="cv-title">${link(c.title, c.url)}</div>${course ? `<div class="cv-meta">${course}</div>` : ''}
+          <div class="cv-meta cv-change-dates"><span>${esc(label('changeFrom'))} <s>${esc(formatTime(c.from))}</s></span> → <span>${esc(label('changeTo'))} <strong>${esc(formatTime(c.to))}</strong></span></div></div></li>`;
+      }).join('')}</ul>${list.length > CHANGE_STEP ? button('toggle-changes', changesOpen ? label('showFewer') : label('showAll').replace('{n}', list.length), '', `aria-expanded="${changesOpen}"`) : ''}</section>`;
   }
   // What the last pull put into the course folders (slides, homework, exams), with buttons to open them.
   function newFiles() {
@@ -315,7 +331,7 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
       ${state.sessionOnly && (connected || state.calendar) ? `<p class="cv-meta">${esc(label('sessionOnly'))}</p>` : ''}
       ${migrationNote()}${calendarForm()}</div>
       ${hasData ? `<div class="cv-bar cv-sync"><label class="cv-auto" title="${esc(label('autoHelp'))}"><input type="checkbox" data-cv-auto${state.autoMirror !== false ? ' checked' : ''}> ${esc(label('auto'))}</label><span class="cv-meta">${esc([state.syncing ? label('syncRunning') + (state.syncProgress?.total ? ` ${state.syncProgress.done}/${state.syncProgress.total}` : '') : '', latest ? label('synced') + ' · ' + formatTime(latest) : ''].filter(Boolean).join('　'))}</span><div class="cv-actions">${(connected || state.calendar) && !state.syncing ? button('sync', label('sync')) : ''}${connected ? button('pull', label('pullAll'), 'mod-cta') : ''}</div></div>${pullReport()}${state.snapshot?.courses?.length && (!connected || state.syncing || state.authError) ? `<p class="cv-meta">${esc(label('cache'))}</p>` : ''}${warnings(state.snapshot?.warnings)}` : ''}
-      <div class="cv-grid"><div class="cv-col">${hasData ? newFiles() + agenda() : ''}</div>
+      <div class="cv-grid"><div class="cv-col">${hasData ? newFiles() + deadlineChanges() + agenda() : ''}</div>
       <div class="cv-col cv-col-main">${reader ? readerPanel() : connected || state.snapshot?.courses?.length ? coursePanel() : ''}</div></div></div>`;
     for (const el of root.querySelectorAll('details[data-keep]')) el.open = open.has(el.dataset.keep);
     const input = root.querySelector('#cv-feed-input'); if (input && draft) input.value = draft;
@@ -473,6 +489,7 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
       if (course && item) submission.open(course, item, { quick: true, folder: state.courseLinks?.[String(course.id)] || '' });
       return;
     }
+    if (action === 'toggle-changes') { changesOpen = !changesOpen; render(); return; }
     if (action === 'more' || action === 'more-dates') {
       if (action === 'more') limit += STEP; else dateLimit += STEP;
       render(); return;
@@ -528,7 +545,7 @@ export function createCanvasView(root, { api, openFile, onSeen }) {
     // For the ribbon badge: the latest status (it holds the last pull and its "new files" summary).
     status: () => call('GET', 'status'),
     hide() { visible = false; root.hidden = true; submission.dismiss(); clearTimeout(poll); ++readVersion; },
-    close() { root.replaceChildren(); submission.clear(); state = null; receipt = null; lastPull = null; bulkFailures = []; message = ''; failed = false; authUntil = 0; awaitWrite = false; confirmDisconnect = false; pendingVerification = null; summaryReceipt = ''; },
+    close() { root.replaceChildren(); submission.clear(); state = null; changesOpen = false; receipt = null; lastPull = null; bulkFailures = []; message = ''; failed = false; authUntil = 0; awaitWrite = false; confirmDisconnect = false; pendingVerification = null; summaryReceipt = ''; },
     relabel() { if (visible) render(); },
   };
 }

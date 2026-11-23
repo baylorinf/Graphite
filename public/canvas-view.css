@@ -117,3 +117,14 @@
 .cv-new .cv-row { flex-wrap: wrap; }
 .cv-inner h2 { flex-wrap: wrap; }
 @media (min-width: 980px) { .cv-grid { grid-template-columns: minmax(320px, 1fr) minmax(0, 1.35fr); } }
+/* Due date changes: the badge says 提前/延期 in words; colour only repeats it. */
+.cv-changes .cv-row { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; column-gap: 12px; }
+.cv-change-earlier { background: color-mix(in srgb, #ef4444 16%, transparent); color: #dc2626; }
+.cv-change-later { background: color-mix(in srgb, #10b981 16%, transparent); color: #047857; }
+.cv-change-dates s { text-decoration-thickness: 1px; }
+.cv-change-dates strong { color: var(--text); font-weight: 560; }
+.cv-changes > .mod-button { font-size: .86em; }
+.cv-changes .cv-meta a { color: inherit; text-decoration: none; }
+.cv-changes .cv-meta a:hover, .cv-changes .cv-meta a:focus-visible { color: var(--link); text-decoration: underline; }
+.cv-change-dates { display: flex; flex-wrap: wrap; column-gap: .4em; }
+.cv-change-dates span { white-space: nowrap; }

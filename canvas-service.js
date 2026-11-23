@@ -7,6 +7,7 @@ const { pullMaterials } = require('./canvas-pull');
 const { mirrorToCourses, guessLinks } = require('./canvas-mirror');
 const { moveCanvasFolder, rewriteLinks } = require('./canvas-migrate');
 const { courseContent } = require('./canvas-course-content');
+const deadlines = require('./canvas-deadlines');
 const fsSync = require('node:fs');
 
 const SITE = 'https://oc.sjtu.edu.cn';
@@ -40,6 +41,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
     if (!data) data = (await storage?.load()) || {};
   }
   async function save(next) {
+    next = deadlines.track(data, next);
     if (storage) await storage.save(next);
     data = next;
   }
@@ -103,6 +105,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
       syncProgress: hidden || readingSchool<=0 ? null : (data.syncProgress || null),
       authMode: web ? 'web' : (visible.auth || configured ? 'oauth' : null), authPending: !!pending && pending.until > Date.now(),
       authError, syncedAt: visible.syncedAt || null, snapshot: visible.snapshot || { courses: [], warnings: [] },
+      deadlineChanges: hidden ? [] : deadlines.changesFor(visible),
       calendar: visible.calendar || null, migration: data.migration || null, courseLinks: hidden ? {} : courseLinks(), vaultFolders: vaultFolders(), autoMirror: data.autoMirror !== false, autoPull: !!autoPullMs, portalOpened: !!visible.portalOpened, lastDownload: hidden ? null : (raw => shownPaths.get(raw) || raw)(desktop?.lastDownload?.() || null) };
   }
   async function tokenRequest(parameters) {

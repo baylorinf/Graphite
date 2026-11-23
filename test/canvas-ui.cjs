@@ -10,6 +10,7 @@ const project = path.resolve(process.argv[2] || path.join(__dirname, '..'));
 const site = 'https://oc.sjtu.edu.cn';
 const feedUrl = site + '/feeds/calendars/user_fixture.ics';
 const savedPath = 'Canvas/示例代数 (101)/讲义.md';
+const deadlines = require(path.join(project,'canvas-deadlines.js'));
 const when = days => new Date(Date.now() + days * 86400000).toISOString();
 
 function makeSnapshot() {
@@ -39,7 +40,7 @@ function createFixture(configured, portalSupported=false) {
   const empty = () => ({ connected:false, configured, portalSupported, portalSyncEnabled:false, authMode:null,
     sessionOnly:false, user:'', authPending:false, canSubmit:false,
     authError:'', syncedAt:null, snapshot:{courses:[],warnings:[]}, calendar:null, portalOpened:false });
-  let state = empty();
+  let state = empty(), tracked = {}, syncs = 0;
   const calls = [];
   const fixture = { calls, failSync:false, partial:false, failDownload:false, failFeed:false, failStatus:false,
     submitMode:'ok', submissions:[],
@@ -49,6 +50,13 @@ function createFixture(configured, portalSupported=false) {
       const row = sample.courses[0].assignments.find(a=>a.id === id);
       row.submitted=true;row.attempt=(row.attempt || 0)+1;
     },
+    designLab(dueAt) {
+      const lab = sample.courses.find(c=>c.id==='303') || (sample.courses.push({id:'303',name:'设计实验',code:'DEMO-L',url:site+'/courses/303',warnings:[],
+        assignments:[{id:'3301',title:'实验报告',submitted:false,url:site+'/courses/303/assignments/3301'}]}),sample.courses.at(-1));
+      lab.assignments[0].dueAt=dueAt;
+    },
+    extraChanges(n) { state.deadlineChanges=[...state.deadlineChanges, ...Array.from({length:n},(_,i)=>({courseId:'303',assignmentId:'39'+i,courseName:'设计实验',title:'附加练习 '+(i+1),seenAt:when(0),from:when(9),to:when(12),kind:'later',url:site+'/courses/303/assignments/39'+i}))]; },
+    switchAccount() { state.accountKey='fixture-other'; state.user='另一位同学'; },
     offerHomework() {
       const first = sample.courses[0];
       for (const [id,type,title] of [['310','online_text_entry','矩阵文字作业'],['311','online_url','实验网页作业'],['312','online_upload','上传演算作品']]) {
@@ -98,6 +106,8 @@ function createFixture(configured, portalSupported=false) {
           if (state.connected) {
             state.snapshot = structuredClone(sample);
             state.syncedAt = when(0);
+            tracked = deadlines.track(tracked, {...tracked, accountId:state.accountKey, user:state.user, snapshot:state.snapshot, syncedAt:'sync-'+(++syncs)});
+            state.deadlineChanges = deadlines.changesFor(tracked);
             if (fixture.partial) state.snapshot.courses[0].warnings=['课件暂时无法读取，已保留上次记录。'];
           }
           return respond(state);
@@ -265,6 +275,64 @@ async function authorizedCourses(browser, origin) {
     await settingsEntry.waitFor();await settingsEntry.click();await button('connect').waitFor();
     console.log('PASS authorization, eight course resource sections, date filtering, submitted work, two courses, stale/partial sync, download retry, disconnect and settings entry');
   } finally {await context.close();}
+}
+
+async function deadlineChanges(browser, origin) {
+  const fixture = createFixture(true);
+  const {context,page,view,button} = await startPage(browser,origin,fixture);
+  const day = n => { const d=new Date(); d.setDate(d.getDate()+((n-d.getDay()+7)%7||7)); d.setHours(23,59,0,0); return d.toISOString(); };
+  const friday=day(5), wednesday=day(3);
+  try {
+    fixture.activate(); await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await textVisible(view,'课程测试生');
+    fixture.designLab(friday);
+    await button('sync').click();
+    await view.locator('#cv-course').waitFor();
+    assert.equal(await view.locator('[data-cv-changes]').count(),0,'first sync only records a baseline');
+    fixture.designLab(wednesday);
+    await button('sync').click();
+    const block=view.locator('[data-cv-changes]');
+    await block.waitFor();
+    await block.getByRole('heading',{name:/^作业日期变更/}).waitFor();
+    const row=block.locator('.cv-row');
+    assert.equal(await row.count(),1);
+    const fmt=v=>new Intl.DateTimeFormat('zh-CN',{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(v));
+    const text=await row.innerText();
+    for (const part of ['提前','实验报告','设计实验','原截止','新截止',fmt(friday),fmt(wednesday)]) assert(text.includes(part),'row should show '+part+': '+text);
+    assert(text.indexOf(fmt(friday))<text.indexOf(fmt(wednesday)));
+    await button('sync').click();
+    await page.waitForFunction(()=>!document.querySelector('#canvas-view [aria-busy="true"]'));
+    await textVisible(block,'实验报告');
+    assert.equal(await block.locator('.cv-row').count(),1,'a later sync keeps one record');
+    // Keyboard: the title is a link; Enter opens the source page in the reader.
+    const title=row.getByRole('link',{name:'实验报告'});
+    assert.equal(await title.getAttribute('href'),site+'/courses/303/assignments/3301');
+    assert.equal(await row.getByRole('link',{name:'设计实验'}).getAttribute('href'),site+'/courses/303');
+    await title.focus(); await page.keyboard.press('Enter');
+    await view.locator('[data-cv-reader]').waitFor();
+    assert(fixture.calls.some(c=>c.action==='read' && c.body?.url===site+'/courses/303/assignments/3301'));
+    await button('reader-back').click();
+    fixture.extraChanges(4);
+    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await block.locator('[data-cv="toggle-changes"]').waitFor();
+    assert.equal(await block.locator('.cv-row').count(),3,'only the latest few by default');
+    assert(await block.innerText().then(t=>t.includes('延期')));
+    const toggle=block.locator('[data-cv="toggle-changes"]');
+    assert.equal(await toggle.getAttribute('aria-expanded'),'false');
+    await toggle.focus(); await page.keyboard.press('Enter');
+    await page.waitForFunction(()=>document.querySelectorAll('#canvas-view [data-cv-changes] .cv-row').length===5);
+    assert.equal(await block.locator('[data-cv="toggle-changes"]').getAttribute('aria-expanded'),'true');
+    assert.equal(await page.evaluate(()=>document.activeElement?.dataset.cv),'toggle-changes','focus stays on the toggle');
+    if (process.env.GRAPHITE_SHOT) await block.screenshot({path:process.env.GRAPHITE_SHOT});
+    fixture.switchAccount();
+    await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
+    await textVisible(view,'另一位同学');
+    await button('sync').click();
+    await page.waitForFunction(()=>!document.querySelector('#canvas-view [aria-busy="true"]'));
+    await textVisible(view,'另一位同学');
+    assert.equal(await view.locator('[data-cv-changes]').count(),0,'another account never sees the previous list');
+    console.log('PASS due date changes: baseline, earlier, one record, source link, keyboard, account switch');
+  } finally { await context.close(); }
 }
 
 async function assignmentSubmissions(browser, origin) {
@@ -454,6 +522,7 @@ async function main() {
   try {
     await calendarWithoutOAuth(browser,origin);
     await authorizedCourses(browser,origin);
+    await deadlineChanges(browser,origin);
     await nativeSchoolSession(browser,origin,vault);
     await assignmentSubmissions(browser,origin);
   }

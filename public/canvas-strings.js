@@ -129,6 +129,13 @@ const labels = {
   autoHelp: ['When Graphite starts and every 3 hours: pull new files from Canvas and file them into the linked course folders (PDF copies of PowerPoint/Word). Duplicates are skipped; nothing is overwritten.', 'Au démarrage puis toutes les 3 heures : récupérer les nouveaux fichiers de Canvas et les classer dans les dossiers de cours liés (copies PDF des PowerPoint/Word). Les doublons sont ignorés ; rien n’est écrasé.', 'Al iniciar y cada 3 horas: traer archivos nuevos de Canvas y archivarlos en las carpetas de curso vinculadas (copias PDF de PowerPoint/Word). Se omiten duplicados; no se sobrescribe nada.', '起動時と 3 時間ごとに Canvas の新しいファイルを取得し、リンクしたコースフォルダーに整理します（PowerPoint/Word は PDF に）。重複はスキップし、上書きしません。', '시작할 때와 3시간마다 Canvas의 새 파일을 가져와 연결한 강좌 폴더에 정리합니다(PowerPoint/Word는 PDF 사본). 중복은 건너뛰고 덮어쓰지 않습니다.', '启动时和每 3 小时：从 Canvas 拉取新文件，归档到对应的课程文件夹（PowerPoint/Word 另存 PDF）。重复的跳过，绝不覆盖。', '啟動時和每 3 小時：從 Canvas 拉取新檔案，歸檔到對應的課程資料夾（PowerPoint/Word 另存 PDF）。重複的略過，絕不覆蓋。'],
   suggested: ['Graphite picked this file from your homework folder. Check it, or go back to choose another.', 'Graphite a choisi ce fichier dans votre dossier de devoirs. Vérifiez-le, ou revenez en choisir un autre.', 'Graphite eligió este archivo de tu carpeta de tareas. Revísalo o vuelve para elegir otro.', 'Graphite が宿題フォルダーからこのファイルを選びました。確認するか、戻って別のファイルを選んでください。', 'Graphite가 과제 폴더에서 이 파일을 골랐습니다. 확인하거나 돌아가서 다른 파일을 고르세요.', 'Graphite 从作业文件夹里选了这个文件。请核对，或返回换一个。', 'Graphite 從作業資料夾裡選了這個檔案。請核對，或返回換一個。'],
   newBadge: ['{n} new files from Canvas', '{n} nouveaux fichiers de Canvas', '{n} archivos nuevos de Canvas', 'Canvas から新しいファイル {n} 件', 'Canvas에서 새 파일 {n}개', 'Canvas 新增 {n} 个文件', 'Canvas 新增 {n} 個檔案'],
+  dateChanges: ['Due date changes', 'Échéances modifiées', 'Cambios de fecha de entrega', '締切の変更', '마감일 변경', '作业日期变更', '作業日期變更'],
+  changeEarlier: ['Earlier', 'Avancée', 'Adelantada', '前倒し', '앞당겨짐', '提前', '提前'],
+  changeLater: ['Extended', 'Reportée', 'Aplazada', '延長', '연장됨', '延期', '延期'],
+  changeFrom: ['Was due', 'Ancienne échéance', 'Antes', '元の締切', '기존 마감', '原截止', '原截止'],
+  changeTo: ['Now due', 'Nouvelle échéance', 'Ahora', '新しい締切', '새 마감', '新截止', '新截止'],
+  showAll: ['Show all ({n})', 'Tout afficher ({n})', 'Mostrar todo ({n})', 'すべて表示（{n}）', '모두 보기 ({n})', '展开全部（{n}）', '展開全部（{n}）'],
+  showFewer: ['Show fewer', 'Afficher moins', 'Mostrar menos', '表示を減らす', '간단히 보기', '收起', '收起'],
   restoreDraft: ['Restore draft', 'Restaurer le brouillon', 'Restaurar borrador', '下書きを戻す', '초안 복원', '恢复草稿', '恢復草稿'],
 };
 export function canvasText(lang, key) {
