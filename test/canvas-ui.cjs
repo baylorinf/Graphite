@@ -281,7 +281,9 @@ async function deadlineChanges(browser, origin) {
   const fixture = createFixture(true);
   const {context,page,view,button} = await startPage(browser,origin,fixture);
   const day = n => { const d=new Date(); d.setDate(d.getDate()+((n-d.getDay()+7)%7||7)); d.setHours(23,59,0,0); return d.toISOString(); };
-  const friday=day(5), wednesday=day(3);
+  const friday=day(5), earlier=new Date(friday);
+  earlier.setDate(earlier.getDate()-2);
+  const wednesday=earlier.toISOString();
   try {
     fixture.activate(); await page.evaluate(()=>window.dispatchEvent(new Event('focus')));
     await textVisible(view,'课程测试生');

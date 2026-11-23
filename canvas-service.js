@@ -31,6 +31,7 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
     clientId = process.env.GRAPHITE_CANVAS_CLIENT_ID, clientSecret = process.env.GRAPHITE_CANVAS_CLIENT_SECRET }) {
   let data, pending, tail = Promise.resolve(), authError = '', refreshing, webSyncing = false, readingSchool = 0, pullProgress = null, activePull = null;
   const shownPaths = new Map(); // a download as saved → the copy in the course folder (for "latest file")
+  let readNumber = 0, lastSavedRead = 0;
   const configured = !!(clientId && clientSecret && desktop?.openAuth);
   function exclusive(fn) {
     const result = tail.then(fn, fn);
@@ -40,16 +41,19 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
   async function ready() {
     if (!data) data = (await storage?.load()) || {};
   }
-  async function save(next) {
-    next = deadlines.track(data, next);
+  async function save(next, read = 0) {
+    if (read && read < lastSavedRead) return false;
+    next = deadlines.track(data, next, new Date(), read > 0);
     if (storage) await storage.save(next);
     data = next;
+    if (read) lastSavedRead = read;
+    return true;
   }
   // One writer at a time for the saved state. A long school read never holds the lock: it saves its progress
   // through this, so signing in, syncing and the other actions stay responsive while courses are read.
-  const writeState = mutate => exclusive(async () => {
+  const writeState = (mutate, read = 0) => exclusive(async () => {
     const next = mutate(data);
-    if (next) await save(next);
+    return next ? save(next, read) : false;
   });
   // Top-level vault folders a Canvas course can be linked to (its new files are copied there).
   function vaultFolders() {
@@ -149,10 +153,10 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
   // signing in or pressing sync never waits for it. A new sign-in gets its own session id and never joins.
   function syncWeb(background=false,fullMaterials=false,options={}) {
     if (options.locked) return syncWebNow(background,fullMaterials,options);
-    if (fullMaterials) return syncWebNow(background,true,options);
-    if (normalRead && normalSession === (data.webSessionId || null)) return normalRead;
+    if (fullMaterials && !options.joinNormal) return syncWebNow(background,true,options);
+    if (!fullMaterials && normalRead && normalSession === (data.webSessionId || null)) return normalRead;
     normalSession = data.webSessionId || null;
-    const run = syncWebNow(background,false,options);
+    const run = syncWebNow(background,fullMaterials,options);
     normalRead = run;
     run.then(() => { if (normalRead === run) normalRead = null; }, () => { if (normalRead === run) normalRead = null; });
     return run;
@@ -160,13 +164,16 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
   async function syncWebNow(background=false,fullMaterials=false,{locked=false}={}) {
     // Under the lock (a session that has not confirmed its account yet) write directly; otherwise every save goes
     // through writeState so a minutes-long read never blocks signing in or the other short actions.
-    const write = mutate => locked
-      ? Promise.resolve().then(() => { const next = mutate(data); return next ? save(next) : undefined; })
-      : writeState(mutate);
+    const write = (mutate, completedRead = 0) => locked
+      ? Promise.resolve().then(() => { const next = mutate(data); return next ? save(next, completedRead) : false; })
+      : writeState(mutate, completedRead);
     // This read belongs to the sign-in it started with. A later sign-in for another account gets a new session id,
     // so nothing this read collected (even a course saved halfway) can land under that account.
     const session = data.webSessionId;
-    const mine = cur => cur.portalSyncEnabled && String(cur.webSessionId||'') === String(session||'');
+    const read = ++readNumber;
+    const initialIdentity = data.snapshot?.webIdentity;
+    const initialUser = data.user;
+    const mine = cur => cur.portalSyncEnabled && String(cur.webSessionId||'') === String(session||'') && read >= lastSavedRead;
     readingSchool++;
     try {
       const keepPrevious = !data.webReconnect || !!data.snapshot?.webIdentity;
@@ -175,6 +182,8 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         // course list fills in while the rest is still being read.
         onCourse: partial => write(cur => {
           if (!mine(cur)) return null;
+          if ((initialIdentity || cur.snapshot?.courses?.length) &&
+              String(cur.snapshot?.webIdentity || '') !== String(partial.webIdentity || '')) return null;
           // Partial: the courses read so far replace their old copy, the ones not visited yet stay visible, and
           // "last synced" only moves when the whole read ends.
           const seen=new Set((partial.courses || []).map(c=>String(c.id)));
@@ -183,9 +192,9 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
             snapshot:{courses:[...(partial.courses || []),...kept],warnings:partial.warnings || [],webIdentity:partial.webIdentity ?? cur.snapshot?.webIdentity ?? null},
             syncProgress:{done:partial.courses.length,total:partial.total || partial.courses.length}};
         })});
-      if (!mine(data)) return;
-      const oldUser=String(data.user||'').trim(), user=String(result.user||'').trim();
-      const previousIdentity=data.snapshot?.webIdentity, nextIdentity=result.snapshot.webIdentity;
+      if (!mine(data)) return false;
+      const oldUser=String(initialUser||'').trim(), user=String(result.user||'').trim();
+      const previousIdentity=initialIdentity, nextIdentity=result.snapshot.webIdentity;
       const changedName=oldUser && user && oldUser!==user;
       const sameName=!!oldUser && !!user && oldUser===user;
       // A numbered profile decides; without one, the same display name keeps the account. An unnamed session only
@@ -215,17 +224,19 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
           if(item && !item.dueAt)item.dueAt=entry.startAt;
         }
       }
-      authError='';
       // A foreground read that hit no cap is complete enough to pull from: remember when it finished. A capped or
       // background read is not, so a pull must read again.
       const truncated = [result.snapshot, ...(result.snapshot.courses || [])]
         .some(page => (page.warnings || []).some(w => /部分单元附件|超过 100 页|作业详情超过/.test(w)));
-      await write(cur => !mine(cur) ? null : ({...cur,
+      const committed = await write(cur => !mine(cur) ? null : ({...cur,
         ...(switched ? {requests:undefined,lastPull:null,pullCache:undefined,pullSessionId:null} : {}),
         webVerified:true, webReconnect:false, user:result.user, snapshot:result.snapshot, syncedAt:result.syncedAt,
         pullReadyAt:background || truncated ? null : new Date().toISOString(),
-        feed:url, calendar, feedMuted:muted, feedAutomatic:!!result.feed && !muted, syncProgress:null, syncError:null}));
+        feed:url, calendar, feedMuted:muted, feedAutomatic:!!result.feed && !muted, syncProgress:null, syncError:null}), read);
+      if (committed) authError='';
+      return committed;
     } catch(e) {
+      if (!mine(data)) return false;
       authError=e.message;
       // A single page failing is not a failed sign-in: keep the account and the courses already read. Only the
       // school saying the session is gone asks for a new login.
@@ -354,6 +365,11 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         pullProgress = {done:0,total:0,name:''};
         const warnings = [];
         let usingSnapshot = false;
+        const login = data.webSessionId, web = !!data.portalSyncEnabled, ownerAtStart = deadlines.ownerOf(data);
+        const checkOwner = () => {
+          if (!(web ? data.webVerified : data.auth) || web !== !!data.portalSyncEnabled || login !== data.webSessionId ||
+              (ownerAtStart && ownerAtStart !== deadlines.ownerOf(data))) throw error(409,'课程账户已变更，请重新拉取资料。');
+        };
         try {
           if (data.portalSyncEnabled) {
             // A deep read that just finished already holds every course, assignment and file: download from it
@@ -363,20 +379,26 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
               Date.now() - (Date.parse(data.pullReadyAt) || 0) < 10 * 60000;
             if (ready) await exclusive(() => save({...data, pullReadyAt:null}));
             else {
-              await syncWeb(auto, true);
+              const saved = await syncWeb(auto, true);
+              checkOwner();
+              // A more recent short sync can satisfy the pull if it read all materials.
+              // If it hit a cap, run a fresh full read and let new manual syncs join it.
+              if (!saved && !data.pullReadyAt) await syncWeb(auto,true,{joinNormal:true});
               // This pull's own read is not handed to the next one: by then the school may have changed.
               await exclusive(() => save({...data, pullReadyAt:null}));
             }
           }
           else {
+            const read = ++readNumber;
             const snapshot = await api.sync(data.snapshot || undefined);
-            await exclusive(() => save({...data,snapshot,syncedAt:new Date().toISOString()}));
+            await exclusive(() => { checkOwner(); return save({...data,snapshot,syncedAt:new Date().toISOString()},read); });
           }
         } catch (e) {
-          if (e.status===401 || e.status===403 || !data.snapshot?.courses?.length) throw e;
+          if (e.status===401 || e.status===403 || e.status===409 || !data.snapshot?.courses?.length) throw e;
           usingSnapshot = true;
           warnings.push('课程列表未能刷新，已采用上次同步的资料。'+e.message);
         }
+        checkOwner();
         const courses=(data.snapshot?.courses || []).filter(c=>courseId===null || String(c.id)===courseId);
         if (courseId!==null && !courses.length) throw error(404,'找不到所选课程，请重新同步。');
         warnings.push(...data.snapshot?.warnings || []);
@@ -545,8 +567,9 @@ function createCanvasService({ vault, storage, desktop, noteWriter, officeToPdf,
         let done = false, firstError;
         if (data.auth) {
           try {
+            const read = ++readNumber;
             const snapshot = await api.sync(data.snapshot || undefined);
-            await save({ ...data, snapshot, syncedAt: new Date().toISOString() });
+            await save({ ...data, snapshot, syncedAt: new Date().toISOString() }, read);
             done = true;
           } catch (e) { firstError = e; issues.push(e.message); }
         }

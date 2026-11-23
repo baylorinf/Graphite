@@ -5,28 +5,22 @@
 const SITE = 'https://oc.sjtu.edu.cn';
 const MAX = 50;
 
-// Who the saved state belongs to: the school identity (web), the Canvas user id (API), else the display name.
+// Only an account identifier can associate two personal deadline histories.
 function ownerOf(state) {
   if (!state) return '';
   const id = state.portalSyncEnabled ? state.snapshot?.webIdentity : state.accountId || state.auth?.userId;
   if (id != null && String(id).trim()) return (state.portalSyncEnabled ? 'web:' : 'api:') + String(id).trim();
-  const user = String(state.user || '').trim();
-  return user ? 'name:' + user : '';
+  return '';
 }
 
-function sourceUrl(item, courseId) {
-  try {
-    const url = new URL(item.url || '', SITE);
-    if (url.origin === SITE && !url.username && !url.password && /^\/courses\/\d+\/assignments\/\d+\/?$/.test(url.pathname)) return url.href;
-  } catch { /* fall back to the canonical address */ }
-  return SITE + '/courses/' + encodeURIComponent(courseId) + '/assignments/' + encodeURIComponent(item.id);
+function sourceUrl(courseId, assignmentId) {
+  return SITE + '/courses/' + encodeURIComponent(courseId) + '/assignments/' + encodeURIComponent(assignmentId);
 }
 
-function track(previous, next, now = new Date()) {
+function track(previous, next, now = new Date(), complete = !!next?.snapshot?.courses && !!next.syncedAt && next.syncedAt !== previous?.syncedAt) {
   if (!next) return next;
   const owner = ownerOf(next);
   let record = next.deadlines && next.deadlines.owner === owner && owner ? next.deadlines : null;
-  const complete = next.snapshot?.courses && next.syncedAt && next.syncedAt !== previous?.syncedAt;
   if (complete && owner) {
     const base = { ...(record?.base || {}) };
     const changes = new Map((record?.changes || []).map(c => [c.courseId + ':' + c.assignmentId, c]));
@@ -41,7 +35,7 @@ function track(previous, next, now = new Date()) {
         if (Date.parse(from) === Date.parse(item.dueAt)) { changes.delete(key); continue; }
         changes.set(key, { courseId: String(course.id), assignmentId: String(item.id), courseName: String(course.name || ''),
           title: String(item.title || ''), seenAt, from, to: item.dueAt,
-          kind: Date.parse(item.dueAt) < Date.parse(from) ? 'earlier' : 'later', url: sourceUrl(item, course.id) });
+          kind: Date.parse(item.dueAt) < Date.parse(from) ? 'earlier' : 'later', url: sourceUrl(course.id, item.id) });
       }
     }
     record = { owner, base, changes: [...changes.values()].sort((a, b) => Date.parse(b.seenAt) - Date.parse(a.seenAt)).slice(0, MAX) };
@@ -55,7 +49,8 @@ function track(previous, next, now = new Date()) {
 // The list the status endpoint returns: only the current account's records.
 function changesFor(state) {
   const owner = ownerOf(state);
-  return owner && state?.deadlines?.owner === owner ? state.deadlines.changes || [] : [];
+  if (!owner || state?.deadlines?.owner !== owner) return [];
+  return (state.deadlines.changes || []).map(c => ({...c,url:sourceUrl(c.courseId,c.assignmentId)}));
 }
 
 module.exports = { track, changesFor, ownerOf };
