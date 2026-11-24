@@ -3,8 +3,10 @@ const fail = message => { throw Object.assign(new Error(message), {status:422});
 const numeric = /[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?/g;
 const identifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const norm = s => s.normalize('NFC').replace(/\s+/gu,' ').trim();
-const skeleton = s => norm(s).replace(numeric,'#');
+const asciiMinus = s => s.replace(/−/g,'-');
+const skeleton = s => asciiMinus(norm(s)).replace(numeric,'#');
 function numberAt(text, index, unit) {
+  text = asciiMinus(text);
   const match = [...text.matchAll(numeric)][index];
   if (!match) fail('所选数字已不存在，请人工核对。');
   const suffix = text.slice(match.index + match[0].length).trimStart();
@@ -19,7 +21,7 @@ function numberAt(text, index, unit) {
 
 function tokensFor(expression) {
   if (typeof expression !== 'string' || !expression.trim() || expression.length > 500) fail('请输入简短的算式。');
-  return expression.match(/(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z0-9_]*|[^\s]/g);
+  return asciiMinus(expression).replace(/×/g,'*').replace(/÷/g,'/').match(/(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z0-9_]*|[^\s]/g);
 }
 function calculate(expression, values) {
   const tokens = tokensFor(expression);
@@ -80,7 +82,7 @@ function csvNumber(source, column, row) {
       else if (++line===row) {
         const at=header.indexOf(column);
         if (at<0 || header.lastIndexOf(column)!==at) fail('CSV 列不存在或同名。');
-        const raw=fields[at]?.trim();
+        const raw=asciiMinus(fields[at]?.trim() || '');
         if (!raw || fields.length!==header.length || !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(raw) || !Number.isFinite(Number(raw))) fail('所选 CSV 单元格不是有限数值。');
         return Number(raw);
       }

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const {calculate,csvNumber,locate,results} = require('../errata-math');
+const {calculate,csvNumber,locate,numberAt,results} = require('../errata-math');
 const {pdf} = require('./paragraph-pdf-fixture.cjs');
 const {createErrata} = require('../errata');
 const {atomicWrite,withFileLock} = require('../server');
@@ -15,6 +15,12 @@ test('arithmetic uses math precedence, earlier results and finite numbers only',
   assert.equal(calculate('2^3^2',{}),512);
   assert.equal(calculate('(a + 2e-3)/2',{a:1.998}),1);
   for(const expr of ['1/0','2*','Math.PI','unknown+1','1 + (2 * 3','1 9']) assert.throws(()=>calculate(expr,{}));
+});
+test('typographic minus signs in lectures, measurements and formulas keep their sign',()=>{
+  assert.equal(numberAt('Offset = −3.0 mm',0,'mm'),-3);
+  assert.equal(numberAt('Offset = −2e−3 m',0,'m'),-0.002);
+  assert.equal(csvNumber('offset\n−2.5e−2','offset',1),-0.025);
+  assert.equal(calculate('−2 × 4 ÷ 2 + 1e−3',{}),-3.999);
 });
 test('CSV handles BOM, quoted names and line breaks, duplicate columns and missing measurements',()=>{
   const csv='\uFEFF"period,s","note"\r\n2.00,"two\r\nlines"\r\n1.97,"quoted ""value"""';
