@@ -1,0 +1,104 @@
+/* Graphite errata UI — layout only; colours/typography inherit the host's .modal/.btn/.field/.input styles. */
+.errata-dlg { width: min(720px, 94vw); max-height: 88vh; padding: 0; display: flex; flex-direction: column; }
+.errata-dlg:not([open]) { display: none; }
+.errata-dlg.errata-wide { width: min(960px, 96vw); }
+.errata-dlg::backdrop { background: rgb(0 0 0 / .35); }
+.errata-head, .errata-foot { display: flex; align-items: center; gap: .5rem; padding: .75rem 1rem; }
+.errata-head { justify-content: space-between; border-bottom: 1px solid var(--border, rgb(128 128 128 / .3)); }
+.errata-head h2 { margin: 0; font-size: 1.1rem; }
+.errata-foot { justify-content: flex-end; border-top: 1px solid var(--border, rgb(128 128 128 / .3)); }
+.errata-body { overflow: auto; padding: .75rem 1rem; flex: 1; }
+.errata-status { margin: 0; padding: 0 1rem; min-height: 1.2em; font-size: .85em; opacity: .8; }
+.errata-alert { margin: .5rem 1rem 0; padding: .5rem .75rem; border-radius: 4px;
+  border: 1px solid var(--danger, #c0392b); color: var(--danger, #c0392b); }
+.errata-x { font-size: 1.2rem; line-height: 1; }
+.errata-form { display: flex; flex-direction: column; gap: .75rem; }
+.errata-field { display: flex; flex-direction: column; gap: .2rem; min-width: 0; }
+.errata-hint { opacity: .75; font-size: .85em; margin: 0; }
+.errata-meta code, .errata-compare-head code { word-break: break-all; }
+.errata-fieldset { border: 1px solid var(--border, rgb(128 128 128 / .3)); border-radius: 6px; padding: .5rem .75rem; margin: 0; min-width: 0; }
+.errata-inline { display: flex; flex-wrap: wrap; gap: .75rem; align-items: center; }
+.errata-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: .5rem; align-items: end; }
+.errata-paras { max-height: 260px; overflow: auto; display: flex; flex-direction: column; gap: 2px; margin-top: .4rem; }
+.errata-para { display: grid; grid-template-columns: auto auto 1fr; gap: .5rem; align-items: start; padding: .3rem .4rem; border-radius: 4px; cursor: pointer; }
+.errata-para:hover, .errata-para:has(input:checked) { background: var(--hover, rgb(128 128 128 / .12)); }
+.errata-para-id { font-family: var(--font-mono, monospace); font-size: .8em; opacity: .7; white-space: nowrap; }
+.errata-para-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.errata-numbers { display: flex; flex-wrap: wrap; gap: .4rem; }
+.errata-chip { display: inline-flex; gap: .3rem; align-items: center; padding: .2rem .5rem; border: 1px solid var(--border, rgb(128 128 128 / .4)); border-radius: 999px; cursor: pointer; }
+.errata-chip:has(input:checked) { border-color: var(--accent, #3b82f6); }
+.errata-rows { display: flex; flex-direction: column; gap: .5rem; }
+.errata-row > .btn, .errata-small { font-size: .85em; }
+.errata-calc h3, .errata-group h3, .errata-item h3 { font-size: 1rem; margin: .5rem 0 .25rem; }
+.errata-group { padding: .5rem 0 .75rem; border-bottom: 1px solid var(--border, rgb(128 128 128 / .25)); }
+.errata-group-head, .errata-item-head, .errata-track-head { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.errata-actions { display: flex; flex-wrap: wrap; gap: .4rem; margin: .4rem 0; }
+.errata-tracks { list-style: none; padding: 0; margin: .25rem 0; display: flex; flex-direction: column; gap: .5rem; }
+.errata-track { padding: .4rem .5rem; border-radius: 4px; background: var(--bg-soft, rgb(128 128 128 / .06)); }
+.errata-quote { margin: .25rem 0; padding-left: .6rem; border-left: 3px solid var(--border, rgb(128 128 128 / .4)); white-space: pre-wrap; overflow-wrap: anywhere; }
+.errata-link { background: none; border: 0; padding: 0; color: var(--link, inherit); text-decoration: underline; cursor: pointer; font: inherit; text-align: left; overflow-wrap: anywhere; }
+.errata-badge { font-size: .75em; padding: .1rem .45rem; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.errata-changed, .errata-updated { color: var(--warn, #b45309); }
+.errata-moved { color: var(--accent, #2563eb); }
+.errata-ambiguous, .errata-missing { color: var(--danger, #c0392b); }
+.errata-unchanged, .errata-kind, .errata-chosen { opacity: .75; }
+.errata-item { padding: .6rem 0; border-bottom: 1px solid var(--border, rgb(128 128 128 / .25)); }
+.errata-evidence { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: .75rem; }
+.errata-evidence h4 { margin: .25rem 0; font-size: .85em; font-weight: 600; }
+.errata-old .errata-quote { border-left-color: var(--danger, #c0392b); }
+.errata-new .errata-quote { border-left-color: var(--ok, #16a34a); }
+.errata-results { border-collapse: collapse; margin: .4rem 0; font-variant-numeric: tabular-nums; }
+.errata-results caption { text-align: left; font-size: .85em; opacity: .8; }
+.errata-results th, .errata-results td { padding: .15rem .5rem; text-align: right; }
+.errata-results th { text-align: left; }
+.errata-diff { font-weight: 600; }
+.errata-reason { font-style: italic; margin: .25rem 0; }
+.errata-outcome { font-size: .9em; margin: .25rem 0; }
+.errata-summary { font-weight: 600; }
+.errata-confirm { margin-top: .75rem; padding: .6rem .75rem; border: 1px solid var(--accent, #2563eb); border-radius: 6px; }
+.errata-dlg :focus-visible { outline: 2px solid var(--accent, #2563eb); outline-offset: 2px; }
+/* `hidden` must win over the flex/grid display rules above (foot, grids, overlay swap). */
+.errata-dlg [hidden] { display: none !important; }
+/* Archived PDF overlay: replaces the dialog body in place; bounded scrolling host, positioned for the viewer. */
+.errata-overlay { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: .5rem 1rem .75rem; gap: .5rem; }
+.errata-overlay-bar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.errata-overlay-bar code { word-break: break-all; }
+.errata-pdf-host { position: relative; overflow: auto; flex: 1; min-height: 320px; height: min(70vh, 900px); max-height: 70vh;
+  border: 1px solid var(--border, rgb(128 128 128 / .3)); border-radius: 4px; overscroll-behavior: contain; }
+/* Review unavailable (report missing) */
+.errata-unavailable { color: var(--danger, #c0392b); }
+p.errata-unavailable { font-weight: 600; }
+/* Calculation provenance */
+.errata-details { margin: .4rem 0; padding: .3rem .6rem; border: 1px solid var(--border, rgb(128 128 128 / .3)); border-radius: 4px; }
+.errata-details > summary { cursor: pointer; font-size: .9em; }
+.errata-details p, .errata-details ul, .errata-details ol { margin: .3rem 0; overflow-wrap: anywhere; }
+.errata-details h4 { margin: .4rem 0 .15rem; font-size: .85em; font-weight: 600; }
+.errata-details code, .errata-details q { font-family: var(--font-mono, monospace); font-size: .9em; }
+@media (prefers-reduced-motion: reduce) { .errata-dlg * { scroll-behavior: auto !important; } }
+/* Keep HTML [hidden] working when host classes set display:flex or grid */
+.errata-dlg [hidden] { display: none !important; }
+
+/* Use the host theme. Text colours inherit so new themes keep their contrast. */
+.errata-dlg {
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+.errata-dlg :is(input, select, textarea) {
+  background: var(--bg-2);
+  color: inherit;
+  border: 1px solid var(--border);
+}
+.errata-dlg select option { background: var(--bg-2); color: var(--text); }
+.errata-dlg :is(input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.errata-dlg :is(.hint, .muted, small) { color: var(--text-muted); }
+.errata-dlg button {
+  background: var(--bg-3);
+  color: inherit;
+  border: 1px solid var(--border);
+}
+.errata-dlg button:hover { background: var(--bg-hover); }
+.errata-dlg button.primary { border-color: var(--accent); }

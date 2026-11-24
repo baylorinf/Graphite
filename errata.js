@@ -8,6 +8,11 @@ const {results,csvNumber,numberAt,locate,skeleton,fail} = require('./errata-math
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const conflict = message => { throw Object.assign(new Error(message),{status:409}); };
 const versionId = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
+const sourcePage = id => Number(/^P(\d+)S\d+$/.exec(id)?.[1]) || null;
+function documentPages(index) {
+  for (const p of index.paragraphs) p.page ??= sourcePage(p.id);
+  return index;
+}
 
 async function readJson(file) {
   try { return JSON.parse(await fs.readFile(file,'utf8')); }
@@ -43,7 +48,7 @@ async function extract(bytes) {
     const out=[];
     for(let n=1;n<=pdf.numPages;n++) {
       const page=await pdf.getPage(n);
-      for(const {id,text,fp} of paragraphs(await page.getTextContent(),n)) out.push({id,text,fp});
+      for(const {id,text,fp} of paragraphs(await page.getTextContent(),n)) out.push({id,page:n,text,fp});
       page.cleanup();
     }
     return {pages:pdf.numPages,paragraphs:out};
@@ -85,7 +90,7 @@ function createErrata({vault,atomicWrite,withFileLock}) {
     await atomicWrite(d.state,JSON.stringify(next));
     return next;
   }
-  const publicState = state=>({revision:state.revision,tracks:state.tracks});
+  const publicState = state=>({revision:state.revision,tracks:state.tracks.map(t=>({...t,page:sourcePage(t.source)}))});
   async function changedDocuments(d,state) {
     const groups=new Map(), versions=new Map(), documents=[];
     for(const t of state.tracks) {
@@ -117,7 +122,7 @@ function createErrata({vault,atomicWrite,withFileLock}) {
     const cache=path.join(d.versions,version+'.json');
     return withFileLock(cache,async()=>{
       const saved=await readJson(cache);
-      if(saved) return saved;
+      if(saved) return documentPages(saved);
       const indexed={version,...await extract(bytes)};
       const file=path.join(d.versions,version+'.pdf');
       try { await createFile(file,bytes); } catch(e) { if(e.code!=='EEXIST') throw e; }
@@ -129,7 +134,7 @@ function createErrata({vault,atomicWrite,withFileLock}) {
     if(!versionId(version)) fail('文档版本无效。');
     const index=await readJson(path.join(d.versions,version+'.json'));
     if(!index) fail('找不到原文快照，请重新选择讲义。');
-    return index;
+    return documentPages(index);
   }
   async function calculation(d,spec,text) {
     if(spec==null) return null;

@@ -19,7 +19,8 @@ import * as FJ from '/filejobs.js'; // jobs on your files (find new course files
 import { ICON, TAB_ICON, SEL_ICON } from '/icons.js'; // Lucide icons + the Graphite mark (scripts/make-icons.js)
 import { G, initGraph, buildGraph, drawGraph, readGraphColors, fitGraph, stopGraph } from '/graph.js';
 import { initSettings, openSettings, closeSettings, settingsOpen, refreshSettings } from '/settings.js';
-import { mountPdf, parseLocation } from '/pdfview.js';
+import { mountPdf, parseLocation, parseSourceId, locationHash } from '/pdfview.js';
+import { createErrata } from '/errata-ui.js';
 import { createReferencePane } from '/reference.js';
 import { createCanvasView } from '/canvas-view.js';
 import { canvasText } from '/canvas-strings.js';
@@ -79,7 +80,7 @@ async function api(method, route, params = {}, body) {
   else if (body != null) { payload = JSON.stringify(body); headers['Content-Type'] = 'application/json'; }
   const res = await fetch(`/api/${route}${qs ? '?' + qs : ''}`, { method, headers, body: payload });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || res.statusText);
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status });
   return data;
 }
 
@@ -99,6 +100,20 @@ const S = {
   selectedFolder: null,
 };
 let nameIdx = new Map(); // lowercased "name" / "name.md" / "file.png" -> [paths]
+const errata = createErrata({
+  api, S, sync, openNote, getLang, toast, mountPdf,
+  openSource(path, id, fp) {
+    const source = parseSourceId(id);
+    return showFile(path, { at: source ? locationHash(source.page, source.id, fp) : '' });
+  },
+});
+
+function errataContext() {
+  if (S.view !== 'file' || !/\.pdf$/i.test(S.filePath || '')) return {};
+  const page = S.pdf?.ctl?.page || S.pdf?.requestedPage;
+  const citation = S.pdf?.citation;
+  return { pdf: S.filePath, page, paragraph: citation?.page === page ? citation?.source : '', fp: citation?.page === page ? citation?.fp : '' };
+}
 
 function rebuildNameIndex() {
   nameIdx = new Map();
@@ -235,6 +250,7 @@ function indexFile(f) {
 
 async function loadAll() {
   const d = await api('GET', 'all');
+  if (S.vault && S.vault !== d.vault) errata.reset();
   S.vault = d.vault;
   S.version = d.version;
   S.files.clear();
@@ -372,6 +388,7 @@ async function sync() {
     PM.emitVault(type, p); if (type !== 'delete') PM.emitMetadata(p);
     if (type !== 'create' && p === codeEditor.activePath) void codeEditor.external(p);
   }
+  errata.onFileEvents(events);
   if (S.current && !S.files.has(S.current)) {
     // Deleted on another device. If you were editing it, keep your copy instead of losing the edits.
     if (S.dirty) {
@@ -1685,6 +1702,8 @@ async function newCodeFile() {
    Commands & shortcuts
    ===================================================================== */
 const COMMANDS = [
+  { id: 'errata-sources', name: 'Tracked lecture sources', get label() { return errata.labels().paletteTracked; }, run: () => errata.openTracked() },
+  { id: 'errata-track', name: 'Track a lecture paragraph', get label() { return errata.labels().paletteTrack; }, run: () => errata.openTrack(errataContext()) },
   { id: 'sjtu-canvas', name: 'SJTU Canvas courses, files and deadlines', run: () => openCustomTab('sjtu-canvas', 'courses', {here:true}) },
   { id:'new-code-file', name:'Create a code file', run:newCodeFile },
   { id:'mode-study', name:'Study mode', run: () => setAppMode('study') },
@@ -2307,7 +2326,12 @@ async function showFile(path, { push = true, at = '' } = {}) {
   const page = loc?.page || 0;
   const time = Number((/^t=(\d+(?:\.\d+)?)$/i.exec(at || '') || [])[1]) || 0;
   // The same PDF already open here: just go there (no reload, the zoom stays).
-  if (loc && S.view === 'file' && S.filePath === path && S.pdf?.path === path && S.pdf.ctl) { S.pdf.loc = loc; S.pdf.jumpPage = page; pdfJump(S.pdf); return; }
+  if (loc && S.view === 'file' && S.filePath === path && S.pdf?.path === path && S.pdf.ctl) {
+    S.pdf.citation = S.pdf.loc = loc; S.pdf.jumpPage = page; pdfJump(S.pdf);
+    const button = $('#file-view [data-fv="errata"]');
+    if (button) button.replaceWith(errata.toolbarButton(errataContext));
+    return;
+  }
   leaveCustomTab();
   if (S.dirty) await saveNow();
   if (push) {
@@ -2484,7 +2508,8 @@ function pdfJump(token) {
 }
 async function openPdf(box, body, path, src, page, loc = null) {
   const pos = pdfPos(path);
-  const token = S.pdf = { path, ctl: null, requestedPage: page || pos?.page || 1, loc: loc?.source ? loc : null };
+  const token = S.pdf = { path, ctl: null, requestedPage: page || pos?.page || 1, loc: loc?.source ? loc : null, citation: loc };
+  if (/\.pdf$/i.test(path)) box.querySelector('.pdf-summary')?.after(errata.toolbarButton(errataContext));
   body.innerHTML = `<div class="pdf-host"><div class="fv-none pdf-loading">${esc(t('pdf.loading'))}</div></div>`;
   const host = body.firstElementChild;
   const pageIn = box.querySelector('.pdf-page'), pagesEl = box.querySelector('.pdf-pages'), scaleBtn = box.querySelector('.pdf-scale');
