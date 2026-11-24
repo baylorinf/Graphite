@@ -17,9 +17,12 @@ function numberAt(text, index, unit) {
   return Number(match[0]);
 }
 
-function calculate(expression, values) {
+function tokensFor(expression) {
   if (typeof expression !== 'string' || !expression.trim() || expression.length > 500) fail('请输入简短的算式。');
-  const tokens = expression.match(/(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z0-9_]*|[^\s]/g);
+  return expression.match(/(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?|[A-Za-z_][A-Za-z0-9_]*|[^\s]/g);
+}
+function calculate(expression, values) {
+  const tokens = tokensFor(expression);
   let i = 0;
   function atom() {
     const token = tokens[i++];
@@ -102,12 +105,34 @@ function results(spec, text) {
     if (!Number.isFinite(input.value)) fail('输入值无效。');
     env[input.name]=input.value;
   }
-  return spec.steps.map(step=>{
+  const steps=new Map();
+  for (const step of spec.steps) {
     variable(step.name,env);
-    const value=calculate(step.formula,env);
-    env[step.name]=value;
-    return {name:step.name,unit:step.unit,value};
-  });
+    if (steps.has(step.name)) fail('计算步骤的名称重复。');
+    steps.set(step.name,step);
+  }
+  const waiting=new Map(), dependents=new Map(), ready=[];
+  for (const step of steps.values()) {
+    const dependencies=new Set(tokensFor(step.formula).filter(name=>steps.has(name)));
+    waiting.set(step.name,dependencies.size);
+    if (!dependencies.size) ready.push(step.name);
+    for (const name of dependencies) {
+      if (!dependents.has(name)) dependents.set(name,[]);
+      dependents.get(name).push(step.name);
+    }
+  }
+  // A result may refer to another formula entered later in the editor.
+  for (let i=0;i<ready.length;i++) {
+    const name=ready[i];
+    env[name]=calculate(steps.get(name).formula,env);
+    for (const dependent of dependents.get(name) || []) {
+      const remaining=waiting.get(dependent)-1;
+      waiting.set(dependent,remaining);
+      if (!remaining) ready.push(dependent);
+    }
+  }
+  if (ready.length!==steps.size) fail('计算步骤互相依赖，请解除循环后再试算。');
+  return spec.steps.map(({name,unit})=>({name,unit,value:env[name]}));
 }
 
 function locate(before, after, source, selected) {

@@ -5,7 +5,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const {calculate,csvNumber,locate} = require('../errata-math');
+const {calculate,csvNumber,locate,results} = require('../errata-math');
 const {pdf} = require('./paragraph-pdf-fixture.cjs');
 const {createErrata} = require('../errata');
 const {atomicWrite,withFileLock} = require('../server');
@@ -20,6 +20,13 @@ test('CSV handles BOM, quoted names and line breaks, duplicate columns and missi
   const csv='\uFEFF"period,s","note"\r\n2.00,"two\r\nlines"\r\n1.97,"quoted ""value"""';
   assert.equal(csvNumber(csv,'period,s',2),1.97);
   for(const src of ['T,T\n2,3','T\n','T\n2 units','T\n"2','T\nInfinity']) assert.throws(()=>csvNumber(src,'T',1));
+});
+test('formulas recompute in dependency order and reject a cycle',()=>{
+  const base={parameter:'L',unit:'m',numberIndex:0,inputs:[{name:'T',value:2}]};
+  const unordered=[{name:'g',formula:'4*pi^2*L/square',unit:'m/s²'},{name:'square',formula:'T^2',unit:'s²'}];
+  const values=results({...base,steps:unordered},'Length 0.98 m');
+  assert.deepEqual(values.map(v=>[v.name,+v.value.toFixed(2)]),[['g',9.67],['square',4]]);
+  assert.throws(()=>results({...base,steps:[{name:'a',formula:'b'},{name:'b',formula:'a'}]},'Length 0.98 m'),/循环/);
 });
 const f = (id,text)=>({id,fp:id,text});
 test('duplicates remain unresolved and a plausible textual edit needs manual confirmation',()=>{
