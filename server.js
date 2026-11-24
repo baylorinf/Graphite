@@ -15,6 +15,7 @@ const { createFile } = require('./new-file');
 let VAULT = '', CONFIG_DIR = '', PLUGIN_DIR = '';
 let TOKEN = null; // desktop app: every request must carry this secret, so other programs can't use the server
 let canvas;
+const errata = require('./errata').createErrata({vault:()=>VAULT, atomicWrite, withFileLock});
 let fetchGemini = fetch;
 const VERSION = require('./package.json').version;
 const PUBLIC = path.join(__dirname, 'public');
@@ -784,6 +785,20 @@ async function savePluginRelease(dir, files) {
 
 async function api(req, res, u) {
   const route = u.pathname.slice('/api/'.length), m = req.method, q = u.searchParams;
+  if (route.startsWith('errata/')) {
+    const action = route.slice(7);
+    if ((action === 'state' || action === 'changes') && m === 'GET') return send(res,200,await errata.handle(action));
+    if (action === 'pdf' && m === 'GET') {
+      return serveFile(res,await errata.archivedFile(q.get('version')),req);
+    }
+    if (!['document','track','remove','preview','apply'].includes(action)) throw new HttpError(404,'Unknown errata action');
+    if (m !== 'POST') throw new HttpError(405,'Method not allowed');
+    const raw = await readBody(req,1024*1024);
+    let body;
+    try { body=JSON.parse(raw); } catch { throw new HttpError(400,'Invalid JSON'); }
+    if (!body || typeof body!=='object' || Array.isArray(body)) throw new HttpError(400,'Invalid request');
+    return send(res,200,await errata.handle(action,body));
+  }
   if (route.startsWith('canvas/')) {
     if (route === 'canvas/vault-file' && m === 'GET') return canvasVaultFile(res, q.get('path'));
     let body = {};
